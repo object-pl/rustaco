@@ -9,6 +9,7 @@
 mod change;
 mod commands;
 mod decorations;
+mod diff;
 mod document;
 mod editor;
 mod history;
@@ -22,6 +23,7 @@ mod snippet;
 pub use change::{Assoc, ChangeSet, Edit, EditEvent};
 pub use commands::matching_bracket_text;
 pub use decorations::{Decoration, DecorationId, Decorations, Stickiness};
+pub use diff::{CharChange, Diff, DiffOptions, LineChange, diff};
 pub use document::Document;
 pub use editor::{Cursors, Editor, EditorId, word_at};
 pub use history::{EditKind, History, Transaction};

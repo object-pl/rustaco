@@ -283,6 +283,33 @@ pub fn set_theme_rules(
 }
 
 /// A text model that one or more editors can show.
+/// Diffs two texts and flattens the result for JS: a completeness flag (1 or 0), the change
+/// count, then per change the old line range, the new line range, the moved partner plus
+/// one (0 for none), the number of char changes, and four offsets per char change (old start,
+/// old end, new start, new end).
+fn encode_diff(old: &Rope, new: &Rope, ignore_whitespace: bool, budget_ms: f64) -> Vec<u32> {
+    let deadline = js_sys::Date::now() + budget_ms;
+    let mut keep_going = || js_sys::Date::now() < deadline;
+    let d = rustaco_core::diff(old, new, rustaco_core::DiffOptions { ignore_whitespace }, &mut keep_going);
+    let mut out = vec![u32::from(d.complete), d.changes.len() as u32];
+    for c in &d.changes {
+        out.extend([c.old.start, c.old.end, c.new.start, c.new.end].map(|n| n as u32));
+        out.push(c.moved.map_or(0, |m| m as u32 + 1));
+        out.push(c.inner.len() as u32);
+        for i in &c.inner {
+            out.extend([i.old.start, i.old.end, i.new.start, i.new.end].map(|n| n as u32));
+        }
+    }
+    out
+}
+
+/// CSS colours of every style id under the current theme, for DOM that shows highlighted
+/// text (the deleted lines of an inline diff).
+#[wasm_bindgen(js_name = styleColors)]
+pub fn style_colors() -> Vec<String> {
+    STYLES.with(|s| s.borrow().iter().map(|c| c.color.clone()).collect())
+}
+
 /// Most matches a search in the worker returns.
 const MATCHES_LIMIT: usize = 19_999;
 
@@ -323,6 +350,12 @@ impl TextReplica {
         Ok(())
     }
 
+    /// Diffs this text (the original) against `modified`; see [`encode_diff`] for the result.
+    /// After `budget_ms` the rest is diffed coarsely.
+    pub fn diff(&self, modified: &TextReplica, ignore_whitespace: bool, budget_ms: f64) -> Vec<u32> {
+        encode_diff(&self.rope, &modified.rope, ignore_whitespace, budget_ms)
+    }
+
     /// Every match of the query as pairs of start and end char offsets, or undefined when the
     /// regular expression does not compile.
     #[wasm_bindgen(js_name = findAll)]
@@ -349,6 +382,14 @@ impl Model {
     #[wasm_bindgen(constructor)]
     pub fn new(text: &str) -> Model {
         Model { inner: Rc::new(RefCell::new(TextModel::new(text))) }
+    }
+
+    /// Diffs this model (the original) against `modified` on the calling thread; the result
+    /// is laid out as `TextReplica.diff` returns it.
+    #[wasm_bindgen(js_name = diffWith)]
+    pub fn diff_with(&self, modified: &Model, ignore_whitespace: bool, budget_ms: f64) -> Vec<u32> {
+        let (a, b) = (self.inner.borrow(), modified.inner.borrow());
+        encode_diff(a.rope(), b.rope(), ignore_whitespace, budget_ms)
     }
 
     /// The text between two char offsets.

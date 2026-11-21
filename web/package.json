@@ -23,6 +23,7 @@
     "suggest.js",
     "features.js",
     "lsp.js",
+    "diff.js",
     "rustaco.d.ts",
     "lsp.d.ts",
     "pkg/**/*.js",

@@ -133,6 +133,18 @@ async function handle(msg) {
       self.postMessage({ type: 'reply', req: msg.req, version: d.version, result });
       break;
     }
+    case 'highlight': {
+      if (d.h) while (!d.parsed) d.parsed = d.h.parse(1000);
+      self.postMessage({ type: 'reply', req: msg.req, result: d.h ? d.h.highlight(msg.start, msg.end, false) : [] });
+      break;
+    }
+    case 'diff': {
+      // The original's text against the modified model's, both kept here.
+      const other = doc(msg.other);
+      const result = d.text && other.text ? d.text.diff(other.text, msg.ignoreWhitespace, msg.budget) : null;
+      self.postMessage({ type: 'reply', req: msg.req, version: d.version, otherVersion: other.version, result });
+      break;
+    }
     case 'find': {
       const result = d.text ? d.text.findAll(msg.pattern, msg.regex, msg.caseSensitive, msg.wholeWord) : [];
       self.postMessage({ type: 'reply', req: msg.req, version: d.version, result: result ?? null });

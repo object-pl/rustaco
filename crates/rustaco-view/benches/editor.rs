@@ -111,6 +111,22 @@ fn benches(c: &mut Criterion) {
         )
     });
 
+    // Two 100k-line files, the second with a changed line every hundred lines.
+    let old_text: String = (0..100_000).map(|i| format!("let value_{i} = compute({i});\n")).collect();
+    let new_text: String = (0..100_000)
+        .map(|i| {
+            if i % 100 == 7 {
+                format!("let changed_{i} = other({i});\n")
+            } else {
+                format!("let value_{i} = compute({i});\n")
+            }
+        })
+        .collect();
+    let (old_rope, new_rope) = (rustaco_core::Rope::from_str(&old_text), rustaco_core::Rope::from_str(&new_text));
+    c.bench_function("diff two 100k-line files with 1000 changes", |b| {
+        b.iter(|| rustaco_core::diff(&old_rope, &new_rope, rustaco_core::DiffOptions::default(), &mut || true))
+    });
+
     c.bench_function("hit test", |b| {
         let mut v = view();
         v.scroll_to(base.rope(), v.line_top(LINES / 2), 0.0);

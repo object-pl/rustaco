@@ -159,6 +159,11 @@ class WorkerLink {
     return (await ask({ type: 'enclosing', id: this.id, start, end })).result ?? [];
   }
 
+  async highlight(start, end) {
+    this.sync();
+    return (await ask({ type: 'highlight', id: this.id, start, end })).result ?? [];
+  }
+
   async symbols() {
     this.sync();
     return (await ask({ type: 'symbols', id: this.id })).result ?? [];
@@ -170,13 +175,29 @@ class WorkerLink {
     return { ranges: r.result ?? [], version: r.version };
   }
 
-  /** Every match, as pairs of char offsets (null for an invalid pattern), with the version. */
-  async find(pattern, { regex = false, caseSensitive = false, wholeWord = false } = {}) {
+  /** Keeps a copy of the text in the worker, for search and diff. */
+  ensureText() {
     this.sync();
     if (!this.text && worker) {
       worker.postMessage({ type: 'openText', id: this.id, text: this.model.getValue(), version: this.sent });
       this.text = true;
     }
+  }
+
+  /**
+   * Diffs this model (the original) against `modified`'s link in the worker; resolves to the
+   * flat result with the versions of both models it describes.
+   */
+  async diff(modified, { ignoreWhitespace = false, budget = 1000 } = {}) {
+    this.ensureText();
+    modified.ensureText();
+    const r = await ask({ type: 'diff', id: this.id, other: modified.id, ignoreWhitespace, budget });
+    return { flat: r.result, version: r.version, otherVersion: r.otherVersion };
+  }
+
+  /** Every match, as pairs of char offsets (null for an invalid pattern), with the version. */
+  async find(pattern, { regex = false, caseSensitive = false, wholeWord = false } = {}) {
+    this.ensureText();
     const r = await ask({ type: 'find', id: this.id, pattern, regex, caseSensitive, wholeWord });
     return { matches: r.result, version: r.version };
   }
@@ -364,6 +385,13 @@ export class RustacoModel {
   offsetAt({ line, column }) { return this.core.offsetAt(line, column); }
 
   getLineCount() { return this.core.lineCount(); }
+
+  /** Highlight quads (line, start, end, style) of lines `start..end`, from the language module. */
+  async highlightLines(start, end) {
+    if (this.syntax) return this.syntax.highlight(start, end);
+    if (this.highlighter) { this.updateHighlighter(50); return this.highlighter.highlight(start, end, false); }
+    return [];
+  }
 
   /**
    * Declarations from the syntax tree, as a tree of `{ name, kind, range, selectionRange,
@@ -558,6 +586,7 @@ export class RustacoEditor {
     this.id = nextEditorId++;
     editorsById.set(this.id, this);
     this.core = new Editor(this.canvas, this.model.core, fontFamily, fontSize);
+    this.font = `${fontSize}px ${fontFamily}`;
     this.setKeymap(keymap);
     this.options = {};
     this.setOptions({ rulers, renderWhitespace, guides, occurrencesHighlight, bracketPairColorization, wordWrap, minimap, stickyScroll });
@@ -837,6 +866,15 @@ export class RustacoEditor {
   }
 
   getScrollTop() { return this.core.scrollTop(); }
+
+  /** The editor's font as CSS, for DOM that sits among its lines. */
+  fontCss() { return this.font; }
+
+  /** Calls `fn(scrollTop)` after a frame in which the vertical scroll position changed. */
+  onDidScrollChange(fn) {
+    (this.scrollListeners ??= new Set()).add(fn);
+    return () => this.scrollListeners.delete(fn);
+  }
 
   setScrollTop(top) {
     this.core.setScrollTop(top);
@@ -1292,6 +1330,11 @@ export class RustacoEditor {
         core.clearTreeBrackets();
       }
       core.render(this.focused && this.caretOn);
+      const top = core.scrollTop();
+      if (top !== this.lastScrollTop) {
+        this.lastScrollTop = top;
+        for (const fn of this.scrollListeners ?? []) fn(top);
+      }
       if (!this.inputCovering) {
         this.input.style.transform = `translate(${this.core.caret_x()}px, ${this.core.caret_y()}px)`;
       }

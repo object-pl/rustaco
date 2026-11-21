@@ -2,7 +2,13 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Done: phases 0 to 9 (all 2026-11-21). Next: phase 10.
+Done: phases 0 to 10 (all 2026-11-21). Next: phase 11.
+
+Phase 10 summary:
+- `rustaco_core::diff`: Myers' O(ND) line diff in linear space over interned lines (optionally ignoring whitespace), a char-level pass inside changed blocks, moved blocks paired, and a time budget after which the rest is diffed coarsely but correctly.
+- `web/diff.js`: the side-by-side view (two editors, filler blocks from view zones aligning the sides, synchronised scrolling) and the inline view (one editor, deleted lines as blocks between the lines with the original's syntax colours). Both sides stay editable; the diff runs in the worker and again 200 ms after an edit, and a result for an older text is dropped. Navigation between changes, reverting a change, collapsing unchanged stretches with the fold machinery.
+- Check: two 100k-line files with 1,000 changed lines diff in the worker in 126 to 147 ms (124 ms native). Visual checks are pixel and layout probes plus screenshots taken during development, not stored screenshot comparisons.
+- Not done: a histogram diff (Myers was enough for the timing goal), keyboard shortcuts for next and previous change (the API is `goToChange`).
 
 Phase 9 summary:
 - `rustaco-lsp`: JSON-RPC with LSP framing over any byte streams (a server's stdio on the desktop), the initialize handshake with the position encoding negotiated (UTF-8 when the server offers it, UTF-16 otherwise), incremental `didChange` from the model's edit events, and every phase 8 request mapped to char offsets. Locations and edits in other documents keep their LSP coordinates for the host.
