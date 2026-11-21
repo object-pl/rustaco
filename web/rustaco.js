@@ -1,10 +1,10 @@
 // DOM glue for the Rustaco editor. Rust draws and edits; this file forwards browser events.
 import init, {
-  Editor, Model, defineDecorationType as defineType, setBuiltinTheme, setThemeRules, widgetColors,
+  Editor, Model, defineDecorationType as defineType, setBuiltinTheme, setThemeRules, styleId, widgetColors,
 } from './pkg/rustaco_web.js';
 import { SuggestController } from './suggest.js';
 import { Features } from './features.js';
-import { providersFor } from './languages.js';
+import { onDidChangeProviders, providersFor } from './languages.js';
 
 export { languages, CompletionItemKind, SymbolKind, fuzzyScore } from './languages.js';
 
@@ -50,6 +50,8 @@ function loadPack(pack) {
 }
 
 const editors = new Set();
+// New providers apply to open editors: fold regions and code lenses are asked again.
+onDidChangeProviders(() => { for (const e of editors) e.refreshFoldingSoon(); });
 /** Editors by id, for routing worker replies. */
 const editorsById = new Map();
 let nextEditorId = 1;
@@ -155,6 +157,11 @@ class WorkerLink {
   async enclosing(start, end) {
     this.sync();
     return (await ask({ type: 'enclosing', id: this.id, start, end })).result ?? [];
+  }
+
+  async symbols() {
+    this.sync();
+    return (await ask({ type: 'symbols', id: this.id })).result ?? [];
   }
 
   async folding() {
@@ -358,8 +365,31 @@ export class RustacoModel {
 
   getLineCount() { return this.core.lineCount(); }
 
-  /** Symbols from the syntax tree; empty without a tree. */
-  async builtinSymbols() { return []; }
+  /**
+   * Declarations from the syntax tree, as a tree of `{ name, kind, range, selectionRange,
+   * children }`; empty without a tree.
+   */
+  async builtinSymbols() {
+    let flat = [];
+    if (this.syntax?.hasTree) flat = await this.syntax.symbols();
+    else if (this.highlighter?.hasTree()) { this.updateHighlighter(50); flat = this.highlighter.documentSymbols(); }
+    const roots = [];
+    const stack = [];
+    for (let i = 0; i + 5 < flat.length; i += 6) {
+      const [start, end, nameStart, nameEnd, kind, depth] = flat.slice(i, i + 6);
+      const symbol = {
+        name: this.getTextRange(nameStart, nameEnd),
+        kind,
+        range: { start, end },
+        selectionRange: { start: nameStart, end: nameEnd },
+        children: [],
+      };
+      stack.length = depth;
+      (depth > 0 && stack[depth - 1] ? stack[depth - 1].children : roots).push(symbol);
+      stack[depth] = symbol;
+    }
+    return roots;
+  }
 
   /** The text of a line (0-based), without its line break. */
   getLineContent(line) {
@@ -678,6 +708,9 @@ export class RustacoEditor {
     clearTimeout(this.foldTimer);
     this.foldTimer = setTimeout(() => {
       this.refreshFolding();
+      this.features.refreshCodeLens();
+      this.features.refreshSemanticTokens(styleId);
+      this.features.refreshInlayHints();
       this.core.refreshOverview();
       this.schedule();
     }, 300);

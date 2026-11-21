@@ -476,6 +476,77 @@ export class Features {
     this.quickPickRoot = null;
   }
 
+  // ---- semantic tokens, inlay hints ----
+
+  /** Asks the semantic token providers again and draws their styles over the syntax ones. */
+  async refreshSemanticTokens(styleId) {
+    const providers = providersFor('semanticTokens', this.model.getLanguage());
+    if (!providers.length) {
+      if (this.hadSemantic) this.editor.core.setSemanticTokens(new Uint32Array());
+      this.hadSemantic = false;
+      return;
+    }
+    const version = this.model.core.version();
+    const lists = await Promise.all(providers.map(async (p) => {
+      try { return (await p.provideSemanticTokens(this.model)) ?? []; } catch { return []; }
+    }));
+    if (version !== this.model.core.version()) return;
+    const tokens = lists.flat().sort((a, b) => a.start - b.start);
+    this.editor.core.setSemanticTokens(Uint32Array.from(tokens.flatMap((t) => [t.start, t.end, styleId(t.style)])));
+    this.hadSemantic = true;
+    this.editor.schedule();
+  }
+
+  /** Asks the inlay hint providers again. */
+  async refreshInlayHints() {
+    const providers = providersFor('inlayHints', this.model.getLanguage());
+    if (!providers.length && !this.hadHints) return;
+    const version = this.model.core.version();
+    const range = { start: 0, end: this.model.getValue().length };
+    const lists = await Promise.all(providers.map(async (p) => {
+      try { return (await p.provideInlayHints(this.model, range)) ?? []; } catch { return []; }
+    }));
+    if (version !== this.model.core.version()) return;
+    const hints = lists.flat();
+    this.editor.core.setInlayHints(Uint32Array.from(hints.map((h) => h.offset)), hints.map((h) => h.label?.label ?? h.label));
+    this.hadHints = hints.length > 0;
+    this.editor.schedule();
+  }
+
+  // ---- code lens ----
+
+  /** Asks the code lens providers again and shows their titles above the lines. */
+  async refreshCodeLens() {
+    const e = this.editor;
+    const lists = await Promise.all(providersFor('codeLens', this.model.getLanguage()).map(async (p) => {
+      try { return (await p.provideCodeLenses(this.model)) ?? []; } catch { return []; }
+    }));
+    for (const id of this.lensZones ?? []) e.removeViewZone(id);
+    this.lensZones = [];
+    const byLine = new Map();
+    for (const lens of lists.flat()) {
+      if (!byLine.has(lens.line)) byLine.set(lens.line, []);
+      byLine.get(lens.line).push(lens);
+    }
+    const lh = e.core.line_height();
+    const [, foreground] = this.colors();
+    for (const [line, lenses] of byLine) {
+      const node = document.createElement('div');
+      node.setAttribute('role', 'group');
+      node.setAttribute('aria-label', 'Code lens');
+      node.style.cssText = `font:12px system-ui,sans-serif;color:${foreground};opacity:.7;display:flex;gap:10px;align-items:end;` +
+        `padding-left:${e.core.indentOfLine(line)}px`;
+      for (const lens of lenses) {
+        const a = document.createElement('span');
+        a.textContent = lens.title;
+        a.style.cursor = lens.command ? 'pointer' : 'default';
+        if (lens.command) a.addEventListener('mousedown', (ev) => { ev.preventDefault(); lens.command(e); e.focus(); });
+        node.append(a);
+      }
+      this.lensZones.push(e.addViewZone({ afterLine: line - 1, height: Math.round(lh * 0.9), domNode: node }));
+    }
+  }
+
   /** Escape: closes the topmost feature UI. True when something closed. */
   escape() {
     if (this.signature) { this.closeSignature(); return true; }

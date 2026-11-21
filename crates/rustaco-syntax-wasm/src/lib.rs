@@ -174,6 +174,33 @@ impl Highlighter {
         Vec::new()
     }
 
+    /// Declarations for an outline, six numbers each: start and end of the declaration,
+    /// start and end of its name (char offsets), kind (Monaco's `SymbolKind`) and nesting
+    /// depth. Empty when the engine has no tree.
+    #[wasm_bindgen(js_name = documentSymbols)]
+    pub fn document_symbols(&self) -> Vec<u32> {
+        #[cfg(feature = "tree-sitter")]
+        if let Engine::TreeSitter(s) = &self.engine {
+            let rope = &self.rope;
+            let c = |b: usize| rope.byte_to_char(b.min(rope.len_bytes())) as u32;
+            return s
+                .symbols()
+                .into_iter()
+                .flat_map(|sym| {
+                    [
+                        c(sym.bytes.start),
+                        c(sym.bytes.end),
+                        c(sym.name_bytes.start),
+                        c(sym.name_bytes.end),
+                        sym.kind,
+                        sym.depth as u32,
+                    ]
+                })
+                .collect();
+        }
+        Vec::new()
+    }
+
     /// True when this module answers bracket questions from a syntax tree.
     #[wasm_bindgen(js_name = hasTree)]
     pub fn has_tree(&self) -> bool {

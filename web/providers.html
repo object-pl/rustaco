@@ -1,0 +1,34 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Rustaco: a language from JS providers</title>
+  <style>html, body { margin: 0; height: 100%; background: #1e1e1e; } #root { position: absolute; inset: 0; }</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module">
+    // Every language feature here comes from web/demo-language.js: try Ctrl+Space, hover,
+    // F12, Shift+F12, F2, Shift+Alt+F, Ctrl+. on the `var` line, Ctrl+Shift+O.
+    import { createEditor } from './rustaco.js';
+    import { registerDemoLanguage } from './demo-language.js';
+    registerDemoLanguage();
+    const program = `fn add(a, b) {
+    let sum = a + b;
+    print(sum);
+}
+
+fn twice(x) {
+    return add(x, x);
+}
+
+let total = add(1, 2);
+let label = "sum";
+var legacy = twice(total);
+print(total);
+`;
+    window.editor = await createEditor(document.getElementById('root'), { value: program, language: 'demo' });
+    window.editor.focus();
+  </script>
+</body>
+</html>

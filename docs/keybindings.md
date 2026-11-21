@@ -39,12 +39,17 @@ Monaco's default editor keybindings (Windows and Linux keys; macOS uses Cmd wher
 | Ctrl+Shift+[ / Ctrl+Shift+] | fold / unfold | done |
 | Ctrl+K Ctrl+L | toggle fold | done |
 | Ctrl+K Ctrl+0 / Ctrl+K Ctrl+J | fold all / unfold all | done |
-| Ctrl+Space | trigger suggestions | phase 8 |
-| Ctrl+Shift+Space | parameter hints | phase 8 |
-| F12 / Alt+F12 / Shift+F12 | go to definition / peek / references | phases 8 and 9 |
-| F2 | rename symbol | phase 8 |
-| Ctrl+. | quick fix | phase 8 |
-| Shift+Alt+F | format document | phases 8 and 9 |
+| Ctrl+Space | trigger suggestions | done |
+| Ctrl+Shift+Space | parameter hints | done |
+| F12 / Ctrl+click | go to definition | done (providers; LSP in phase 9) |
+| Shift+F12 | references in a peek view | done |
+| Alt+F12 | peek definition | not planned yet |
+| F2 | rename symbol | done |
+| Ctrl+. | quick fix | done |
+| Ctrl+K Ctrl+I | show hover | done |
+| Ctrl+Shift+O | go to symbol (quick outline) | done |
+| Tab / Shift+Tab / Escape in a snippet | next / previous tab stop, leave | done |
+| Shift+Alt+F | format document | done (providers; LSP in phase 9) |
 | Ctrl+K Ctrl+C / Ctrl+K Ctrl+U | add / remove line comment | not planned separately; Ctrl+/ toggles |
 | Ctrl+Shift+Alt+arrows | column selection by keyboard | not done |
 | Alt+Z | toggle word wrap | phase 5 |

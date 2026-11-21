@@ -23,6 +23,72 @@ export function createEditor(container: HTMLElement, options?: EditorOptions): P
 /** Language id for a file name and its first line, or `""`. */
 export function detectLanguage(path: string, firstLine?: string): Promise<string>;
 
+/** A range of char offsets. */
+export interface Range {
+  start: number;
+  end: number;
+}
+
+/** Provider registration, named as in Monaco; see `languages.js` for each provider's shape. */
+export const languages: {
+  registerCompletionItemProvider(languageId: string, provider: CompletionProvider): Disposable;
+  registerHoverProvider(languageId: string, provider: { provideHover(model: RustacoModel, offset: number): Awaitable<{ contents: string | string[]; range?: Range } | null> }): Disposable;
+  registerSignatureHelpProvider(languageId: string, provider: {
+    signatureHelpTriggerCharacters?: string[];
+    provideSignatureHelp(model: RustacoModel, offset: number): Awaitable<{ signatures: Array<{ label: string; documentation?: string; parameters: Array<{ label: string; documentation?: string }> }>; activeSignature?: number; activeParameter?: number } | null>;
+  }): Disposable;
+  registerDefinitionProvider(languageId: string, provider: { provideDefinition(model: RustacoModel, offset: number): Awaitable<Range | { range: Range } | Array<Range | { range: Range }> | null> }): Disposable;
+  registerReferenceProvider(languageId: string, provider: { provideReferences(model: RustacoModel, offset: number): Awaitable<Array<Range | { range: Range }> | null> }): Disposable;
+  registerRenameProvider(languageId: string, provider: {
+    resolveRenameLocation?(model: RustacoModel, offset: number): Awaitable<{ range: Range; text: string } | { rejectReason: string } | null>;
+    provideRenameEdits(model: RustacoModel, offset: number, newName: string): Awaitable<TextEdit[]>;
+  }): Disposable;
+  registerDocumentFormattingEditProvider(languageId: string, provider: { provideDocumentFormattingEdits(model: RustacoModel, options: { tabSize: number; insertSpaces: boolean }): Awaitable<TextEdit[]> }): Disposable;
+  registerCodeActionProvider(languageId: string, provider: { provideCodeActions(model: RustacoModel, range: Range): Awaitable<Array<{ title: string; edits?: TextEdit[]; command?: (editor: RustacoEditor) => void }>> }): Disposable;
+  registerDocumentHighlightProvider(languageId: string, provider: { provideDocumentHighlights(model: RustacoModel, offset: number): Awaitable<Range[] | null> }): Disposable;
+  registerFoldingRangeProvider(languageId: string, provider: { provideFoldingRanges(model: RustacoModel): Awaitable<Array<{ start: number; end: number }>> }): Disposable;
+  registerSelectionRangeProvider(languageId: string, provider: { provideSelectionRanges(model: RustacoModel, offset: number): Awaitable<Range[]> }): Disposable;
+  registerDocumentSymbolProvider(languageId: string, provider: { provideDocumentSymbols(model: RustacoModel): Awaitable<DocumentSymbol[]> }): Disposable;
+  registerCodeLensProvider(languageId: string, provider: { provideCodeLenses(model: RustacoModel): Awaitable<Array<{ line: number; title: string; command?: (editor: RustacoEditor) => void }>> }): Disposable;
+  registerDocumentSemanticTokensProvider(languageId: string, provider: { provideSemanticTokens(model: RustacoModel): Awaitable<Array<{ start: number; end: number; style: string }>> }): Disposable;
+  registerInlayHintsProvider(languageId: string, provider: { provideInlayHints(model: RustacoModel, range: Range): Awaitable<Array<{ offset: number; label: string }>> }): Disposable;
+  CompletionItemKind: Record<string, number>;
+  SymbolKind: Record<string, number>;
+};
+
+export type Awaitable<T> = T | Promise<T>;
+export interface Disposable { dispose(): void }
+export interface TextEdit { range: Range; text: string }
+
+export interface CompletionItem {
+  label: string;
+  kind?: number;
+  detail?: string;
+  documentation?: string;
+  /** Text to insert; the label when absent. */
+  insertText?: string;
+  /** `insertText` is a snippet in VS Code's syntax. */
+  isSnippet?: boolean;
+  sortText?: string;
+  filterText?: string;
+  /** What the item replaces; the word before the caret when absent. */
+  range?: Range;
+}
+
+export interface CompletionProvider {
+  triggerCharacters?: string[];
+  provideCompletionItems(model: RustacoModel, offset: number, context: { triggerKind: 'invoke' | 'character' | 'automatic'; triggerCharacter: string | null }): Awaitable<CompletionItem[] | { suggestions: CompletionItem[] }>;
+}
+
+export interface DocumentSymbol {
+  name: string;
+  kind: number;
+  range: Range;
+  selectionRange?: Range;
+  detail?: string;
+  children?: DocumentSymbol[];
+}
+
 /** Ids of every language the editor knows. */
 export function knownLanguages(): Promise<string[]>;
 
@@ -65,6 +131,11 @@ export class RustacoModel {
   /** Sets the language by id (`""` turns highlighting off); loads its module on first use. */
   setLanguage(id: string): Promise<boolean>;
   getLanguage(): string;
+  getTextRange(start: number, end: number): string;
+  positionAt(offset: number): { line: number; column: number };
+  offsetAt(position: { line: number; column: number }): number;
+  getLineCount(): number;
+  getLineContent(line: number): string;
   /** Moves this model's language module into the worker or back to the main thread. */
   setWorkerEnabled(on: boolean): Promise<boolean>;
   createDecorationsCollection(decorations?: Decoration[]): DecorationsCollection;
@@ -96,6 +167,8 @@ export interface ViewOptions {
   wordWrap?: 'off' | 'on';
   minimap?: { enabled: boolean };
   stickyScroll?: { enabled: boolean; maxLineCount?: number };
+  /** Open the completion list while typing a word (default true). */
+  quickSuggestions?: boolean;
 }
 
 export interface Selection {
@@ -164,6 +237,15 @@ export class RustacoEditor {
   replaceAll(replacement: string): number;
   selectAllMatches(): number;
   clearFind(): void;
+
+  /** Inserts a snippet in VS Code's syntax at every cursor and selects its first tab stop. */
+  insertSnippet(source: string): void;
+  /** Opens the completion list, as Ctrl+Space does. */
+  triggerSuggest(): Promise<void>;
+  /** Symbols from a provider, else from the syntax tree. */
+  getDocumentSymbols(): Promise<DocumentSymbol[]>;
+  /** Called when go to definition lands in another model; the host opens it. */
+  onOpenLocation?: (location: { model: RustacoModel; range: Range }) => void;
 
   /** Recomputes the foldable regions now instead of after the typing pause. */
   refreshFolding(): void;

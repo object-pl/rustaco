@@ -12,7 +12,9 @@
   <div id="root"></div>
   <script type="module">
     import { createEditor, setTheme } from './rustaco.js';
+    import { styleId } from './pkg/rustaco_web.js';
     window.rustacoSetTheme = setTheme;
+    window.rustacoStyleId = styleId;
 
     const sample = `// Rustaco demo
 use std::collections::HashMap;

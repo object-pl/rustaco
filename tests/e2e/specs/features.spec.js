@@ -13,6 +13,8 @@ async function open(page, value = PROGRAM) {
     e.setValue(v);
     await e.getModel().setLanguage('demo');
     e.focus();
+    // Code lenses open space above lines; let them land before measuring positions.
+    await e.features.refreshCodeLens();
   }, value);
 }
 
@@ -114,4 +116,53 @@ test('document highlights, folding ranges and quick outline come from providers'
   await page.keyboard.type('total');
   await page.keyboard.press('Enter');
   expect((await page.evaluate(() => window.editor.getSelections()[0])).head).toBe(PROGRAM.indexOf('total'));
+});
+
+test('code lenses sit above their lines and run their command', async ({ page }) => {
+  await open(page);
+  await page.evaluate(() => window.editor.features.refreshCodeLens());
+  const lens = page.locator('[role="group"][aria-label="Code lens"]');
+  await expect(lens).toHaveText('1 reference');
+  await lens.locator('span').dispatchEvent('mousedown');
+  expect(await page.evaluate(() => window.editor.getSelections()[0])).toEqual({ anchor: 3, head: 6 });
+});
+
+test('without a symbol provider the outline comes from the syntax tree', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.editor?.ready);
+  const names = await page.evaluate(async () => {
+    const e = window.editor;
+    e.setValue('struct P;\nimpl P {\n    fn a() {}\n    fn b() {}\n}\nfn main() {}\n');
+    await e.getModel().setLanguage('rust');
+    const symbols = await e.getDocumentSymbols();
+    const walk = (list) => list.flatMap((s) => [s.name, ...walk(s.children)]);
+    return walk(symbols);
+  });
+  expect(names).toEqual(['P', 'P', 'a', 'b', 'main']);
+});
+
+test('semantic tokens colour a language without a grammar; inlay hints push text right', async ({ page }) => {
+  await open(page);
+  const colorAt = (offset) => page.evaluate((o) => {
+    const e = window.editor;
+    e.core.render(false);
+    const p = e.core.positionOf(o);
+    const ctx = e.canvas.getContext('2d');
+    const dpr = window.devicePixelRatio || 1;
+    let best = -1, color = null;
+    for (let dx = 1; dx < 14; dx++) for (let dy = 3; dy < p[2] - 3; dy++) {
+      const d = ctx.getImageData(Math.round((p[0] + dx) * dpr), Math.round((p[1] + dy) * dpr), 1, 1).data;
+      if (d[0] + d[1] + d[2] > best) { best = d[0] + d[1] + d[2]; color = `${d[0]},${d[1]},${d[2]}`; }
+    }
+    return color;
+  }, offset);
+  const plain = await colorAt(PROGRAM.indexOf('old'));
+  await page.evaluate(() => window.editor.features.refreshSemanticTokens((name) => window.rustacoStyleId(name)));
+  await expect.poll(() => colorAt(0)).not.toBe(plain);
+
+  await page.evaluate(() => window.editor.setValue('let n = 5;'));
+  const eq = 'let n '.length;
+  const before = await page.evaluate((o) => { window.editor.core.render(false); return window.editor.core.positionOf(o)[0]; }, eq);
+  await page.evaluate(() => window.editor.features.refreshInlayHints());
+  await expect.poll(() => page.evaluate((o) => { window.editor.core.render(false); return window.editor.core.positionOf(o)[0]; }, eq)).toBeGreaterThan(before);
 });

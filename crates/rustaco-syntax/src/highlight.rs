@@ -162,6 +162,51 @@ impl Syntax {
         None
     }
 
+    /// Declarations for an outline: functions, methods, classes, structs, enums, traits and
+    /// interfaces, modules, impl blocks, constants, in document order with their nesting
+    /// depth. Found by node kind (`function_item`, `class_declaration`, `method_definition`,
+    /// ...) and named by the node's `name` field (`type` for impl blocks), which the bundled
+    /// grammars share.
+    pub fn symbols(&self) -> Vec<Symbol> {
+        let Some(tree) = self.tree.as_ref() else { return Vec::new() };
+        let mut out = Vec::new();
+        let mut cursor = tree.walk();
+        let mut depth = 0usize;
+        // Depths at which a symbol was entered, to know the nesting of the next ones.
+        let mut open: Vec<usize> = Vec::new();
+        loop {
+            let node = cursor.node();
+            if let Some(kind) = symbol_kind(node.kind()) {
+                let name = node.child_by_field_name("name").or_else(|| node.child_by_field_name("type"));
+                if let Some(name) = name {
+                    out.push(Symbol {
+                        kind,
+                        bytes: node.start_byte()..node.end_byte(),
+                        name_bytes: name.start_byte()..name.end_byte(),
+                        depth: open.len(),
+                    });
+                    open.push(depth);
+                }
+            }
+            if cursor.goto_first_child() {
+                depth += 1;
+                continue;
+            }
+            loop {
+                while open.last() == Some(&depth) {
+                    open.pop();
+                }
+                if cursor.goto_next_sibling() {
+                    break;
+                }
+                if !cursor.goto_parent() {
+                    return out;
+                }
+                depth -= 1;
+            }
+        }
+    }
+
     /// Regions worth folding, as (header row, last hidden row): the inside of every bracket
     /// pair spanning lines (the closing bracket's line stays visible), multi-line comments,
     /// and markdown sections. One region per header row, the outermost. Walks only nodes
@@ -393,4 +438,60 @@ fn bracket_partner(kind: &str) -> Option<&'static str> {
 
 fn is_opening(kind: &str) -> bool {
     matches!(kind, "(" | "[" | "{")
+}
+
+/// A declaration found by [`Syntax::symbols`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Symbol {
+    /// Kind in LSP's numbering minus one (Monaco's `SymbolKind`): 4 class, 5 method,
+    /// 11 function, 22 struct, ...
+    pub kind: u32,
+    pub bytes: Range<usize>,
+    pub name_bytes: Range<usize>,
+    /// Number of enclosing symbols.
+    pub depth: usize,
+}
+
+/// The outline kind of a node kind, or None for nodes that are not declarations.
+fn symbol_kind(kind: &str) -> Option<u32> {
+    // Monaco's SymbolKind numbers.
+    const MODULE: u32 = 1;
+    const CLASS: u32 = 4;
+    const METHOD: u32 = 5;
+    const ENUM: u32 = 9;
+    const INTERFACE: u32 = 10;
+    const FUNCTION: u32 = 11;
+    const CONSTANT: u32 = 13;
+    const STRUCT: u32 = 22;
+    let declaration = kind.ends_with("_item")
+        || kind.ends_with("_declaration")
+        || kind.ends_with("_definition")
+        || kind.ends_with("_specifier")
+        || kind == "type_spec";
+    if !declaration {
+        return None;
+    }
+    Some(if kind.contains("method") {
+        METHOD
+    } else if kind.contains("function") || kind.contains("constructor") {
+        FUNCTION
+    } else if kind.contains("class") {
+        CLASS
+    } else if kind.contains("struct") {
+        STRUCT
+    } else if kind.contains("enum") {
+        ENUM
+    } else if kind.contains("interface") || kind.contains("trait") || kind.contains("protocol") {
+        INTERFACE
+    } else if kind.contains("impl") {
+        CLASS
+    } else if kind.contains("mod") || kind.contains("namespace") {
+        MODULE
+    } else if kind.starts_with("const") || kind.starts_with("static") {
+        CONSTANT
+    } else if kind == "type_spec" || kind.starts_with("type_") {
+        STRUCT
+    } else {
+        return None;
+    })
 }

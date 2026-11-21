@@ -26,7 +26,7 @@ mod theme;
 pub use background::{BackgroundSyntax, HighlightReply};
 pub use catalog::{LanguageConfig, LanguageInfo, catalog, detect, info};
 #[cfg(feature = "engine")]
-pub use highlight::Syntax;
+pub use highlight::{Symbol, Syntax};
 #[cfg(feature = "engine")]
 pub use injection::{MAX_INJECTION_BYTES, resolve as resolve_injection_language};
 #[cfg(feature = "engine")]

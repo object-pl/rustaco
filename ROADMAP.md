@@ -2,7 +2,15 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Done: phases 0 to 7 (all 2026-11-21). Next: phase 8.
+Done: phases 0 to 8 (all 2026-11-21). Next: phase 9.
+
+Phase 8 summary:
+- Providers are registered from JS per language id with Monaco's function names (`web/languages.js`): completion, hover, signature help, definition, references, rename, formatting, code actions, document highlights, folding and selection ranges, document symbols, code lens, semantic tokens, inlay hints.
+- UI for each: completion list with fuzzy filtering, matched chars marked and a documentation pane; hover card; parameter hints with the active argument; go to definition (F12, Ctrl+click); references in a peek view under the line; rename box with reject reasons; formatting; lightbulb and code action menu; highlights of a symbol's uses; code lenses as view zones; semantic tokens drawn over the syntax styles; inlay hints that push the text right, with carets and clicks measured around them; quick outline.
+- Built in, without providers: completion from the words of the file, outline from the syntax tree (functions, classes, structs, impls, modules, constants), folding and selection ranges from phases 2 to 5.
+- Snippets: VS Code syntax with tab stops, nested placeholders, choices (offered as a list), variables, mirrors edited as multi-cursors; Tab and Shift+Tab between stops.
+- Check: `web/demo-language.js` implements a toy language with every provider, and `tests/e2e/specs/features.spec.js` and `providers.spec.js` drive each feature through it in three browsers.
+- Not done: per-language snippet files bundled with the language packs (snippets come from completion providers or `insertSnippet`); a peek view for definitions (Alt+F12); go to definition into another document is handed to the host through `onOpenLocation`.
 
 Phase 7 summary:
 - One Web Worker per page runs every model's language module and search; native frontends get the same protocol on a thread (`BackgroundSyntax`). Edits go over as they are made, replies carry the model version and stale ones are dropped; the editor draws the previous highlights moved with the edits until fresh ones arrive. The main-thread path stays as the fallback (no workers, or `setWorkersEnabled(false)`).

@@ -123,11 +123,13 @@ async function handle(msg) {
       break;
     }
     case 'enclosing':
-    case 'folding': {
+    case 'folding':
+    case 'symbols': {
       if (!d.h) { self.postMessage({ type: 'reply', req: msg.req, version: d.version, result: [] }); break; }
       // These need the tree for the current text: finish the parse.
       while (!d.parsed) d.parsed = d.h.parse(1000);
-      const result = msg.type === 'enclosing' ? d.h.enclosingRanges(msg.start, msg.end) : d.h.foldingRanges();
+      const result = msg.type === 'enclosing' ? d.h.enclosingRanges(msg.start, msg.end)
+        : msg.type === 'folding' ? d.h.foldingRanges() : d.h.documentSymbols();
       self.postMessage({ type: 'reply', req: msg.req, version: d.version, result });
       break;
     }

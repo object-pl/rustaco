@@ -147,6 +147,9 @@ const MINIMAP_CELL: f32 = 1.0;
 /// geometry and track height.
 type OverviewCache = ((u64, u64, u32), Vec<(f32, f32, u32)>);
 
+/// Style id of inlay hint runs; frontends draw them muted.
+pub const INLAY_STYLE: u32 = u32::MAX - 1;
+
 /// Width of the fold marker column at the right of the gutter, in cells.
 const FOLD_MARKER_CELLS: f32 = 2.0;
 
@@ -174,6 +177,8 @@ pub struct View {
     /// Most scope headers sticky scroll pins; 0 turns it off.
     sticky_max: usize,
     zones: Vec<Zone>,
+    /// Inlay hints: text shown before the char at an offset, sorted by offset.
+    inlays: Vec<(usize, String)>,
     /// Height of the zones above the first line.
     top_padding: f64,
     /// Bumped whenever line positions may have changed (sync, folds, zones).
@@ -211,6 +216,7 @@ impl View {
             minimap_width: 0.0,
             sticky_max: 0,
             zones: Vec::new(),
+            inlays: Vec::new(),
             top_padding: 0.0,
             geometry: 0,
             overview_cache: std::cell::RefCell::new(None),
@@ -369,6 +375,9 @@ impl View {
                 // Text typed at the end of the line goes before the zone; a new line after it.
                 for z in &mut self.zones {
                     z.anchor = z.anchor.map(|a| c.map(a, Assoc::Before));
+                }
+                for (offset, _) in &mut self.inlays {
+                    *offset = c.map(*offset, Assoc::Before);
                 }
             }
             incremental = self.heights.len() == rope.len_lines();
@@ -704,18 +713,57 @@ impl View {
         (self.line_top(line) - self.scroll_top) as f32
     }
 
+    /// Shows inlay hints: `label` drawn before the char at each offset, pushing the text
+    /// after it right. A caret at that offset stays before the hint.
+    pub fn set_inlays(&mut self, model: &TextModel, mut hints: Vec<(usize, String)>) {
+        self.sync(model);
+        hints.retain(|(_, label)| !label.is_empty());
+        hints.sort_by_key(|h| h.0);
+        self.inlays = hints;
+    }
+
+    /// Inlay hints on `line`: (column, width in cells, label), by column.
+    fn inlays_on(&self, rope: &Rope, line: usize) -> Vec<(usize, usize, &str)> {
+        if self.inlays.is_empty() {
+            return Vec::new();
+        }
+        let start = rope.line_to_char(line);
+        let end = start + line_len(rope, line);
+        let from = self.inlays.partition_point(|h| h.0 < start);
+        self.inlays[from..]
+            .iter()
+            .take_while(|h| h.0 <= end)
+            .map(|(o, label)| (o - start, label.chars().map(|c| c.width().unwrap_or(1)).sum(), label.as_str()))
+            .collect()
+    }
+
     /// Row and x (cells from the text area's left edge, before scrolling) of char `column`
-    /// on `line`.
+    /// on `line`. Inlay hints before the column on its row count; one at the column does not.
     fn locate(&self, rope: &Rope, rows: &LineRows, line: usize, column: usize) -> (usize, usize) {
         let row = rows.row_of(column);
         let tab = self.tab_size;
         let start_cells = if row == 0 { 0 } else { visual_column(rope, line, rows.starts[row], tab) };
-        (row, rows.indent_of(row) + visual_column(rope, line, column, tab) - start_cells)
+        let hints: usize =
+            self.inlays_on(rope, line).iter().filter(|h| h.0 >= rows.starts[row] && h.0 < column).map(|h| h.1).sum();
+        (row, rows.indent_of(row) + visual_column(rope, line, column, tab) - start_cells + hints)
     }
 
     /// Char column on `row` of `line` nearest to x `cells` (as [`View::locate`] measures).
     /// Past the end of a row that wraps, the column stays before the row's last char.
     fn column_in_row(&self, rope: &Rope, rows: &LineRows, line: usize, row: usize, cells: f32) -> usize {
+        if !self.inlays_on(rope, line).is_empty() {
+            // Hints shift the text unevenly: pick the nearest caret position by measuring.
+            let start = rows.starts[row];
+            let end = rows.starts.get(row + 1).map_or(line_len(rope, line), |&n| n - 1);
+            let mut best = (start, f32::MAX);
+            for col in start..=end {
+                let d = (self.locate(rope, rows, line, col).1 as f32 - cells).abs();
+                if d < best.1 {
+                    best = (col, d);
+                }
+            }
+            return best.0;
+        }
         let tab = self.tab_size;
         let start = rows.starts[row];
         let start_cells = if row == 0 { 0 } else { visual_column(rope, line, start, tab) };
@@ -876,6 +924,7 @@ impl View {
 
         for line in self.shown(visible.clone()) {
             let spans = styler.spans(line);
+            let inlays = self.inlays_on(rope, line);
             let rows = self.line_rows(rope, line);
             let y = self.y_of(line);
             let line_len = line_len(rope, line);
@@ -889,7 +938,7 @@ impl View {
                 let shift = rows.indent_of(row) as f32 - start_cells as f32;
                 let x_of = |cells: usize| gutter + (cells as f32 + shift) * cw - self.scroll_left;
                 let window = first_cell + start_cells..last_cell + start_cells;
-                let (runs, cells) = layout_line(rope, line, cols, &spans, window, tab, &x_of);
+                let (runs, cells) = layout_line(rope, line, cols, &spans, window, tab, &x_of, &inlays);
                 widest = widest.max(cells);
                 frame.lines.push(FrameLine { line, row, y: row_y, height: lh, runs });
             }
@@ -934,7 +983,7 @@ impl View {
             let spans = styler.spans(line);
             let x_of = |cells: usize| gutter + cells as f32 * cw - self.scroll_left;
             let len = line_len(rope, line);
-            let (runs, _) = layout_line(rope, line, 0..len, &spans, first_cell..last_cell, tab, &x_of);
+            let (runs, _) = layout_line(rope, line, 0..len, &spans, first_cell..last_cell, tab, &x_of, &[]);
             frame.sticky.push(FrameLine { line, row: 0, y, height: lh, runs });
         }
         frame
@@ -1169,7 +1218,13 @@ impl View {
         let tab = self.tab_size;
         let start_cells = if row == 0 { 0 } else { visual_column(rope, line, rows.starts[row], tab) };
         let end_cells = visual_column(rope, line, rows.starts[row + 1], tab);
-        (row, rows.indent_of(row) + end_cells - start_cells)
+        let hints: usize = self
+            .inlays_on(rope, line)
+            .iter()
+            .filter(|h| h.0 >= rows.starts[row] && h.0 < rows.starts[row + 1])
+            .map(|h| h.1)
+            .sum();
+        (row, rows.indent_of(row) + end_cells - start_cells + hints)
     }
 
     /// Rectangles for decorations on the visible lines, with each decoration's kind. Call
@@ -1385,6 +1440,7 @@ impl View {
         for line in self.shown(self.visible_lines(rope)) {
             let y = self.y_of(line);
             let rows = self.line_rows(rope, line);
+            let inlays = self.inlays_on(rope, line);
             let mut cells = 0;
             let mut row = 0;
             let mut row_shift = 0isize;
@@ -1392,6 +1448,9 @@ impl View {
                 if rows.starts.get(row + 1) == Some(&col) {
                     row += 1;
                     row_shift = rows.indent as isize - cells as isize;
+                }
+                for h in inlays.iter().filter(|h| h.0 == col) {
+                    row_shift += h.1 as isize;
                 }
                 let w = cell_width(c, cells, tab);
                 if c == ' ' || c == '\t' {
@@ -1474,6 +1533,7 @@ pub fn column_at_cells(rope: &Rope, line: usize, cells: f32, tab: usize) -> usiz
 /// Lays out the chars in `cols` of `line` that fall inside `window` (cells from the line
 /// start). Returns the runs and the line's width in cells, measured up to the end of the
 /// window.
+#[allow(clippy::too_many_arguments)]
 fn layout_line(
     rope: &Rope,
     line: usize,
@@ -1482,17 +1542,30 @@ fn layout_line(
     window: Range<usize>,
     tab: usize,
     x_of: &dyn Fn(usize) -> f32,
+    inlays: &[(usize, usize, &str)],
 ) -> (Vec<TextRun>, usize) {
     let mut runs: Vec<TextRun> = Vec::new();
     let mut span_idx = 0;
     let mut acc = 0usize;
+    // Cells added by inlay hints drawn so far on this row.
+    let mut shift = 0usize;
     let mut prev_off_grid = false;
+    let hint = |col: usize, acc: usize, shift: &mut usize, runs: &mut Vec<TextRun>| {
+        for &(_, cells, label) in inlays.iter().filter(|h| h.0 == col && cols.contains(&col)) {
+            runs.push(TextRun { x: x_of(acc + *shift), text: label.to_owned(), style: INLAY_STYLE });
+            *shift += cells;
+        }
+    };
+    let line_end = line_len(rope, line);
     for (col, c) in rope.line(line).chars().take(cols.end).enumerate() {
         let w = cell_width(c, acc, tab);
         if acc >= window.end {
             // Past the visible area: the rest of the line only matters for its width,
             // which is approximated by the char count to keep long lines cheap.
-            return (runs, acc + (cols.end - col));
+            return (runs, acc + shift + (cols.end - col));
+        }
+        if col >= cols.start {
+            hint(col, acc, &mut shift, &mut runs);
         }
         if col >= cols.start && acc + w > window.start {
             while span_idx < spans.len() && spans[span_idx].end <= col {
@@ -1503,10 +1576,11 @@ fn layout_line(
             // number of cells (CJK, emoji), so it gets a run of its own, placed on the grid,
             // and the text after it starts on the grid again instead of drifting.
             let off_grid = !c.is_ascii();
-            let start_new = off_grid || prev_off_grid || runs.last().is_none_or(|r| r.style != style);
+            let start_new =
+                off_grid || prev_off_grid || runs.last().is_none_or(|r| r.style != style || r.style == INLAY_STYLE);
             prev_off_grid = off_grid;
             if start_new {
-                runs.push(TextRun { x: x_of(acc), text: String::new(), style });
+                runs.push(TextRun { x: x_of(acc + shift), text: String::new(), style });
             }
             let run = runs.last_mut().expect("a run was just ensured");
             if c == '\t' {
@@ -1517,7 +1591,16 @@ fn layout_line(
         }
         acc += w;
     }
-    (runs, acc)
+    // A hint at the end of the line, after its last char.
+    if cols.end == line_end {
+        let mut cols_end = cols.clone();
+        cols_end.end += 1;
+        for &(_, cells, label) in inlays.iter().filter(|h| h.0 == line_end && cols_end.contains(&h.0)) {
+            runs.push(TextRun { x: x_of(acc + shift), text: label.to_owned(), style: INLAY_STYLE });
+            shift += cells;
+        }
+    }
+    (runs, acc + shift)
 }
 
 #[cfg(test)]
@@ -1922,5 +2005,32 @@ mod grid_tests {
         let g = frame.gutter_width;
         let runs: Vec<(&str, f32)> = frame.lines[0].runs.iter().map(|r| (r.text.as_str(), r.x - g)).collect();
         assert_eq!(runs, vec![("a", 0.0), ("\u{4E2D}", 10.0), ("b", 30.0), ("\u{e9}", 40.0), ("cd", 50.0)]);
+    }
+}
+
+#[cfg(test)]
+mod inlay_tests {
+    use super::*;
+    use rustaco_core::{Document, Edit, Selection, Selections};
+
+    #[test]
+    fn hints_push_text_right_and_carets_stay_before_them() {
+        let mut doc = Document::new("let x = 1;");
+        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 100.0);
+        v.set_inlays(doc.model(), vec![(5, ": i32".into())]);
+        doc.set_selections(Selections::single(Selection::cursor(5)));
+        let frame = v.layout(doc.model(), doc.selections(), &Plain);
+        let g = frame.gutter_width;
+        let runs: Vec<(&str, f32, bool)> =
+            frame.lines[0].runs.iter().map(|r| (r.text.as_str(), r.x - g, r.style == INLAY_STYLE)).collect();
+        assert_eq!(runs, vec![("let x", 0.0, false), (": i32", 50.0, true), (" = 1;", 100.0, false)]);
+        assert_eq!(frame.carets[0].x - g, 50.0, "the caret at the hint stays before it");
+        // A click on the hint lands at its offset; after it, on the text.
+        assert_eq!(v.hit_test(doc.rope(), g + 70.0, 5.0), 5);
+        assert_eq!(v.hit_test(doc.rope(), g + 110.0, 5.0), 6);
+        // The hint follows edits before it.
+        doc.apply_edits(vec![Edit::insert(0, "  ")]);
+        let frame = v.layout(doc.model(), doc.selections(), &Plain);
+        assert!(frame.lines[0].runs.iter().any(|r| r.style == INLAY_STYLE && r.x - g == 70.0));
     }
 }

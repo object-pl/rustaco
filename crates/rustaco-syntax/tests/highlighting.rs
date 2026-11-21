@@ -346,3 +346,24 @@ fn background_thread_highlights_the_current_version() {
         assert_eq!(format!("{:?}", reply.highlights), format!("{expected:?}"));
     }
 }
+
+#[test]
+fn symbols_for_an_outline() {
+    let src = "struct Point { x: i32 }\nimpl Point {\n    fn len(&self) -> i32 { 0 }\n}\nmod util {\n    pub fn helper() {}\n}\nconst MAX: u32 = 1;\n";
+    let doc = Document::new(src);
+    let mut syntax = Syntax::new(by_id("rust").unwrap()).unwrap();
+    syntax.update(doc.model());
+    let got: Vec<(&str, u32, usize)> =
+        syntax.symbols().iter().map(|s| (&src[s.name_bytes.clone()], s.kind, s.depth)).collect();
+    assert_eq!(
+        got,
+        vec![("Point", 22, 0), ("Point", 4, 0), ("len", 11, 1), ("util", 1, 0), ("helper", 11, 1), ("MAX", 13, 0)]
+    );
+
+    let py = "class A:\n    def m(self):\n        pass\n\ndef f():\n    pass\n";
+    let doc = Document::new(py);
+    let mut syntax = Syntax::new(by_id("python").unwrap()).unwrap();
+    syntax.update(doc.model());
+    let got: Vec<(&str, usize)> = syntax.symbols().iter().map(|s| (&py[s.name_bytes.clone()], s.depth)).collect();
+    assert_eq!(got, vec![("A", 0), ("m", 1), ("f", 0)]);
+}

@@ -17,7 +17,7 @@ use rustaco_core::{
     Searcher, Selection, Selections, Stickiness, TextModel, default_keymap, jetbrains_keymap, next_match, word_at,
 };
 use rustaco_syntax::{Colors, Style, Theme, ThemeRule, themes};
-use rustaco_view::{FrameLine, Metrics, Rect, StyleSpan, Styler, View, indent_fold_ranges};
+use rustaco_view::{FrameLine, INLAY_STYLE, Metrics, Rect, StyleSpan, Styler, View, indent_fold_ranges};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
@@ -214,6 +214,13 @@ pub fn widget_colors() -> Vec<String> {
     [colors.current_line, colors.foreground, colors.indent_guide_active, colors.background, colors.find_match]
         .map(|c| format!("#{:06x}", c >> 8))
         .to_vec()
+}
+
+/// The style id of a highlight name (`"function"`, `"variable.parameter"`, ...), for
+/// semantic tokens; names without a style get the closest broader one, or 0.
+#[wasm_bindgen(js_name = styleId)]
+pub fn style_id(name: &str) -> u32 {
+    rustaco_syntax::style_for_capture(name)
 }
 
 /// Selects a bundled theme: `"dark"`, `"light"` or `"high-contrast"`.
@@ -503,6 +510,8 @@ impl EditBatch {
 #[derive(Default)]
 struct ExternalHighlights {
     lines: std::collections::BTreeMap<usize, Vec<StyleSpan>>,
+    /// Semantic tokens from a provider, drawn over the syntax highlights.
+    semantic: std::collections::BTreeMap<usize, Vec<StyleSpan>>,
     /// Model version the line numbers refer to.
     version: u64,
 }
@@ -522,15 +531,20 @@ impl ExternalHighlights {
                     if old == 0 && new == 0 {
                         continue;
                     }
-                    let moved = self.lines.split_off(&(a + 1));
-                    for (line, spans) in moved {
-                        if line > a + old {
-                            self.lines.insert(line + new - old, spans);
+                    for map in [&mut self.lines, &mut self.semantic] {
+                        let moved = map.split_off(&(a + 1));
+                        for (line, spans) in moved {
+                            if line > a + old {
+                                map.insert(line + new - old, spans);
+                            }
                         }
                     }
                 }
             }
-            Err(_) => self.lines.clear(),
+            Err(_) => {
+                self.lines.clear();
+                self.semantic.clear();
+            }
         }
         self.version = model.version();
     }
@@ -538,8 +552,33 @@ impl ExternalHighlights {
 
 impl Styler for ExternalHighlights {
     fn spans(&self, line: usize) -> Vec<StyleSpan> {
-        self.lines.get(&line).cloned().unwrap_or_default()
+        let base = self.lines.get(&line).cloned().unwrap_or_default();
+        match self.semantic.get(&line) {
+            Some(over) => overlay_spans(&base, over),
+            None => base,
+        }
     }
+}
+
+/// `base` spans with `over` drawn on top: where they overlap, `over` wins. Both sorted and
+/// disjoint; so is the result.
+fn overlay_spans(base: &[StyleSpan], over: &[StyleSpan]) -> Vec<StyleSpan> {
+    let mut out: Vec<StyleSpan> = Vec::with_capacity(base.len() + over.len());
+    for b in base {
+        let mut start = b.start;
+        for o in over.iter().filter(|o| o.start < b.end && o.end > b.start) {
+            if o.start > start {
+                out.push(StyleSpan { start, end: o.start, style: b.style });
+            }
+            start = start.max(o.end);
+        }
+        if start < b.end {
+            out.push(StyleSpan { start, end: b.end, style: b.style });
+        }
+    }
+    out.extend_from_slice(over);
+    out.sort_by_key(|s| s.start);
+    out
 }
 
 #[derive(Clone, Copy)]
@@ -722,8 +761,8 @@ impl Editor {
     /// Adds highlights for another run of lines, as [`Editor::set_highlights`] takes them.
     #[wasm_bindgen(js_name = addHighlights)]
     pub fn add_highlights(&mut self, first_line: u32, end_line: u32, quads: &[u32]) {
-        // The quads describe the text as it is now.
-        self.highlights.version = self.model.borrow().version();
+        // The quads describe the text as it is now; semantic tokens move there first.
+        self.highlights.sync(&self.model.borrow());
         let lines = &mut self.highlights.lines;
         for line in first_line..end_line {
             lines.insert(line as usize, Vec::new());
@@ -1364,6 +1403,62 @@ impl Editor {
         self.edit(|ed| ed.apply_edits(edits));
     }
 
+    /// X of the first non-blank char of `line`, from the text area's left edge, for placing
+    /// widgets above a line's code.
+    #[wasm_bindgen(js_name = indentOfLine)]
+    pub fn indent_of_line(&mut self, line: u32) -> f64 {
+        let model = self.model.borrow();
+        let rope = model.rope();
+        let line = (line as usize).min(rope.len_lines() - 1);
+        let tab = model.options.tab_size.max(1);
+        let cells = rope
+            .line(line)
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .fold(0, |acc, c| if c == '\t' { acc + tab - acc % tab } else { acc + 1 });
+        (cells as f32 * self.view.metrics.char_width) as f64
+    }
+
+    /// Shows inlay hints: `labels[i]` before the char at `offsets[i]`.
+    #[wasm_bindgen(js_name = setInlayHints)]
+    pub fn set_inlay_hints(&mut self, offsets: &[u32], labels: Vec<String>) {
+        let model = self.model.borrow();
+        let hints = offsets.iter().zip(labels).map(|(&o, l)| (o as usize, l)).collect();
+        self.view.set_inlays(&model, hints);
+    }
+
+    /// Takes semantic tokens: triples of start and end char offsets and style id
+    /// ([`style_id`]), drawn over the syntax highlights until replaced.
+    #[wasm_bindgen(js_name = setSemanticTokens)]
+    pub fn set_semantic_tokens(&mut self, triples: &[u32]) {
+        let model = self.model.borrow();
+        let rope = model.rope();
+        let len = rope.len_chars();
+        let mut semantic: std::collections::BTreeMap<usize, Vec<StyleSpan>> = Default::default();
+        for t in triples.chunks_exact(3) {
+            let (start, end) = ((t[0] as usize).min(len), (t[1] as usize).min(len));
+            if start >= end {
+                continue;
+            }
+            // A token stays on its first line.
+            let line = rope.char_to_line(start);
+            let line_start = rope.line_to_char(line);
+            let line_end = line_start + rustaco_core::line_len(rope, line);
+            semantic.entry(line).or_default().push(StyleSpan {
+                start: start - line_start,
+                end: end.min(line_end) - line_start,
+                style: t[2],
+            });
+        }
+        for spans in semantic.values_mut() {
+            spans.sort_by_key(|s| s.start);
+            spans.dedup_by(|b, a| b.start < a.end);
+        }
+        // The syntax spans move to the current text first; the new tokens describe it.
+        self.highlights.sync(&model);
+        self.highlights.semantic = semantic;
+    }
+
     /// The word at the primary caret: [start, end] char offsets (equal when there is none).
     #[wasm_bindgen(js_name = wordAtCaret)]
     pub fn word_at_caret(&mut self) -> Vec<u32> {
@@ -1977,7 +2072,12 @@ impl Editor {
 fn draw_text(ctx: &CanvasRenderingContext2d, lines: &[FrameLine], font: &str, line_height: f32) {
     STYLES.with(|styles| {
         let styles = styles.borrow();
-        let style_of = |id: u32| styles.get(id as usize).unwrap_or(&styles[0]);
+        let inlay = CssStyle {
+            color: CHROME.with(|c| c.borrow().line_number.clone()),
+            font_prefix: "italic ",
+            underline: false,
+        };
+        let style_of = |id: u32| if id == INLAY_STYLE { &inlay } else { styles.get(id as usize).unwrap_or(&styles[0]) };
         let mut runs: Vec<(&str, u32, f64, f64)> = lines
             .iter()
             .flat_map(|line| {
