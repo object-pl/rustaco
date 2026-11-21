@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "playwright test"
+    "test": "playwright test --grep-invert @perf && playwright test --grep @perf --workers=1"
   },
   "devDependencies": {
     "@playwright/test": "^1.65.0"

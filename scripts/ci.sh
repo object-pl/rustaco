@@ -27,5 +27,5 @@ echo "== wasm build and size budget"
 
 if [ "$1" = "--e2e" ]; then
   echo "== browser tests"
-  (cd tests/e2e && npm ci && npx playwright test)
+  (cd tests/e2e && npm ci && npm test)
 fi
