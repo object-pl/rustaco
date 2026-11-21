@@ -2,7 +2,24 @@
 
 A code editor component written in Rust, MIT-licensed. It runs in the browser (WASM) and in native applications on one shared text core. Its feature scope matches Monaco: multiple cursors, syntax highlighting, LSP.
 
-Status: early. The text core, the layout layer, a browser frontend and tree-sitter highlighting for 18 languages work. The plan is in ROADMAP.md.
+Status: early, not yet published. The browser editor works: highlighting for 20 languages (17 through tree-sitter, 3 through TextMate grammars), multiple cursors, folding, word wrap, minimap, sticky scroll, find and replace, decorations, IME input and a screen reader mirror. LSP, the diff editor and the native frontend are still ahead; the plan is in ROADMAP.md.
+
+In a web page, after `./scripts/pack-web.sh` (the package lands in `target/npm/`):
+
+```js
+import { createEditor, setTheme } from 'rustaco';
+
+await setTheme('dark');
+const editor = await createEditor(document.getElementById('editor'), {
+  value: 'fn main() {}\n',
+  language: 'rust',
+  wordWrap: 'on',
+  minimap: { enabled: true },
+});
+editor.onDidChangeContent(() => console.log(editor.getValue()));
+```
+
+The editor module is about 230 KB gzipped; each language module (290 to 690 KB) loads the first time a model uses that language. The page needs `'wasm-unsafe-eval'` in `script-src` when it sets a Content Security Policy; inline scripts and styles are not needed. Types for the API are in `web/rustaco.d.ts`.
 
 ```
 cargo test

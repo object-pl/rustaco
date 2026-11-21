@@ -2,7 +2,16 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Done: phases 0 to 5 (all 2026-11-21). Next: phase 6.
+Done: phases 0 to 6 (all 2026-11-21). Next: phase 7.
+
+Phase 6 summary:
+- Input through `beforeinput` (typing, virtual keyboard deletes, undo and redo from the OS), with a textarea diff where it cannot be cancelled; IME composition replaces itself step by step in the model, underlined, and undoes as one step. Dead keys reach the editor either as a composition or as one composed char, and both paths are handled; no test drives real dead keys.
+- The hidden textarea mirrors the caret's line and selection with ARIA labels (VS Code's method); the high-contrast theme is from phase 2.
+- Clipboard: multi-cursor copies carry their pieces and paste back one per cursor; copy writes HTML with syntax colours.
+- Mouse: draggable scrollbars, auto-scroll past the edges, moving and copying text by drag, the browser's own context menu, middle-click paste on Linux.
+- Find widget with match count, case, whole word and regex toggles, and replace.
+- Packaging: `scripts/pack-web.sh` builds an npm package (ESM, hand-written TypeScript types in `web/rustaco.d.ts`, language modules as separate files); browser tests cover a strict CSP page and an editor inside Shadow DOM.
+- Not done: the manual screen reader check with NVDA and VoiceOver needs a person at the machine. Firefox ignores clipboard data in synthetic events, so the multi-cursor clipboard test runs in Chromium and WebKit only; middle-click paste has no automated test (the CI browsers do not run on Linux desktops with a primary selection).
 
 Phase 5 summary:
 - A height map (chunked per-line heights with prefix sums) holds every line's own height: rows times the line height plus view zones. Folds are taken out on top of it, so folding never rewrites it.

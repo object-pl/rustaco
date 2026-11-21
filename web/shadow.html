@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Rustaco inside Shadow DOM</title>
+  <style>html, body { margin: 0; height: 100%; } #host { position: absolute; inset: 0; }</style>
+</head>
+<body>
+  <div id="host"></div>
+  <script type="module">
+    import { createEditor } from './rustaco.js';
+    const shadow = document.getElementById('host').attachShadow({ mode: 'open' });
+    const root = document.createElement('div');
+    root.style.cssText = 'position:absolute;inset:0';
+    shadow.append(root);
+    window.editor = await createEditor(root, { value: 'one two one\n', language: '' });
+  </script>
+</body>
+</html>

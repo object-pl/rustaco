@@ -1,0 +1,27 @@
+{
+  "name": "rustaco",
+  "version": "0.1.0",
+  "description": "A code editor for the browser, written in Rust: syntax highlighting for 20 languages, multi-cursor editing, folding, minimap",
+  "license": "MIT",
+  "type": "module",
+  "main": "./rustaco.js",
+  "types": "./rustaco.d.ts",
+  "exports": {
+    ".": {
+      "types": "./rustaco.d.ts",
+      "default": "./rustaco.js"
+    }
+  },
+  "files": [
+    "rustaco.js",
+    "rustaco.d.ts",
+    "pkg/**/*.js",
+    "pkg/**/*.wasm",
+    "pkg/THIRD_PARTY.md",
+    "pkg/licenses/**",
+    "LICENSE",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "keywords": ["editor", "code-editor", "wasm", "syntax-highlighting", "tree-sitter"]
+}

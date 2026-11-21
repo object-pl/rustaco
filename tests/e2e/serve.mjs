@@ -5,7 +5,7 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../../web/', import.meta.url));
-const types = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm' };
+const types = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.css': 'text/css' };
 const port = Number(process.env.PORT || 47816);
 
 createServer(async (req, res) => {
