@@ -1,6 +1,6 @@
 //! Renderer-agnostic layout for the Rustaco editor.
 //!
-//! [`View`] turns a [`Document`] and a viewport into a [`Frame`]: positioned text
+//! [`View`] turns a [`TextModel`], one editor's selections and a viewport into a [`Frame`]: positioned text
 //! runs, selection rectangles, carets and line numbers. A frontend only draws the
 //! frame; it never measures text or walks the rope itself. Only visible lines and
 //! visible columns are laid out, so frame cost does not grow with file size.
@@ -14,7 +14,7 @@
 
 use std::ops::Range;
 
-use rustaco_core::{Document, Rope, char_to_position, line_len};
+use rustaco_core::{Rope, Selections, TextModel, char_to_position, line_len};
 use unicode_width::UnicodeWidthChar;
 
 /// Font measurements supplied by the frontend.
@@ -90,11 +90,13 @@ pub struct View {
     scroll_left: f32,
     /// Widest line laid out so far, in cells. Grows as the user scrolls; full scans are avoided.
     widest_cells: usize,
+    /// Tab size of the model at the last layout; used by hit testing and reveal.
+    tab_size: usize,
 }
 
 impl View {
     pub fn new(metrics: Metrics, width: f32, height: f32) -> Self {
-        Self { metrics, width, height, scroll_top: 0.0, scroll_left: 0.0, widest_cells: 0 }
+        Self { metrics, width, height, scroll_top: 0.0, scroll_left: 0.0, widest_cells: 0, tab_size: 4 }
     }
 
     pub fn scroll_top(&self) -> f32 {
@@ -171,7 +173,7 @@ impl View {
         }
 
         let cw = self.metrics.char_width;
-        let cells = visual_column(rope, p.line, p.column) as f32;
+        let cells = visual_column(rope, p.line, p.column, self.tab_size) as f32;
         self.widest_cells = self.widest_cells.max(cells as usize + 1);
         let text_width = self.width - self.gutter_width(rope);
         let margin = 4.0 * cw;
@@ -191,13 +193,15 @@ impl View {
     pub fn hit_test(&self, rope: &Rope, x: f32, y: f32) -> usize {
         let line = self.line_at_y(rope, y + self.scroll_top);
         let cells = (x - self.gutter_width(rope) + self.scroll_left) / self.metrics.char_width;
-        rope.line_to_char(line) + column_at_cells(rope, line, cells)
+        rope.line_to_char(line) + column_at_cells(rope, line, cells, self.tab_size)
     }
 
     // ---- layout ----
 
-    pub fn layout(&mut self, doc: &Document, styler: &dyn Styler) -> Frame {
-        let rope = doc.rope();
+    pub fn layout(&mut self, model: &TextModel, selections: &Selections, styler: &dyn Styler) -> Frame {
+        self.tab_size = model.options.tab_size.max(1);
+        let tab = self.tab_size;
+        let rope = model.rope();
         let Metrics { char_width: cw, .. } = self.metrics;
         let gutter = self.gutter_width(rope);
         let visible = self.visible_lines(rope);
@@ -211,23 +215,23 @@ impl View {
 
         for line in visible.clone() {
             let spans = styler.spans(line);
-            let (runs, cells) = layout_line(rope, line, &spans, first_cell..last_cell, &x_of);
+            let (runs, cells) = layout_line(rope, line, &spans, first_cell..last_cell, tab, &x_of);
             widest = widest.max(cells);
             frame.lines.push(FrameLine { line, y: y_of(line), height: self.line_height(line), runs });
         }
 
-        let primary = doc.selections().primary();
+        let primary = selections.primary();
         let primary_line = rope.char_to_line(primary.head);
         if visible.contains(&primary_line) && primary.is_empty() {
             frame.current_line =
                 Some(Rect { x: 0.0, y: y_of(primary_line), width: self.width, height: self.line_height(primary_line) });
         }
 
-        for sel in doc.selections().iter() {
+        for sel in selections.iter() {
             let head = char_to_position(rope, sel.head);
             if visible.contains(&head.line) {
                 frame.carets.push(Rect {
-                    x: x_of(visual_column(rope, head.line, head.column)),
+                    x: x_of(visual_column(rope, head.line, head.column, tab)),
                     y: y_of(head.line),
                     width: 2.0,
                     height: self.line_height(head.line),
@@ -240,8 +244,8 @@ impl View {
             for line in start.line.max(visible.start)..=end.line.min(visible.end - 1) {
                 let from = if line == start.line { start.column } else { 0 };
                 let (to, newline) = if line == end.line { (end.column, false) } else { (line_len(rope, line), true) };
-                let x0 = x_of(visual_column(rope, line, from));
-                let x1 = x_of(visual_column(rope, line, to)) + if newline { cw * 0.5 } else { 0.0 };
+                let x0 = x_of(visual_column(rope, line, from, tab));
+                let x1 = x_of(visual_column(rope, line, to, tab)) + if newline { cw * 0.5 } else { 0.0 };
                 frame.selections.push(Rect { x: x0, y: y_of(line), width: x1 - x0, height: self.line_height(line) });
             }
         }
@@ -250,23 +254,21 @@ impl View {
     }
 }
 
-const TAB_SIZE: usize = 4;
-
-fn cell_width(c: char, at_cell: usize) -> usize {
-    if c == '\t' { TAB_SIZE - at_cell % TAB_SIZE } else { c.width().unwrap_or(1) }
+fn cell_width(c: char, at_cell: usize, tab: usize) -> usize {
+    if c == '\t' { tab - at_cell % tab } else { c.width().unwrap_or(1) }
 }
 
 /// Cells from line start to char column `column`, with tabs and wide chars expanded.
-pub fn visual_column(rope: &Rope, line: usize, column: usize) -> usize {
-    rope.line(line).chars().take(column).fold(0, |cells, c| cells + cell_width(c, cells))
+pub fn visual_column(rope: &Rope, line: usize, column: usize, tab: usize) -> usize {
+    rope.line(line).chars().take(column).fold(0, |cells, c| cells + cell_width(c, cells, tab))
 }
 
 /// Char column whose boundary is nearest to `cells` (fractional) on `line`.
-pub fn column_at_cells(rope: &Rope, line: usize, cells: f32) -> usize {
+pub fn column_at_cells(rope: &Rope, line: usize, cells: f32, tab: usize) -> usize {
     let len = line_len(rope, line);
     let mut acc = 0usize;
     for (i, c) in rope.line(line).chars().take(len).enumerate() {
-        let w = cell_width(c, acc);
+        let w = cell_width(c, acc, tab);
         if cells < acc as f32 + w as f32 / 2.0 {
             return i;
         }
@@ -282,6 +284,7 @@ fn layout_line(
     line: usize,
     spans: &[StyleSpan],
     window: Range<usize>,
+    tab: usize,
     x_of: &dyn Fn(usize) -> f32,
 ) -> (Vec<TextRun>, usize) {
     let len = line_len(rope, line);
@@ -289,7 +292,7 @@ fn layout_line(
     let mut span_idx = 0;
     let mut acc = 0usize;
     for (col, c) in rope.line(line).chars().take(len).enumerate() {
-        let w = cell_width(c, acc);
+        let w = cell_width(c, acc, tab);
         if acc >= window.end {
             // Past the visible area: the rest of the line only matters for its width,
             // which is approximated by the char count to keep long lines cheap.
@@ -319,7 +322,7 @@ fn layout_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rustaco_core::{Selection, Selections};
+    use rustaco_core::{Document, Selection, Selections};
 
     fn view() -> View {
         View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 100.0)
@@ -328,11 +331,12 @@ mod tests {
     #[test]
     fn tabs_and_wide_chars_take_cells() {
         let rope = Rope::from_str("\tab\u{4E2D}c");
-        assert_eq!(visual_column(&rope, 0, 1), 4);
-        assert_eq!(visual_column(&rope, 0, 4), 8);
-        assert_eq!(column_at_cells(&rope, 0, 1.9), 0);
-        assert_eq!(column_at_cells(&rope, 0, 2.1), 1);
-        assert_eq!(column_at_cells(&rope, 0, 99.0), 5);
+        assert_eq!(visual_column(&rope, 0, 1, 4), 4);
+        assert_eq!(visual_column(&rope, 0, 4, 4), 8);
+        assert_eq!(visual_column(&rope, 0, 1, 2), 2);
+        assert_eq!(column_at_cells(&rope, 0, 1.9, 4), 0);
+        assert_eq!(column_at_cells(&rope, 0, 2.1, 4), 1);
+        assert_eq!(column_at_cells(&rope, 0, 99.0, 4), 5);
     }
 
     #[test]
@@ -341,7 +345,7 @@ mod tests {
         let doc = Document::new(&text);
         let mut v = view();
         v.scroll_to(doc.rope(), 400.0, 0.0);
-        let frame = v.layout(&doc, &Plain);
+        let frame = v.layout(doc.model(), doc.selections(), &Plain);
         assert_eq!(frame.lines.first().map(|l| l.line), Some(20));
         assert_eq!(frame.lines.len(), 6);
         assert_eq!(frame.lines[0].y, 0.0);
@@ -357,7 +361,7 @@ mod tests {
             }
         }
         let doc = Document::new("fn\tx");
-        let frame = view().layout(&doc, &Kw);
+        let frame = view().layout(doc.model(), doc.selections(), &Kw);
         let runs = &frame.lines[0].runs;
         assert_eq!(runs.len(), 2);
         assert_eq!((runs[0].text.as_str(), runs[0].style), ("fn", 7));
@@ -380,7 +384,7 @@ mod tests {
     fn multi_line_selection_rects() {
         let mut doc = Document::new("abc\nde\nf");
         doc.set_selections(Selections::single(Selection::new(1, 8)));
-        let frame = view().layout(&doc, &Plain);
+        let frame = view().layout(doc.model(), doc.selections(), &Plain);
         assert_eq!(frame.selections.len(), 3);
         assert_eq!(frame.carets.len(), 1);
         assert!(frame.current_line.is_none());

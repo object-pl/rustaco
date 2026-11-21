@@ -53,7 +53,7 @@ fn benches(c: &mut Criterion) {
     c.bench_function("layout a frame at the middle of 1M lines", |b| {
         let mut v = view();
         v.scroll_to(base.rope(), v.line_top(LINES / 2), 0.0);
-        b.iter(|| v.layout(black_box(&base), &Plain))
+        b.iter(|| v.layout(black_box(base.model()), base.selections(), &Plain))
     });
 
     c.bench_function("hit test", |b| {

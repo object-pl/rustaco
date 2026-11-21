@@ -4,7 +4,7 @@
 
 | Crate | Status | Contents |
 |---|---|---|
-| `rustaco-core` | v0 | Rope buffer (ropey), multi-cursor selections, change sets, undo/redo with typing grouping, editing commands, word movement, clipboard, edit events. No UI, no I/O, builds for `wasm32-unknown-unknown`. |
+| `rustaco-core` | v0 | `TextModel` (rope buffer, version, undo history, change log) shared by several editors, per-editor `Cursors`, editing commands through `Editor`, `Document` for the single-editor case. Multi-cursor selections, change sets, undo grouping, word movement, clipboard, edit events. No UI, no I/O, builds for `wasm32-unknown-unknown`. |
 | `rustaco-view` | v0 | Renderer-agnostic layout: viewport, scrolling, visual columns with tabs and wide chars, hit testing, display list (text runs, carets, selection rects). Lays out visible lines and visible columns only. |
 | `rustaco-web` | v0 | `wasm-bindgen` frontend drawing on a 2D canvas. `web/rustaco.js` forwards DOM events; keyboard input goes through a hidden `textarea`, so IME and dead keys work. |
 | `rustaco-syntax` | planned | Incremental tree-sitter parsing driven by `EditEvent`, highlight queries feeding `rustaco_view::Styler`, bracket matching, indentation hints. |
@@ -15,10 +15,13 @@
 
 ## Rules for the core
 
+- A `TextModel` holds the text and the undo history; each editor holds its own `Cursors`. The model keeps no references to editors or other consumers. They read its change log by version (`changes_since`, `events_since`) and catch up when they next need the text; a consumer more than 1024 change sets behind gets `Stale` and resyncs from the full text.
+- Undo and redo act on the model, whichever editor triggers them. The editor that made the change gets its selections back; other editors' cursors follow the text.
+- A cursor at another editor's insertion point stays before the inserted text.
 - Text is addressed by char offset. UTF-16 positions (LSP, JS) and bytes/points (tree-sitter) are converted in `position.rs` and nowhere else.
-- Every text change goes through `ChangeSet`. The document emits one `EditEvent` per edit, last edit first, in char, byte, point and UTF-16 units. LSP `didChange` and `Tree::edit` consume them without seeing the old text.
+- Every text change goes through `ChangeSet` and `TextModel::apply`. Each applied change set logs one `EditEvent` per edit, last edit first, in char, byte, point and UTF-16 units. LSP `didChange` and `Tree::edit` consume them without seeing the old text.
 - `version` increases with every applied change set, including undo and redo.
-- Recognised line terminators are `\n`, `\r\n` and `\r`. `\r\n` is a single step for cursor movement and deletion.
+- Recognised line terminators are `\n`, `\r\n` and `\r`. `\r\n` is a single step for cursor movement and deletion. No cursor or edit boundary stays between `\r` and `\n`: such a position has no line/column form, so it could not be reported to LSP servers. Edits there are widened to the whole pair with the text adjusted, so the result is the same.
 
 ## Rules for the view
 

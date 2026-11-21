@@ -2,7 +2,7 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Current state (v0): text core, layout for monospace fonts with uniform line height, a canvas frontend in the browser. 28 unit tests, no CI.
+Done: phase 0 (2026-11-21) and phase 1 (2026-11-21). Next: phase 2.
 
 ## Decisions
 

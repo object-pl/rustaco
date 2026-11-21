@@ -1,17 +1,67 @@
 // DOM glue for the Rustaco editor. Rust draws and edits; this file forwards browser events.
-import init, { Editor } from './pkg/rustaco_web.js';
+import init, { Editor, Model } from './pkg/rustaco_web.js';
 
 const BLINK_MS = 530;
 
+let ready;
+function load() {
+  ready ??= init().then(() => document.fonts.ready);
+  return ready;
+}
+
+/** Creates a text model that several editors can show. */
+export async function createModel(value = '') {
+  await load();
+  return new RustacoModel(value);
+}
+
+/**
+ * Creates an editor in `container`. Pass `model` to show an existing model
+ * (for example in a split view), or `value` to start a new one.
+ */
 export async function createEditor(container, options = {}) {
-  await init();
-  await document.fonts.ready;
+  await load();
   return new RustacoEditor(container, options);
+}
+
+export class RustacoModel {
+  constructor(value = '') {
+    this.core = new Model(value);
+    this.editors = new Set();
+    this.listeners = new Set();
+    this.version = this.core.version();
+  }
+
+  getValue() { return this.core.getValue(); }
+
+  /** Replaces the text and clears the undo history. */
+  setValue(text) {
+    this.core.setValue(text);
+    for (const e of this.editors) e.core.scroll_to_top();
+    this.changed();
+  }
+
+  /** Calls `fn` after every text change. Returns a function that removes the listener. */
+  onDidChangeContent(fn) {
+    this.listeners.add(fn);
+    return () => this.listeners.delete(fn);
+  }
+
+  /** Redraws every editor showing this model and fires listeners if the text changed. */
+  changed() {
+    for (const e of this.editors) e.schedule();
+    const v = this.core.version();
+    if (v !== this.version) {
+      this.version = v;
+      for (const fn of this.listeners) fn();
+    }
+  }
 }
 
 export class RustacoEditor {
   constructor(container, {
     value = '',
+    model = null,
     fontFamily = '"Cascadia Code", Consolas, "Courier New", monospace',
     fontSize = 14,
   } = {}) {
@@ -28,9 +78,9 @@ export class RustacoEditor {
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
     container.append(this.canvas, this.input);
 
-    this.core = new Editor(this.canvas, value, fontFamily, fontSize);
-    this.listeners = new Set();
-    this.version = this.core.version();
+    this.model = model ?? new RustacoModel(value);
+    this.core = new Editor(this.canvas, this.model.core, fontFamily, fontSize);
+    this.model.editors.add(this);
     this.caretOn = true;
     this.focused = false;
     this.composing = false;
@@ -41,8 +91,9 @@ export class RustacoEditor {
     this.#resize();
   }
 
-  getValue() { return this.core.getValue(); }
-  setValue(text) { this.core.setValue(text); this.#changed(); }
+  getModel() { return this.model; }
+  getValue() { return this.model.getValue(); }
+  setValue(text) { this.model.setValue(text); }
   focus() { this.input.focus(); }
 
   /** Selections as `{ anchor, head }` char offsets, the primary selection first. */
@@ -56,19 +107,25 @@ export class RustacoEditor {
   /** Replaces the selections; the first one becomes primary. */
   setSelections(selections) {
     this.core.set_selections(Uint32Array.from(selections.flatMap((s) => [s.anchor, s.head])));
-    this.#schedule();
+    this.schedule();
   }
 
-  /** Calls `fn` after every text change. Returns a function that removes the listener. */
-  onDidChangeContent(fn) {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
+  /** Calls `fn` after every text change, from this or any other editor on the model. */
+  onDidChangeContent(fn) { return this.model.onDidChangeContent(fn); }
+
+  /** Detaches the editor from its model and removes its DOM. */
+  dispose() {
+    this.model.editors.delete(this);
+    clearInterval(this.blink);
+    this.canvas.remove();
+    this.input.remove();
+    this.core.free();
   }
 
   #resize() {
     const r = this.container.getBoundingClientRect();
     this.core.resize(r.width, r.height, window.devicePixelRatio || 1);
-    this.#schedule();
+    this.schedule();
   }
 
   #point(e) {
@@ -100,7 +157,7 @@ export class RustacoEditor {
       const unit = e.deltaMode === 1 ? core.line_height() : e.deltaMode === 2 ? canvas.clientHeight : 1;
       const [dx, dy] = e.shiftKey && !e.deltaX ? [e.deltaY, 0] : [e.deltaX, e.deltaY];
       core.wheel(dx * unit, dy * unit);
-      this.#schedule();
+      this.schedule();
     }, { passive: false });
 
     input.addEventListener('keydown', (e) => {
@@ -136,26 +193,21 @@ export class RustacoEditor {
     });
 
     input.addEventListener('focus', () => { this.focused = true; this.#restartBlink(); });
-    input.addEventListener('blur', () => { this.focused = false; clearInterval(this.blink); this.#schedule(); });
+    input.addEventListener('blur', () => { this.focused = false; clearInterval(this.blink); this.schedule(); });
   }
 
   #restartBlink() {
     clearInterval(this.blink);
     this.caretOn = true;
-    this.blink = setInterval(() => { this.caretOn = !this.caretOn; this.#schedule(); }, BLINK_MS);
+    this.blink = setInterval(() => { this.caretOn = !this.caretOn; this.schedule(); }, BLINK_MS);
   }
 
   #changed() {
     if (this.focused) this.#restartBlink();
-    this.#schedule();
-    const v = this.core.version();
-    if (v !== this.version) {
-      this.version = v;
-      for (const fn of this.listeners) fn();
-    }
+    this.model.changed();
   }
 
-  #schedule() {
+  schedule() {
     if (this.frame) return;
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;

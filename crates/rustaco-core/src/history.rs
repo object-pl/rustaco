@@ -1,6 +1,7 @@
 //! Undo/redo history with grouping of consecutive typing.
 
 use crate::change::ChangeSet;
+use crate::editor::EditorId;
 use crate::selection::Selections;
 
 /// One committed change with what is needed to revert it.
@@ -10,6 +11,8 @@ pub struct Transaction {
     pub inverse: ChangeSet,
     pub before: Selections,
     pub after: Selections,
+    /// The editor that made the change; its selections are restored on undo.
+    pub origin: EditorId,
 }
 
 /// Decides whether a transaction may join the previous undo step.
@@ -53,7 +56,12 @@ impl History {
     pub fn push(&mut self, tx: Transaction, kind: EditKind) {
         self.redo.clear();
         match self.undo.last_mut() {
-            Some(step) if self.group_open && kind != EditKind::Other && step.kind == kind => {
+            Some(step)
+                if self.group_open
+                    && kind != EditKind::Other
+                    && step.kind == kind
+                    && step.transactions.last().is_some_and(|t| t.origin == tx.origin) =>
+            {
                 step.transactions.push(tx);
             }
             _ => {

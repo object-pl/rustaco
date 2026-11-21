@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Rustaco: split view</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #1e1e1e; }
+    main { position: absolute; inset: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; background: #333; }
+    main > div { position: relative; background: #1e1e1e; }
+  </style>
+</head>
+<body>
+  <main><div id="pane-left"></div><div id="pane-right"></div></main>
+  <script type="module">
+    import { createModel, createEditor } from './rustaco.js';
+
+    const text = Array.from({ length: 200 }, (_, i) => `line ${i + 1}: both editors show this model`).join('\n');
+    const model = await createModel(text);
+    window.model = model;
+    window.left = await createEditor(document.getElementById("pane-left"), { model });
+    window.right = await createEditor(document.getElementById("pane-right"), { model });
+    window.left.focus();
+  </script>
+</body>
+</html>
