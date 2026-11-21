@@ -1,0 +1,5 @@
+  1: #!/bin/bash=comment
+  2: set=function  -e=constant
+  3: for=keyword  f=property  in=keyword  do=keyword
+  4: echo=function  "file: =string  $=operator  f=property  "=string  # list=comment
+  5: done=keyword

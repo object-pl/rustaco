@@ -1,0 +1,7 @@
+  1: import=keyword  {=punctuation.bracket  readFile=variable  }=punctuation.bracket  from=keyword  "node:fs/promises"=string  ;=punctuation.delimiter
+  2: 
+  3: // Load the config file.=comment
+  4: export=keyword  async=keyword  function=keyword  load=function  (=punctuation.bracket  path=variable  )=punctuation.bracket  {=punctuation.bracket
+  5: const=keyword  text=variable  ==operator  await=keyword  readFile=function  (=punctuation.bracket  path=variable  ,=punctuation.delimiter  "utf8"=string  )=punctuation.bracket  ;=punctuation.delimiter
+  6: return=keyword  JSON=constant  .=punctuation.delimiter  parse=function.method  (=punctuation.bracket  text=variable  )=punctuation.bracket  ??=operator  {=punctuation.bracket  retries=property  3=number  ,=punctuation.delimiter  pattern=property  /=operator  ^[a-z]+$=string.special  /=operator  i=string.special  }=punctuation.bracket  ;=punctuation.delimiter
+  7: }=punctuation.bracket

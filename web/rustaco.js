@@ -45,8 +45,10 @@ function loadPack(pack) {
 const editors = new Set();
 
 /**
- * Sets the theme for every editor on the page: `"dark"`, `"light"`, or a VS Code colour
- * theme object (the parsed JSON of a `*-color-theme.json` file, `tokenColors` part).
+ * Sets the theme for every editor on the page: `"dark"`, `"light"`, `"high-contrast"`, or a
+ * VS Code colour theme object (the parsed JSON of a `*-color-theme.json` file). From a VS Code
+ * theme the editor reads `tokenColors`, the editor surface entries of `colors`
+ * (`editor.background`, `editor.selectionBackground`, ...) and `type` for the defaults.
  */
 export async function setTheme(theme) {
   await load();
@@ -76,7 +78,12 @@ export async function setTheme(theme) {
         flags.push(f);
       }
     }
-    setThemeRules(selectors.join('\n'), Uint32Array.from(foregrounds), Uint8Array.from(flags));
+    const type = String(theme.type ?? 'dark');
+    const base = type.startsWith('hc') ? 'high-contrast' : type === 'light' ? 'light' : 'dark';
+    const colorKeys = Object.keys(theme.colors ?? {});
+    const colorValues = colorKeys.map((k) => parseColor(theme.colors[k]));
+    setThemeRules(base, selectors.join('\n'), Uint32Array.from(foregrounds), Uint8Array.from(flags),
+      colorKeys.join('\n'), Uint32Array.from(colorValues));
   }
   for (const e of editors) e.schedule();
 }

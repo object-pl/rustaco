@@ -1,0 +1,7 @@
+  1: <!doctype html=constant  >=punctuation.bracket
+  2: <=punctuation.bracket  html=tag  lang=attribute  en=string  >=punctuation.bracket
+  3: <=punctuation.bracket  body=tag  class=attribute  main=string  >=punctuation.bracket
+  4: <=punctuation.bracket  script=tag  >=punctuation.bracket  const=keyword  n=variable  ==operator  42=number  ;=punctuation.delimiter  </=punctuation.bracket  script=tag  >=punctuation.bracket
+  5: <=punctuation.bracket  style=tag  >=punctuation.bracket  .=punctuation.delimiter  main=property  {=punctuation.bracket  color=property  :=punctuation.delimiter  ;=punctuation.delimiter  }</=punctuation.bracket  style=tag  >=punctuation.bracket
+  6: </=punctuation.bracket  body=tag  >=punctuation.bracket
+  7: </=punctuation.bracket  html=tag  >=punctuation.bracket

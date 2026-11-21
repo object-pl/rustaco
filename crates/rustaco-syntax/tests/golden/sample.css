@@ -1,0 +1,6 @@
+@media (max-width: 600px) {
+  .card > h1:hover {
+    color: #ff8800;
+    margin: 0 2px;
+  }
+}

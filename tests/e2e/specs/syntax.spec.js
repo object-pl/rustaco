@@ -157,3 +157,26 @@ test('SQL, Kotlin and Dockerfile are coloured by the TextMate module', async ({ 
     expect(await colorAt(page, 0)).not.toBe(plainText);
   }
 });
+
+test('themes change the editor surface and token colours', async ({ page }) => {
+  await open(page, 'fn main() {}', 'rust');
+  const background = () => page.evaluate(() => {
+    const e = window.editor;
+    e.core.render(false);
+    const d = e.canvas.getContext('2d').getImageData(e.canvas.width - 40, e.canvas.height - 40, 1, 1).data;
+    return `${d[0]},${d[1]},${d[2]}`;
+  });
+  expect(await background()).toBe('30,30,30');
+  await page.evaluate(() => window.rustacoSetTheme('light'));
+  expect(await background()).toBe('255,255,255');
+  await page.evaluate(() => window.rustacoSetTheme('high-contrast'));
+  expect(await background()).toBe('0,0,0');
+  await page.evaluate(() => window.rustacoSetTheme({
+    type: 'dark',
+    colors: { 'editor.background': '#102030' },
+    tokenColors: [{ scope: 'keyword', settings: { foreground: '#ff0000' } }],
+  }));
+  expect(await background()).toBe('16,32,48');
+  expect(await colorAt(page, 0)).toBe('255,0,0');
+  await page.evaluate(() => window.rustacoSetTheme('dark'));
+});

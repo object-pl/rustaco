@@ -1,0 +1,4 @@
+  1: # build stage=comment
+  2: FROM=keyword  AS=keyword
+  3: WORKDIR=keyword
+  4: RUN=keyword  "built"=string

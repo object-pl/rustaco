@@ -23,9 +23,90 @@ pub struct ThemeRule {
     pub style: Style,
 }
 
+/// Colours of the editor surface, `0xRRGGBBAA`. Named after the VS Code theme `colors`
+/// keys they are read from (see [`Colors::set`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Colors {
+    pub background: u32,
+    pub foreground: u32,
+    pub selection: u32,
+    pub current_line: u32,
+    pub caret: u32,
+    pub line_number: u32,
+    pub line_number_active: u32,
+    pub gutter: u32,
+    pub scrollbar: u32,
+}
+
+impl Colors {
+    pub const DARK: Colors = Colors {
+        background: 0x1e1e1eff,
+        foreground: 0xd4d4d4ff,
+        selection: 0x264f78ff,
+        current_line: 0x2a2d2eff,
+        caret: 0xaeafadff,
+        line_number: 0x6e7681ff,
+        line_number_active: 0xccccccff,
+        gutter: 0x1e1e1eff,
+        scrollbar: 0x79797966,
+    };
+
+    pub const LIGHT: Colors = Colors {
+        background: 0xffffffff,
+        foreground: 0x000000ff,
+        selection: 0xadd6ffff,
+        current_line: 0xf0f0f0ff,
+        caret: 0x000000ff,
+        line_number: 0x6e7681ff,
+        line_number_active: 0x171184ff,
+        gutter: 0xffffffff,
+        scrollbar: 0x64646466,
+    };
+
+    /// Black background, white text, and a selection and current line that stand out
+    /// without hiding the text under them.
+    pub const HIGH_CONTRAST: Colors = Colors {
+        background: 0x000000ff,
+        foreground: 0xffffffff,
+        selection: 0xffffff59,
+        current_line: 0xffffff1f,
+        caret: 0xffffffff,
+        line_number: 0xffffffff,
+        line_number_active: 0xf38518ff,
+        gutter: 0x000000ff,
+        scrollbar: 0x6fc3dfcc,
+    };
+
+    /// Sets the colour a VS Code theme `colors` key names. Returns false for keys the editor
+    /// does not use.
+    pub fn set(&mut self, key: &str, rgba: u32) -> bool {
+        let field = match key {
+            "editor.background" => &mut self.background,
+            "editor.foreground" => &mut self.foreground,
+            "editor.selectionBackground" => &mut self.selection,
+            "editor.lineHighlightBackground" => &mut self.current_line,
+            "editorCursor.foreground" => &mut self.caret,
+            "editorLineNumber.foreground" => &mut self.line_number,
+            "editorLineNumber.activeForeground" => &mut self.line_number_active,
+            "editorGutter.background" => &mut self.gutter,
+            "scrollbarSlider.background" => &mut self.scrollbar,
+            _ => return false,
+        };
+        *field = rgba;
+        true
+    }
+}
+
+impl Default for Colors {
+    fn default() -> Self {
+        Colors::DARK
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Theme {
     pub rules: Vec<ThemeRule>,
+    pub colors: Colors,
 }
 
 impl Theme {
@@ -90,8 +171,10 @@ mod tests {
     fn most_specific_selector_wins_per_property() {
         let mut italic = rule("comment", 0x6a9955ff);
         italic.style.italic = Some(true);
-        let theme =
-            Theme { rules: vec![italic, rule("comment.block.documentation", 0x608b4eff), rule("keyword", 0x569cd6ff)] };
+        let theme = Theme {
+            rules: vec![italic, rule("comment.block.documentation", 0x608b4eff), rule("keyword", 0x569cd6ff)],
+            colors: Colors::DARK,
+        };
         let doc = theme.resolve(&["comment.block.documentation", "comment"]);
         assert_eq!(doc.foreground, Some(0x608b4eff));
         assert_eq!(doc.italic, Some(true), "italic inherited from the less specific rule");
@@ -101,7 +184,7 @@ mod tests {
 
     #[test]
     fn falls_back_to_the_next_scope() {
-        let theme = Theme { rules: vec![rule("entity.name.function", 0xdcdcaaff)] };
+        let theme = Theme { rules: vec![rule("entity.name.function", 0xdcdcaaff)], colors: Colors::DARK };
         let table = theme.style_table();
         let method = style_for_capture("function.method") as usize;
         assert_eq!(table[method].foreground, Some(0xdcdcaaff));

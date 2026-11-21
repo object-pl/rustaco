@@ -1,0 +1,6 @@
+  1: data class=keyword  Point=type  (=punctuation  val=keyword.storage  x=variable.parameter  :=keyword.operator  Int=type  ,=punctuation.delimiter  val=keyword.storage  y=variable.parameter  :=keyword.operator  Int=type  )=punctuation
+  2: 
+  3: fun=keyword  main=function  ()=punctuation  {=punctuation
+  4: val=keyword.storage  ==keyword.operator  Point=type  (=punctuation  1=number  ,=punctuation.delimiter  2=number  )=punctuation
+  5: println=function.builtin  (=punctuation  "point: $p"=string  )=punctuation
+  6: }=punctuation

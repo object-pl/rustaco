@@ -1,0 +1,10 @@
+  1: package=keyword  demo=variable
+  2: 
+  3: public=keyword  class=keyword  Greeter=type
+  4: private=keyword  final=keyword  String=type  name=variable
+  5: 
+  6: public=keyword  Greeter=type  String=type  name=variable  this=variable.builtin  name=variable  name=variable
+  7: 
+  8: @=operator  Override=attribute
+  9: public=keyword  String=type  toString=function.method  return=keyword  "Hi "=string  name=variable
+ 10: 

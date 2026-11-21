@@ -37,7 +37,7 @@ The language module receives edits as data (`Model.editsSince`: nine numbers per
 
 tree-sitter's incremental reparse walks the top-level nodes of the file, so its cost grows with their number: about 30 ms for 25,000 Rust functions, 500 ms for 100,000 top-level statements. Parsing therefore runs in slices: each frame gives the module 4 ms, a halted parse resumes on the next frame, and until it finishes the editor highlights from the previous tree shifted by the edits. Measured per keystroke in a 100,000-line Rust file, Chromium: parse 3.8 ms (the budget), highlight 2.3 ms, drawing 2.0 ms, the rest under 0.5 ms; Firefox is about 30% slower.
 
-Pattern priority: when several patterns capture the same node, the later pattern in the query wins. The bundled queries start with generic captures (`(identifier) @variable`) and refine them further down.
+Pattern priority: when several patterns capture the same node, the more specific pattern wins, counted as the nodes and predicates the pattern requires; between equally specific patterns the later one wins. Neither plain order fits the bundled queries: Python lists a method pattern before a property pattern for the same node but its generic `(identifier) @variable` first, and Go puts its generic captures after the specific ones.
 
 ## Performance
 

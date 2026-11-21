@@ -1,0 +1,6 @@
+  1: 
+  2: "name"=string.special.key  "example"=string
+  3: "version"=string.special.key  3=number
+  4: "private"=string.special.key  true=constant.builtin
+  5: "tags"=string.special.key  "a"=string  "b"=string  null=constant.builtin
+  6: 

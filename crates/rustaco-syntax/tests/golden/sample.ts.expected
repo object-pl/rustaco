@@ -1,0 +1,8 @@
+  1: interface=keyword  User=type  {=punctuation.bracket
+  2: id=property  number=type.builtin  ;=punctuation.delimiter
+  3: name=property  string=type.builtin  ;=punctuation.delimiter
+  4: }=punctuation.bracket
+  5: 
+  6: export=keyword  function=keyword  greet=function  (=punctuation.bracket  user=variable.parameter  User=type  )=punctuation.bracket  string=type.builtin  {=punctuation.bracket
+  7: return=keyword  `Hello, =string  ${=punctuation.special  user=variable  .=punctuation.delimiter  name=property  }=punctuation.special  `=string  ;=punctuation.delimiter
+  8: }=punctuation.bracket

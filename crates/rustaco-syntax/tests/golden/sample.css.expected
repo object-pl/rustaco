@@ -1,0 +1,6 @@
+  1: @media=keyword  (=punctuation.bracket  max-width=property  :=punctuation.delimiter  600=number  px=type  )=punctuation.bracket  {=punctuation.bracket
+  2: .=punctuation.delimiter  card=property  >=operator  h1=tag  :=punctuation.delimiter  hover=attribute  {=punctuation.bracket
+  3: color=property  :=punctuation.delimiter  #=punctuation.delimiter  ff8800=string.special  ;=punctuation.delimiter
+  4: margin=property  :=punctuation.delimiter  0=number  2=number  px=type  ;=punctuation.delimiter
+  5: }=punctuation.bracket
+  6: }=punctuation.bracket

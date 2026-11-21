@@ -11,56 +11,71 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rustaco_core::{Cursors, Editor as Commands, EditorId, Rope, Selection, Selections, TextModel, word_at};
-use rustaco_syntax::{Style, Theme, ThemeRule, themes};
+use rustaco_syntax::{Colors, Style, Theme, ThemeRule, themes};
 use rustaco_view::{Metrics, Rect, StyleSpan, Styler, View};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+/// Editor surface colours as CSS strings, from the current theme.
+#[derive(Clone)]
 struct Chrome {
-    background: &'static str,
-    gutter: &'static str,
-    line_number: &'static str,
-    line_number_active: &'static str,
-    text: &'static str,
-    selection: &'static str,
-    current_line: &'static str,
-    caret: &'static str,
-    scrollbar: &'static str,
+    background: String,
+    gutter: String,
+    line_number: String,
+    line_number_active: String,
+    selection: String,
+    current_line: String,
+    caret: String,
+    scrollbar: String,
 }
 
-const DARK: Chrome = Chrome {
-    background: "#1e1e1e",
-    gutter: "#1e1e1e",
-    line_number: "#6e7681",
-    line_number_active: "#cccccc",
-    text: "#d4d4d4",
-    selection: "#264f78",
-    current_line: "#2a2d2e",
-    caret: "#aeafad",
-    scrollbar: "rgba(121,121,121,0.4)",
-};
+fn css(rgba: u32) -> String {
+    format!("#{rgba:08x}")
+}
+
+impl Chrome {
+    fn from(c: &Colors) -> Self {
+        Chrome {
+            background: css(c.background),
+            gutter: css(c.gutter),
+            line_number: css(c.line_number),
+            line_number_active: css(c.line_number_active),
+            selection: css(c.selection),
+            current_line: css(c.current_line),
+            caret: css(c.caret),
+            scrollbar: css(c.scrollbar),
+        }
+    }
+}
 
 #[wasm_bindgen(inline_js = "
 export function draw_runs(ctx, text, ops, colors, fonts) {
   const c = colors.split('\\n'), f = fonts.split('\\n');
   let font = -1, color = -1;
-  for (let i = 0; i < ops.length; i += 6) {
+  for (let i = 0; i < ops.length; i += 7) {
     if (ops[i + 5] !== font) { font = ops[i + 5]; ctx.font = f[font]; }
     if (ops[i + 4] !== color) { color = ops[i + 4]; ctx.fillStyle = c[color]; }
-    ctx.fillText(text.substring(ops[i + 2], ops[i + 3]), ops[i], ops[i + 1]);
+    const run = text.substring(ops[i + 2], ops[i + 3]);
+    ctx.fillText(run, ops[i], ops[i + 1]);
+    if (ops[i + 6] > 0) {
+      ctx.fillRect(ops[i], ops[i + 1] + ops[i + 6], ctx.measureText(run).width, 1);
+    }
   }
 }")]
 extern "C" {
-    /// Draws text runs. `ops` holds six numbers per run: x, y, start and end of the run in
-    /// `text` (UTF-16 units), colour index and font index into the newline-separated lists.
+    /// Draws text runs. `ops` holds seven numbers per run: x, y, start and end of the run in
+    /// `text` (UTF-16 units), colour index and font index into the newline-separated lists,
+    /// and the underline offset below the text's middle (0 for no underline).
     fn draw_runs(ctx: &CanvasRenderingContext2d, text: &str, ops: &[f64], colors: &str, fonts: &str);
 }
 
 thread_local! {
     static NEXT_EDITOR_ID: Cell<u32> = const { Cell::new(1) };
-    /// CSS colour and font prefix per style id, from the current theme. Shared by all editors.
+    /// Per style id: CSS colour, font prefix and underline, from the current theme. Shared
+    /// by all editors, like the surface colours.
     static STYLES: RefCell<Vec<CssStyle>> = RefCell::new(css_styles(&themes::dark()));
+    static CHROME: RefCell<Chrome> = RefCell::new(Chrome::from(&Colors::DARK));
 }
 
 #[derive(Clone)]
@@ -68,6 +83,7 @@ struct CssStyle {
     color: String,
     /// `"italic bold "` or a part of it, prepended to the font size and family.
     font_prefix: &'static str,
+    underline: bool,
 }
 
 fn css_styles(theme: &Theme) -> Vec<CssStyle> {
@@ -75,34 +91,52 @@ fn css_styles(theme: &Theme) -> Vec<CssStyle> {
         .style_table()
         .iter()
         .map(|s: &Style| CssStyle {
-            color: s.foreground.map_or_else(|| DARK.text.to_owned(), |c| format!("#{:08x}", c)),
+            color: css(s.foreground.unwrap_or(theme.colors.foreground)),
             font_prefix: match (s.italic.unwrap_or(false), s.bold.unwrap_or(false)) {
                 (true, true) => "italic bold ",
                 (true, false) => "italic ",
                 (false, true) => "bold ",
                 (false, false) => "",
             },
+            underline: s.underline.unwrap_or(false),
         })
         .collect()
 }
 
-/// Selects a bundled theme: `"dark"` or `"light"`.
+fn apply_theme(theme: &Theme) {
+    STYLES.with(|s| *s.borrow_mut() = css_styles(theme));
+    CHROME.with(|c| *c.borrow_mut() = Chrome::from(&theme.colors));
+}
+
+/// Selects a bundled theme: `"dark"`, `"light"` or `"high-contrast"`.
 #[wasm_bindgen(js_name = setBuiltinTheme)]
 pub fn set_builtin_theme(name: &str) -> bool {
     let theme = match name {
         "dark" => themes::dark(),
         "light" => themes::light(),
+        "high-contrast" => themes::high_contrast(),
         _ => return false,
     };
-    STYLES.with(|s| *s.borrow_mut() = css_styles(&theme));
+    apply_theme(&theme);
     true
 }
 
-/// Sets a theme from VS Code `tokenColors` rules flattened by the JS side: one selector
-/// per line in `selectors`, a foreground `0xRRGGBBAA` per selector (0 = unset), and font
-/// flags per selector (bit 0: fontStyle present, bit 1 bold, bit 2 italic, bit 3 underline).
+/// Sets a theme from a VS Code colour theme flattened by the JS side.
+///
+/// `base` (`"dark"`, `"light"` or `"high-contrast"`, from the theme's `type`) supplies the
+/// surface colours the theme leaves out. Token rules: one selector per line in `selectors`,
+/// a foreground `0xRRGGBBAA` per selector (0 = unset), font flags per selector (bit 0:
+/// fontStyle present, bit 1 bold, bit 2 italic, bit 3 underline). Surface colours: one VS Code
+/// `colors` key per line in `color_keys`, with its value in `color_values`.
 #[wasm_bindgen(js_name = setThemeRules)]
-pub fn set_theme_rules(selectors: &str, foregrounds: &[u32], font_flags: &[u8]) {
+pub fn set_theme_rules(
+    base: &str,
+    selectors: &str,
+    foregrounds: &[u32],
+    font_flags: &[u8],
+    color_keys: &str,
+    color_values: &[u32],
+) {
     let rules = selectors
         .split('\n')
         .zip(foregrounds.iter().zip(font_flags))
@@ -120,7 +154,17 @@ pub fn set_theme_rules(selectors: &str, foregrounds: &[u32], font_flags: &[u8]) 
             }
         })
         .collect();
-    STYLES.with(|s| *s.borrow_mut() = css_styles(&Theme { rules }));
+    let mut colors = match base {
+        "light" => Colors::LIGHT,
+        "high-contrast" => Colors::HIGH_CONTRAST,
+        _ => Colors::DARK,
+    };
+    for (key, &value) in color_keys.split('\n').zip(color_values) {
+        if value != 0 {
+            colors.set(key, value);
+        }
+    }
+    apply_theme(&Theme { rules, colors });
 }
 
 /// A text model that one or more editors can show.
@@ -540,11 +584,12 @@ impl Editor {
             ctx.fill_rect(r.x as f64, r.y as f64, r.width as f64, r.height as f64);
         };
 
+        let chrome = CHROME.with(|c| c.borrow().clone());
         ctx.set_transform(self.dpr, 0.0, 0.0, self.dpr, 0.0, 0.0)?;
-        ctx.set_fill_style_str(DARK.background);
+        ctx.set_fill_style_str(&chrome.background);
         ctx.fill_rect(0.0, 0.0, w, h);
         if let Some(band) = &frame.current_line {
-            fill(DARK.current_line, band);
+            fill(&chrome.current_line, band);
         }
 
         ctx.save();
@@ -552,7 +597,7 @@ impl Editor {
         ctx.rect(gutter, 0.0, w - gutter, h);
         ctx.clip();
         for r in &frame.selections {
-            fill(DARK.selection, r);
+            fill(&chrome.selection, r);
         }
         ctx.set_text_baseline("middle");
         ctx.set_text_align("left");
@@ -572,7 +617,7 @@ impl Editor {
             runs.sort_by_key(|&(_, style, _, _)| (style_of(style).font_prefix, style));
 
             let mut text = String::new();
-            let mut ops: Vec<f64> = Vec::with_capacity(runs.len() * 6);
+            let mut ops: Vec<f64> = Vec::with_capacity(runs.len() * 7);
             let (mut colors, mut fonts): (Vec<&str>, Vec<String>) = (Vec::new(), Vec::new());
             let mut utf16 = 0usize;
             for (run_text, style, x, y) in runs {
@@ -588,7 +633,16 @@ impl Editor {
                 });
                 let len: usize = run_text.chars().map(char::len_utf16).sum();
                 text.push_str(run_text);
-                ops.extend([x, y, utf16 as f64, (utf16 + len) as f64, color_index as f64, font_index as f64]);
+                let underline = if s.underline { (self.view.metrics.line_height * 0.35) as f64 } else { 0.0 };
+                ops.extend([
+                    x,
+                    y,
+                    utf16 as f64,
+                    (utf16 + len) as f64,
+                    color_index as f64,
+                    font_index as f64,
+                    underline,
+                ]);
                 utf16 += len;
             }
             draw_runs(ctx, &text, &ops, &colors.join("\n"), &fonts.join("\n"));
@@ -596,18 +650,18 @@ impl Editor {
         ctx.set_font(&self.font);
         if caret_visible {
             for r in &frame.carets {
-                fill(DARK.caret, r);
+                fill(&chrome.caret, r);
             }
         }
         ctx.restore();
 
-        ctx.set_fill_style_str(DARK.gutter);
+        ctx.set_fill_style_str(&chrome.gutter);
         ctx.fill_rect(0.0, 0.0, gutter, h);
         ctx.set_text_align("right");
         let rope = model.rope();
         let primary_line = rope.char_to_line(selections.primary().head);
         for line in &frame.lines {
-            let color = if line.line == primary_line { DARK.line_number_active } else { DARK.line_number };
+            let color = if line.line == primary_line { &chrome.line_number_active } else { &chrome.line_number };
             ctx.set_fill_style_str(color);
             let y = (line.y + line.height / 2.0) as f64;
             ctx.fill_text(&(line.line + 1).to_string(), gutter - 1.5 * cw, y)?;
@@ -617,7 +671,7 @@ impl Editor {
         if content > h {
             let thumb = (h * h / content).max(20.0);
             let top = self.view.scroll_top() as f64 / (content - h) * (h - thumb);
-            ctx.set_fill_style_str(DARK.scrollbar);
+            ctx.set_fill_style_str(&chrome.scrollbar);
             ctx.fill_rect(w - 10.0, top, 10.0, thumb);
         }
 

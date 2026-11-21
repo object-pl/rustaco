@@ -32,9 +32,9 @@ pub use names::{HIGHLIGHT_NAMES, name_of_style, style_for_capture};
 pub use spans::{Highlights, MAX_HIGHLIGHT_COLUMNS};
 #[cfg(feature = "textmate")]
 pub use textmate::{Grammar, TextMateSyntax, grammar as textmate_grammar, textmate_languages};
-pub use theme::{Style, Theme, ThemeRule};
+pub use theme::{Colors, Style, Theme, ThemeRule};
 
 /// Themes bundled with the editor.
 pub mod themes {
-    pub use crate::default_theme::{dark, light};
+    pub use crate::default_theme::{dark, high_contrast, light};
 }

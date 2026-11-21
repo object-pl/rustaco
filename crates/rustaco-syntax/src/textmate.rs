@@ -348,7 +348,10 @@ impl Builder {
 
 /// Translates Oniguruma syntax that `fancy-regex` lacks. `\G` becomes [`G_MARK`].
 fn translate(src: &str) -> Option<String> {
-    let mut out = String::with_capacity(src.len() + 8);
+    // Oniguruma's `^` and `$` always match at line boundaries; Rust regexes need `(?m)` for
+    // that. Lines are matched with their `\n`, so `.*$` must stop before it.
+    let mut out = String::with_capacity(src.len() + 12);
+    out.push_str("(?m)");
     let mut chars = src.chars().peekable();
     let mut in_class = false;
     while let Some(c) = chars.next() {
@@ -360,6 +363,9 @@ fn translate(src: &str) -> Option<String> {
                     'h' => out.push_str("0-9a-fA-F"),
                     'H' if !in_class => out.push_str("[^0-9a-fA-F]"),
                     'Z' => out.push_str("(?=\\n?\\z)"),
+                    // Literal angle brackets in Oniguruma; word boundaries in Rust regexes.
+                    '<' | '>' => out.push(n),
+                    'e' => out.push_str("\\x1B"),
                     'G' => out.push(G_MARK),
                     _ => {
                         out.push('\\');
@@ -455,6 +461,26 @@ impl TextMateSyntax {
     pub fn reset(&mut self) {
         let grammar = self.grammar.clone();
         *self = Self::new(grammar);
+    }
+
+    /// The open blocks at the start of each tokenized line, by scope name; for diagnosing
+    /// grammars whose blocks do not close.
+    #[doc(hidden)]
+    pub fn describe_line_states(&self) -> Vec<String> {
+        let g = &self.grammar;
+        self.lines
+            .iter()
+            .map(|l| {
+                l.state
+                    .iter()
+                    .map(|f| {
+                        let scope = f.name.map_or("?", |s| g.scopes[s as usize].as_str());
+                        format!("{scope}#{} end={:?}", f.rule, f.close.as_deref().unwrap_or(""))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" > ")
+            })
+            .collect()
     }
 
     pub fn needs_parse(&self) -> bool {
@@ -876,11 +902,16 @@ mod tests {
 
     #[test]
     fn translation() {
-        assert_eq!(translate(r"\h+").as_deref(), Some("[0-9a-fA-F]+"));
-        assert_eq!(translate(r"a*+b").as_deref(), Some("a*b"));
-        assert_eq!(translate(r"[\h_]").as_deref(), Some("[0-9a-fA-F_]"));
-        assert_eq!(translate(r"(?!\G)").map(|t| instantiate(&t, Some(3))).as_deref(), Some(r"(?!(?<=\A[\s\S]{3}))"));
-        assert_eq!(translate(r"(?!\G)").map(|t| instantiate(&t, None)).as_deref(), Some("(?!(?!))"));
+        assert_eq!(translate(r"\h+").as_deref(), Some("(?m)[0-9a-fA-F]+"));
+        assert_eq!(translate(r"a*+b").as_deref(), Some("(?m)a*b"));
+        assert_eq!(translate(r"(?=\<[A-Z])").as_deref(), Some("(?m)(?=<[A-Z])"));
+        assert_eq!(translate(r"\e\>").as_deref(), Some("(?m)\\x1B>"));
+        assert_eq!(translate(r"[\h_]").as_deref(), Some("(?m)[0-9a-fA-F_]"));
+        assert_eq!(
+            translate(r"(?!\G)").map(|t| instantiate(&t, Some(3))).as_deref(),
+            Some(r"(?m)(?!(?<=\A[\s\S]{3}))")
+        );
+        assert_eq!(translate(r"(?!\G)").map(|t| instantiate(&t, None)).as_deref(), Some("(?m)(?!(?!))"));
     }
 
     #[test]

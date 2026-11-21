@@ -1,0 +1,7 @@
+  1: #=punctuation.special  Title=text.title
+  2: 
+  3: *=punctuation.delimiter  emphasis=text.emphasis  *=punctuation.delimiter  `=punctuation.delimiter  code=text.literal  `=punctuation.delimiter
+  4: 
+  5: ```=punctuation.delimiter  python=text.literal
+  6: def=keyword   =text.literal  f=function  (): =text.literal  return=keyword   =text.literal  None=constant.builtin
+  7: ```=punctuation.delimiter

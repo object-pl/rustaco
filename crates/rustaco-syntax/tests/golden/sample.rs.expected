@@ -1,0 +1,10 @@
+  1: use=keyword  ::=punctuation.delimiter  ::=punctuation.delimiter  HashMap=constructor  ;=punctuation.delimiter
+  2: 
+  3: /// Counts words.=comment.documentation
+  4: pub=keyword  fn=keyword  count=function  (=punctuation.bracket  text=variable.parameter  :=punctuation.delimiter  &=operator  str=type.builtin  )=punctuation.bracket  HashMap=type  <=punctuation.bracket  &=operator  str=type.builtin  ,=punctuation.delimiter  usize=type.builtin  >=punctuation.bracket  {=punctuation.bracket
+  5: let=keyword  mut=keyword  HashMap=type  ::=punctuation.delimiter  new=function  ()=punctuation.bracket  ;=punctuation.delimiter
+  6: for=keyword  in=keyword  .=punctuation.delimiter  split_whitespace=function.method  ()=punctuation.bracket  {=punctuation.bracket
+  7: *=operator  .=punctuation.delimiter  entry=function.method  (=punctuation.bracket  )=punctuation.bracket  .=punctuation.delimiter  or_insert=function.method  (=punctuation.bracket  0=constant.builtin  )=punctuation.bracket  1=constant.builtin  ;=punctuation.delimiter  // tally=comment
+  8: }=punctuation.bracket
+  9: 
+ 10: }=punctuation.bracket

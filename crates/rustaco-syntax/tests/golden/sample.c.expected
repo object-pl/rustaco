@@ -1,0 +1,7 @@
+  1: #include=keyword  <stdio.h>=string
+  2: 
+  3: int=type  main=function  void=type
+  4: const=keyword  char=type  *=operator  name=variable  ==operator  "world"=string
+  5: printf=function  "hello %s\n"=string  name=variable
+  6: return=keyword  0=number
+  7: 

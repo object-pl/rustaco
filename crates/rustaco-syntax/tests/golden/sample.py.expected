@@ -1,0 +1,7 @@
+  1: import=keyword  os=variable
+  2: 
+  3: class=keyword  Store=constructor
+  4: """Keeps values."""=string
+  5: 
+  6: def=keyword  get=function  self=variable  key=variable  str=type  default=variable  ==operator  None=constant.builtin  ->=operator  str=type
+  7: return=keyword  os=variable  environ=property  get=function.method  key=variable  default=variable  # fallback=comment

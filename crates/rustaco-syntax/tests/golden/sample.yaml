@@ -1,0 +1,7 @@
+name: build
+on: [push]
+jobs:
+  test:
+    runs-on: docker # runner
+    steps:
+      - run: make test

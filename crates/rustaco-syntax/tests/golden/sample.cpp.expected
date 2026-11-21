@@ -1,0 +1,9 @@
+  1: #include=keyword  <vector>=string
+  2: 
+  3: template=keyword  <=operator  typename=keyword  T=type  >=operator
+  4: class=keyword  Stack=type
+  5: public=keyword
+  6: void=type  push=function  const=keyword  T=type  &=operator  v=variable  items=variable  push_back=function  v=variable
+  7: private=keyword
+  8: vector=type  <=operator  T=type  >=operator  items=property
+  9: 

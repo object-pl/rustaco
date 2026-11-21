@@ -1,0 +1,9 @@
+  1: using=keyword  System=variable  ;=punctuation.delimiter
+  2: 
+  3: namespace=keyword  Demo=module  {=punctuation.bracket
+  4: public=keyword  class=keyword  Program=type  {=punctuation.bracket
+  5: public=keyword  static=keyword  void=type.builtin  Main=function  (=punctuation.bracket  string=type.builtin  []=punctuation.bracket  args=variable.parameter  )=punctuation.bracket  {=punctuation.bracket
+  6: Console=variable  .=punctuation.delimiter  WriteLine=function  (=punctuation.bracket  "Hello"=string  )=punctuation.bracket  ;=punctuation.delimiter
+  7: }=punctuation.bracket
+  8: }=punctuation.bracket
+  9: }=punctuation.bracket

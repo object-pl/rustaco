@@ -1,0 +1,4 @@
+  1: [=punctuation.bracket  package=type  ]=punctuation.bracket
+  2: name=type   =property  ==operator   =property  "example"=string
+  3: version=type   =property  ==operator   =property  "0.1.0"=string
+  4: edition=type   =property  ==operator   =property  2024=number   =property  # year=comment

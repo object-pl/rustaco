@@ -1,0 +1,7 @@
+  1: name=property  :=punctuation.delimiter  build=string
+  2: on=property  :=punctuation.delimiter  [=punctuation.bracket  push=string  ]=punctuation.bracket
+  3: jobs=property  :=punctuation.delimiter
+  4: test=property  :=punctuation.delimiter
+  5: runs-on=property  :=punctuation.delimiter  docker=string  # runner=comment
+  6: steps=property  :=punctuation.delimiter
+  7: -=punctuation.delimiter  run=property  :=punctuation.delimiter  make test=string

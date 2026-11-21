@@ -12,6 +12,11 @@ use crate::names::style_for_capture;
 pub(crate) struct CompiledQuery {
     pub(crate) query: Query,
     pub(crate) capture_styles: Vec<u32>,
+    /// Per pattern: how much context it requires, counted as the nodes and predicates in its
+    /// source (each opens a parenthesis). When several patterns capture the same node, the
+    /// most specific one wins: `(call function: (attribute attribute: (identifier)))` over
+    /// `(attribute attribute: (identifier))`, and that over a bare `(identifier)`.
+    pub(crate) specificity: Vec<u32>,
 }
 
 type Compiled = OnceLock<Result<CompiledQuery, String>>;
@@ -44,7 +49,13 @@ impl LanguageDef {
                 let source = self.highlights.join("\n");
                 let query = Query::new(&self.grammar(), &source).map_err(|e| format!("{}: {e}", self.id))?;
                 let capture_styles = query.capture_names().iter().map(|n| style_for_capture(n)).collect();
-                Ok(CompiledQuery { query, capture_styles })
+                let specificity = (0..query.pattern_count())
+                    .map(|i| {
+                        let text = &source[query.start_byte_for_pattern(i)..query.end_byte_for_pattern(i)];
+                        pattern_specificity(text)
+                    })
+                    .collect();
+                Ok(CompiledQuery { query, capture_styles, specificity })
             })
             .as_ref()
             .map_err(String::as_str)
@@ -66,6 +77,38 @@ impl LanguageDef {
 }
 
 #[allow(unused_macros)] // unused when the build enables no language
+/// Counts the parentheses that open nodes and predicates in a query pattern, skipping
+/// string literals and comments.
+fn pattern_specificity(pattern: &str) -> u32 {
+    let mut count = 0;
+    let mut chars = pattern.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '"' => break,
+                        _ => {}
+                    }
+                }
+            }
+            ';' => {
+                for c in chars.by_ref() {
+                    if c == '\n' {
+                        break;
+                    }
+                }
+            }
+            '(' => count += 1,
+            _ => {}
+        }
+    }
+    count
+}
+
 macro_rules! language {
     ($id:literal, $grammar:expr, [$($query:expr),+ $(,)?] $(, injections: [$($inj:expr),* $(,)?])?) => {
         LanguageDef {
@@ -161,11 +204,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn specificity_counts_nodes_and_predicates() {
+        assert_eq!(pattern_specificity("(identifier) @variable"), 1);
+        assert_eq!(pattern_specificity("((identifier) @constructor (#match? @constructor \"^[A-Z(]\"))"), 3);
+        assert_eq!(pattern_specificity("(call function: (attribute attribute: (identifier) @m))"), 3);
+        assert_eq!(pattern_specificity("[\"fn\" \"let\"] @keyword ; (comment)"), 0);
+    }
+
+    #[test]
     fn every_highlight_query_compiles() {
         for lang in languages() {
             let q = lang.highlight_query().unwrap_or_else(|e| panic!("{e}"));
             assert!(q.capture_styles.iter().any(|&s| s != 0), "{} maps no capture to a style", lang.id);
             assert_eq!(lang.info().id, lang.id);
+            assert_eq!(q.specificity.len(), q.query.pattern_count());
             if let Some(inj) = lang.injection_query() {
                 inj.unwrap_or_else(|e| panic!("{e}"));
             }

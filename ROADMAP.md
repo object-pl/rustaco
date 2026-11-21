@@ -2,14 +2,15 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Done: phase 0 (2026-11-21) and phase 1 (2026-11-21). In progress: phase 2.
+Done: phase 0, phase 1 and phase 2 (all 2026-11-21). Next: phase 3.
 
-Phase 2 status (2026-11-21):
-- Done: the spike (tree-sitter and C grammars build for `wasm32-unknown-unknown`; several grammars needed a patched `tree-sitter-language`, see vendor/README.md), one language module per pack loaded on demand, incremental and time-sliced parsing, highlighting of visible lines, language injections, language catalog and detection, themes in the TextMate scope model with VS Code theme import, dark and light themes, license audit (THIRD_PARTY.md, licenses/).
-- TextMate fallback: an own tokenizer modelled on `vscode-textmate` (not syntect, which reads only Sublime grammars), with VS Code grammars for SQL, Kotlin and Dockerfile in the browser `textmate` module.
-- All 20 languages highlight: 17 through tree-sitter (Rust, JavaScript, TypeScript, TSX, JSON, Python, C, C++, Go, Java, C#, HTML, CSS, Bash, TOML, YAML, Markdown), 3 through TextMate (SQL, Kotlin, Dockerfile). Native builds also have the tree-sitter SQL grammar.
-- Open: the high-contrast theme, screenshot tests per language, underline drawing in the canvas renderer.
-- Not met: "a keystroke in a 10 MB file under 1 ms on the main thread". With parsing time-sliced in the main thread a keystroke costs 7 to 13 ms (4 ms of it parsing) on a 100,000-line file. The language module interface is built for a worker; meeting the target moves to phase 7.
+Phase 2 summary:
+- tree-sitter and its C grammars build for `wasm32-unknown-unknown` (several grammars needed a patched `tree-sitter-language`, see vendor/README.md); one language module per pack, loaded on demand; incremental and time-sliced parsing; highlighting of visible lines; language injections.
+- An own TextMate tokenizer modelled on `vscode-textmate` (syntect reads only Sublime grammars) with VS Code grammars for SQL, Kotlin and Dockerfile.
+- All 20 languages highlight: 17 through tree-sitter, 3 through TextMate. Golden files in `crates/rustaco-syntax/tests/golden/` pin the output for each.
+- Themes in the TextMate scope model with VS Code theme import (token colours and editor colours), bundled dark, light and high-contrast themes; the high-contrast theme keeps every token colour above 7:1.
+- License audit: THIRD_PARTY.md and licenses/, NOTICE files shipped for Apache-2.0 grammars.
+- Carried to phase 7: "a keystroke in a 10 MB file under 1 ms on the main thread". With parsing time-sliced in the main thread a keystroke costs 7 to 13 ms (4 ms of it parsing) on a 100,000-line file; the language module interface is built to move into a worker.
 
 ## Decisions
 

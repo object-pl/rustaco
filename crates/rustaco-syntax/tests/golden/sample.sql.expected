@@ -1,0 +1,4 @@
+  1: -- active users=comment
+  2: SELECT=keyword  name=keyword  FROM=keyword
+  3: WHERE=keyword  >=keyword.operator  '2026-01-01'=string  AND=keyword  ==keyword.operator  1=number
+  4: ORDER BY=keyword  name=keyword

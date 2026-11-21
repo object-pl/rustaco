@@ -171,9 +171,11 @@ impl Syntax {
 }
 
 /// Styled captures of `query` in `range`, as (start byte, end byte, style) in paint order:
-/// outer nodes before inner ones, and for one node the later pattern last, so it wins. The
-/// bundled queries start with generic captures such as `(identifier) @variable` and refine
-/// them further down.
+/// outer nodes before inner ones, and for one node the more specific pattern last, so it
+/// wins (see [`CompiledQuery::specificity`]); between equally specific patterns the later
+/// one wins. Neither order alone fits the bundled queries: Python lists `@function.method`
+/// before `@property` for the same attribute node, but its generic `(identifier) @variable`
+/// first.
 pub(crate) fn collect_captures<I: AsRef<[u8]>, T: TextProvider<I>>(
     compiled: &CompiledQuery,
     tree: &Tree,
@@ -182,13 +184,14 @@ pub(crate) fn collect_captures<I: AsRef<[u8]>, T: TextProvider<I>>(
 ) -> Vec<(usize, usize, u32)> {
     let mut cursor = tree_sitter::QueryCursor::new();
     cursor.set_byte_range(range);
-    let mut found: Vec<(usize, usize, usize, u32)> = Vec::new();
+    let mut found: Vec<(usize, usize, (u32, usize), u32)> = Vec::new();
     let mut captures = cursor.captures(&compiled.query, tree.root_node(), provider);
     while let Some((m, index)) = captures.next() {
         let capture = m.captures()[*index];
         let style = compiled.capture_styles[capture.index as usize];
         if style != 0 {
-            found.push((capture.node.start_byte(), capture.node.end_byte(), m.pattern_index, style));
+            let rank = (compiled.specificity[m.pattern_index], m.pattern_index);
+            found.push((capture.node.start_byte(), capture.node.end_byte(), rank, style));
         }
     }
     found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
