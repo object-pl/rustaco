@@ -44,6 +44,7 @@ function loadPack(pack) {
 
 const editors = new Set();
 
+
 /** Clipboard type of the per-cursor pieces of a multi-cursor copy. */
 const CLIPBOARD_META = 'application/x-rustaco-editor';
 
@@ -578,20 +579,56 @@ export class RustacoEditor {
     const { canvas, input, core } = this;
 
     canvas.addEventListener('mousedown', (e) => {
+      this.#coverInput(null);
+      const [x, y] = this.#point(e);
+      if (e.button === 2 || (e.button === 1 && platform() === 'linux')) {
+        // Right click: keep a selection under the pointer, else move the caret there. Then
+        // the textarea goes under the pointer, so the browser's own menu (cut, copy, paste)
+        // or Linux middle-click paste acts on it, and its events reach the editor.
+        if (e.button === 1 || !core.insideSelection(x, y)) {
+          core.mouse_down(x, y, 1, false, false);
+          core.mouse_up();
+        }
+        this.#changed();
+        this.#coverInput([x, y]);
+        input.focus();
+        return;
+      }
       if (e.button !== 0) return;
       e.preventDefault();
       input.focus();
-      core.mouse_down(...this.#point(e), e.detail, e.shiftKey, e.altKey);
+      core.mouse_down(x, y, e.detail, e.shiftKey, e.altKey);
       this.#changed();
-      const move = (ev) => { if (core.mouse_move(...this.#point(ev))) this.#changed(); };
-      const up = () => {
-        core.mouse_up();
+      let last = [x, y];
+      let timer = 0;
+      const step = () => {
+        // Past the top or bottom edge the view scrolls, faster the further out the pointer is.
+        const h = canvas.clientHeight;
+        const over = last[1] < 0 ? last[1] : last[1] > h ? last[1] - h : 0;
+        if (!over) { clearInterval(timer); timer = 0; return; }
+        core.wheel(0, Math.sign(over) * Math.min(Math.abs(over), 200) / 2);
+        core.mouse_move(...last);
+        this.#changed();
+      };
+      const move = (ev) => {
+        last = this.#point(ev);
+        if (core.mouse_move(...last)) this.#changed();
+        const h = canvas.clientHeight;
+        if ((last[1] < 0 || last[1] > h) && !timer) timer = setInterval(step, 16);
+      };
+      const up = (ev) => {
+        clearInterval(timer);
+        core.mouseUpWith(platform() === 'mac' ? ev.altKey : ev.ctrlKey);
+        this.#changed();
         window.removeEventListener('mousemove', move);
         window.removeEventListener('mouseup', up);
       };
       window.addEventListener('mousemove', move);
       window.addEventListener('mouseup', up);
     });
+    input.addEventListener('contextmenu', () => setTimeout(() => this.#coverInput(null), 0));
+    input.addEventListener('paste', () => setTimeout(() => this.#coverInput(null), 0));
+    input.addEventListener('blur', () => this.#coverInput(null));
 
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
@@ -755,6 +792,28 @@ export class RustacoEditor {
     this.mirrored = text;
   }
 
+  /**
+   * Moves the hidden textarea under the pointer at `point` (canvas coordinates), large enough
+   * to receive a context menu or a middle click; `null` puts it back behind the caret.
+   */
+  #coverInput(point) {
+    const style = this.input.style;
+    this.inputCovering = !!point;
+    if (point) {
+      style.transform = `translate(${point[0] - 15}px, ${point[1] - 15}px)`;
+      style.width = '30px';
+      style.height = '30px';
+      style.pointerEvents = 'auto';
+      style.zIndex = '10';
+    } else {
+      style.width = '1px';
+      style.height = '1em';
+      style.pointerEvents = 'none';
+      style.zIndex = '';
+      this.schedule();
+    }
+  }
+
   /** Clipboard data for a copy or cut: plain text, the pieces per cursor and coloured HTML. */
   #writeClipboard(data, text, pieces = this.core.selectionTexts(), html = this.core.copyHtml()) {
     data.setData('text/plain', text);
@@ -786,7 +845,9 @@ export class RustacoEditor {
         core.clearTreeBrackets();
       }
       core.render(this.focused && this.caretOn);
-      this.input.style.transform = `translate(${this.core.caret_x()}px, ${this.core.caret_y()}px)`;
+      if (!this.inputCovering) {
+        this.input.style.transform = `translate(${this.core.caret_x()}px, ${this.core.caret_y()}px)`;
+      }
       this.#layoutOverlays();
     });
   }

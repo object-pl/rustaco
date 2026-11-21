@@ -442,3 +442,55 @@ test('a multi-cursor copy pastes back one piece per cursor', async ({ page, brow
   expect(result.html).toContain('<pre');
   expect(result.value).toBe('aa bbaa\ncc ddcc\nee ff');
 });
+
+test('scrollbar drag, auto-scroll past the edge, and dragging text to move it', async ({ page }) => {
+  await open(page, Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n'));
+  // Leave room below the editor: some browsers deliver no events outside the page.
+  await page.evaluate(() => { document.getElementById('root').style.bottom = '200px'; });
+  await page.waitForFunction(() => window.editor.canvas.clientHeight < window.innerHeight - 150);
+  const box = await page.locator('canvas').first().boundingBox();
+  // Drag the scrollbar thumb down.
+  await page.mouse.move(box.x + box.width - 5, box.y + 5);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 5, box.y + 105, { steps: 4 });
+  await page.mouse.up();
+  const afterThumb = await page.evaluate(() => window.editor.getScrollTop());
+  expect(afterThumb).toBeGreaterThan(500);
+  // Selecting past the bottom edge keeps scrolling.
+  await page.evaluate(() => window.editor.setScrollTop(0));
+  await page.mouse.move(box.x + 100, box.y + 10);
+  await page.mouse.down();
+  await page.mouse.move(box.x + 100, box.y + box.height + 60, { steps: 3 });
+  await page.waitForTimeout(300);
+  await page.mouse.up();
+  expect(await page.evaluate(() => window.editor.getScrollTop())).toBeGreaterThan(100);
+
+  // Drag "line 1" (selected) to the start of line 3.
+  await open(page, 'line 0\nline 1\nline 2\nline 3');
+  await page.evaluate(() => window.editor.setSelections([{ anchor: 7, head: 13 }]));
+  const from = await caretPoint(page, 9);
+  await page.evaluate(() => window.editor.setSelections([{ anchor: 7, head: 13 }]));
+  const to = await caretPoint(page, 21);
+  await page.evaluate(() => window.editor.setSelections([{ anchor: 7, head: 13 }]));
+  await page.mouse.move(box.x + from.x, box.y + from.y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + to.x, box.y + to.y, { steps: 5 });
+  await page.mouse.up();
+  expect(await value(page)).toBe('line 0\n\nline 2\nline 1line 3');
+});
+
+test('a right click keeps the selection and puts the textarea under the pointer', async ({ page }) => {
+  await open(page, 'alpha beta gamma');
+  await page.evaluate(() => window.editor.setSelections([{ anchor: 6, head: 10 }]));
+  const p = await caretPoint(page, 8);
+  await page.evaluate(() => window.editor.setSelections([{ anchor: 6, head: 10 }]));
+  const box = await page.locator('canvas').first().boundingBox();
+  await page.mouse.click(box.x + p.x, box.y + p.y, { button: 'right' });
+  expect(await selections(page)).toEqual([{ anchor: 6, head: 10 }]);
+  const textarea = await page.evaluate(() => {
+    const t = document.querySelector('textarea');
+    return { events: t.style.pointerEvents, selected: t.value.slice(t.selectionStart, t.selectionEnd) };
+  });
+  expect(textarea.selected).toBe('beta');
+  await page.keyboard.press('Escape');
+});

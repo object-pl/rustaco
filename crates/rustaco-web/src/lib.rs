@@ -460,6 +460,12 @@ pub struct Editor {
     minimap_drag: Option<(f64, f64)>,
     /// Sticky scroll lines of the last frame: y, height and line.
     sticky: Vec<(f32, f32, usize)>,
+    /// Scrollbar thumb drag in progress: vertical or not, pointer position and scroll
+    /// position when it started, scroll distance per pixel.
+    scrollbar_drag: Option<(bool, f64, f64, f64)>,
+    /// Dragging selected text: the selected range and, once the pointer has moved, where
+    /// it would drop.
+    text_drag: Option<(std::ops::Range<usize>, Option<usize>, f64, f64)>,
     /// View zones of the last frame: id and rectangle.
     zone_rects: Vec<(u32, Rect)>,
 }
@@ -508,6 +514,8 @@ impl Editor {
             tree_brackets: None,
             minimap_drag: None,
             sticky: Vec::new(),
+            scrollbar_drag: None,
+            text_drag: None,
             zone_rects: Vec::new(),
         })
     }
@@ -1150,6 +1158,26 @@ impl Editor {
             2 => DragUnit::Word,
             _ => DragUnit::Line,
         };
+        if self.scrollbar_down(x, y) {
+            return;
+        }
+        // A press inside a selection may start dragging the selected text.
+        if clicks <= 1 && !shift && !alt {
+            let model = self.model.borrow();
+            self.view.sync(&model);
+            self.cursors.sync(&model);
+            let rope = model.rope();
+            let gutter = self.view.gutter_width(rope) as f64;
+            let pos = self.view.hit_test(rope, x as f32, y as f32);
+            let inside = self.cursors.selections().iter().find(|s| !s.is_empty() && s.start() < pos && pos < s.end());
+            if x > gutter
+                && !self.view.in_minimap(x as f32)
+                && let Some(sel) = inside
+            {
+                self.text_drag = Some((sel.start()..sel.end(), None, x, y));
+                return;
+            }
+        }
         if let Some(index) =
             self.sticky.iter().position(|&(top, height, _)| (top as f64..(top + height) as f64).contains(&y))
         {
@@ -1222,6 +1250,27 @@ impl Editor {
 
     /// Extends the selection while a button is held. Returns false when no drag is active.
     pub fn mouse_move(&mut self, x: f64, y: f64) -> bool {
+        if let Some((vertical, start, start_scroll, factor)) = self.scrollbar_drag {
+            let model = self.model.borrow();
+            let rope = model.rope();
+            let moved = (if vertical { y } else { x }) - start;
+            if vertical {
+                self.view.scroll_to(rope, start_scroll + moved * factor, self.view.scroll_left());
+            } else {
+                let top = self.view.scroll_top();
+                self.view.scroll_to(rope, top, (start_scroll + moved * factor) as f32);
+            }
+            return true;
+        }
+        if let Some((range, _, x0, y0)) = self.text_drag.clone() {
+            if (x - x0).abs() + (y - y0).abs() < 4.0 {
+                return false;
+            }
+            let model = self.model.borrow();
+            let pos = self.view.hit_test(model.rope(), x as f32, y as f32);
+            self.text_drag = Some((range, Some(pos), x0, y0));
+            return true;
+        }
         if let Some((start_y, start_top)) = self.minimap_drag {
             let model = self.model.borrow();
             let rope = model.rope();
@@ -1278,8 +1327,56 @@ impl Editor {
     }
 
     pub fn mouse_up(&mut self) {
+        self.mouse_up_with(false);
+    }
+
+    /// Ends a press. A text drag drops its text where the pointer is: moved, or copied
+    /// with `copy` (Ctrl, or Alt on macOS, as in VS Code). A press inside a selection that
+    /// did not move places the caret there.
+    #[wasm_bindgen(js_name = mouseUpWith)]
+    pub fn mouse_up_with(&mut self, copy: bool) {
         self.minimap_drag = None;
+        self.scrollbar_drag = None;
         self.drag = None;
+        let Some((range, drop, x, y)) = self.text_drag.take() else { return };
+        let Some(at) = drop else {
+            let pos = self.view.hit_test(self.model.borrow().rope(), x as f32, y as f32);
+            self.edit(|ed| ed.set_selections(Selections::single(Selection::cursor(pos))));
+            return;
+        };
+        if !copy && at >= range.start && at <= range.end {
+            return;
+        }
+        let text: String = self.model.borrow().rope().slice(range.clone()).to_string();
+        let len = range.len();
+        let mut edits = vec![rustaco_core::Edit::insert(at, text)];
+        let start = if copy {
+            at
+        } else {
+            edits.push(rustaco_core::Edit::delete(range.start, range.end));
+            if at > range.end { at - len } else { at }
+        };
+        self.edit(|ed| {
+            ed.apply_edits(edits);
+            ed.set_selections(Selections::single(Selection::new(start, start + len)));
+        });
+        self.reveal_primary();
+    }
+
+    /// Whether the point is inside a non-empty selection (a right click there keeps it).
+    #[wasm_bindgen(js_name = insideSelection)]
+    pub fn inside_selection(&mut self, x: f64, y: f64) -> bool {
+        let model = self.model.borrow();
+        self.view.sync(&model);
+        self.cursors.sync(&model);
+        let pos = self.view.hit_test(model.rope(), x as f32, y as f32);
+        self.cursors.selections().iter().any(|s| !s.is_empty() && s.start() <= pos && pos <= s.end())
+    }
+
+    /// Where dragged text would drop, while a text drag is under way.
+    #[wasm_bindgen(js_name = dropPosition)]
+    pub fn drop_position(&self) -> Option<u32> {
+        self.text_drag.as_ref().and_then(|d| d.1).map(|p| p as u32)
     }
 
     pub fn render(&mut self, caret_visible: bool) -> Result<(), JsValue> {
@@ -1434,7 +1531,6 @@ impl Editor {
             ctx.fill();
         }
 
-        let content = self.view.content_height(rope);
         if !frame.sticky.is_empty() {
             let text_right = w - self.view.minimap_width() as f64;
             let bottom = frame.sticky.iter().map(|l| l.y + l.height).fold(0.0f32, f32::max) as f64;
@@ -1493,11 +1589,15 @@ impl Editor {
                 ctx.fill_rect(w - 10.0, y as f64, 10.0, height as f64);
             }
         }
-        if content > h {
-            let thumb = (h * h / content).max(20.0);
-            let top = self.view.scroll_top() / (content - h) * (h - thumb);
-            ctx.set_fill_style_str(&chrome.scrollbar);
+        ctx.set_fill_style_str(&chrome.scrollbar);
+        if let Some((top, thumb)) = self.vertical_thumb(rope) {
             ctx.fill_rect(w - 10.0, top, 10.0, thumb);
+        }
+        if let Some((left, thumb)) = self.horizontal_thumb(rope) {
+            ctx.fill_rect(left, h - 10.0, thumb, 10.0);
+        }
+        if let Some(r) = self.text_drag.as_ref().and_then(|d| d.1).and_then(|p| self.view.position_rect(rope, p)) {
+            fill(&chrome.caret, &r);
         }
 
         // Carets are laid out in selection order, but off-screen ones are skipped.
@@ -1591,6 +1691,67 @@ fn draw_underline(ctx: &CanvasRenderingContext2d, r: &Rect, style: u8, color: &s
 }
 
 impl Editor {
+    /// Vertical scrollbar thumb: top and height, when the content is taller than the view.
+    fn vertical_thumb(&self, rope: &Rope) -> Option<(f64, f64)> {
+        let h = self.view.height as f64;
+        let content = self.view.content_height(rope);
+        (content > h).then(|| {
+            let thumb = (h * h / content).max(20.0);
+            (self.view.scroll_top() / (content - h) * (h - thumb), thumb)
+        })
+    }
+
+    /// Horizontal scrollbar thumb: left and width, when lines are wider than the text area.
+    fn horizontal_thumb(&self, rope: &Rope) -> Option<(f64, f64)> {
+        let gutter = self.view.gutter_width(rope) as f64;
+        let area = self.view.width as f64 - gutter - self.view.minimap_width() as f64 - 10.0;
+        let content = self.view.content_width(rope) as f64 - gutter;
+        (content > area && area > 20.0).then(|| {
+            let thumb = (area * area / content).max(20.0);
+            (gutter + self.view.scroll_left() as f64 / (content - area) * (area - thumb), thumb)
+        })
+    }
+
+    /// Starts a scrollbar drag, or pages to a click on the track. Returns whether the press
+    /// was on a scrollbar.
+    fn scrollbar_down(&mut self, x: f64, y: f64) -> bool {
+        let model = self.model.borrow();
+        self.view.sync(&model);
+        let rope = model.rope();
+        let (w, h) = (self.view.width as f64, self.view.height as f64);
+        if x >= w - 10.0
+            && let Some((top, thumb)) = self.vertical_thumb(rope)
+        {
+            let content = self.view.content_height(rope);
+            let factor = (content - h) / (h - thumb).max(1.0);
+            if !(top..top + thumb).contains(&y) {
+                // A click on the track centres the thumb there.
+                let target = (y - thumb / 2.0) * factor;
+                self.view.scroll_to(rope, target, self.view.scroll_left());
+            }
+            self.scrollbar_drag = Some((true, y, self.view.scroll_top(), factor));
+            return true;
+        }
+        if y >= h - 10.0
+            && let Some((left, thumb)) = self.horizontal_thumb(rope)
+        {
+            let gutter = self.view.gutter_width(rope) as f64;
+            let area = w - gutter - self.view.minimap_width() as f64 - 10.0;
+            let content = self.view.content_width(rope) as f64 - gutter;
+            let factor = (content - area) / (area - thumb).max(1.0);
+            if x >= gutter && !(left..left + thumb).contains(&x) {
+                let target = (x - gutter - thumb / 2.0) * factor;
+                let top = self.view.scroll_top();
+                self.view.scroll_to(rope, top, target as f32);
+            }
+            if x >= gutter {
+                self.scrollbar_drag = Some((false, x, self.view.scroll_left() as f64, factor));
+                return true;
+            }
+        }
+        false
+    }
+
     /// The bracket pair at the primary cursor: from the tree when the JS side supplied it,
     /// otherwise by scanning the text with the language's (or default) bracket pairs.
     fn current_bracket_pair(&mut self) -> Option<(usize, usize)> {
