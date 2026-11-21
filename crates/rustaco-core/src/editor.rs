@@ -170,6 +170,12 @@ impl<'a> Editor<'a> {
         self.delete_each(kind, f);
     }
 
+    /// Moves every caret to the head `f` returns, with its goal column; frontends use it for
+    /// moves that depend on layout, such as stepping over folded lines.
+    pub fn move_heads(&mut self, extend: bool, f: impl FnMut(&Rope, &Selection) -> (usize, Option<usize>)) {
+        self.move_each(extend, f);
+    }
+
     fn move_each(&mut self, extend: bool, mut f: impl FnMut(&Rope, &Selection) -> (usize, Option<usize>)) {
         let moved = self.cursors.selections.map(|s| {
             let (head, goal_column) = f(&self.model.rope, s);

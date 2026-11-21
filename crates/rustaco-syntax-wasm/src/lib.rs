@@ -163,6 +163,17 @@ impl Highlighter {
         Vec::new()
     }
 
+    /// Regions worth folding from the syntax tree, as pairs of header line and last hidden
+    /// line; empty when the engine has no tree.
+    #[wasm_bindgen(js_name = foldingRanges)]
+    pub fn folding_ranges(&self) -> Vec<u32> {
+        #[cfg(feature = "tree-sitter")]
+        if let Engine::TreeSitter(s) = &self.engine {
+            return s.fold_ranges().into_iter().flat_map(|(a, b)| [a as u32, b as u32]).collect();
+        }
+        Vec::new()
+    }
+
     /// True when this module answers bracket questions from a syntax tree.
     #[wasm_bindgen(js_name = hasTree)]
     pub fn has_tree(&self) -> bool {

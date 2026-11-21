@@ -28,15 +28,15 @@ async function colorAt(page, offset) {
     e.setSelections(sels);
     const ctx = e.canvas.getContext('2d');
     const dpr = window.devicePixelRatio || 1;
-    const counts = new Map();
-    for (let dx = 1; dx < 7; dx++) for (let dy = 3; dy < h - 3; dy++) {
+    let best = -1, color = null;
+    for (let dx = 1; dx < 14; dx++) for (let dy = 3; dy < h - 3; dy++) {
       const d = ctx.getImageData(Math.round((x + dx) * dpr), Math.round((y + dy) * dpr), 1, 1).data;
       const lum = d[0] + d[1] + d[2];
       if (lum < 200) continue; // background and current-line band
-      const k = `${d[0]},${d[1]},${d[2]}`;
-      counts.set(k, (counts.get(k) || 0) + 1);
+      // The most covered pixel is the brightest; edges are blended with the background.
+      if (lum > best) { best = lum; color = `${d[0]},${d[1]},${d[2]}`; }
     }
-    return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+    return color;
   }, offset);
 }
 
@@ -236,4 +236,12 @@ test('rulers and indentation guides are drawn', async ({ page }) => {
     return `${d[0]},${d[1]},${d[2]}`;
   });
   expect(pixel).toBe('90,90,90');
+});
+
+test('fold regions come from the syntax tree', async ({ page }) => {
+  await open(page, 'fn f() {\n    g(\n        1,\n    );\n}\nend', 'rust');
+  await page.waitForTimeout(400);
+  await page.evaluate(() => { window.editor.setSelections([{ anchor: 12, head: 12 }]); window.editor.runCommand('editor.fold'); });
+  // The cursor is on line 1, which heads the call's arguments; only line 2 is hidden.
+  expect(await page.evaluate(() => Array.from(window.editor.core.visibleLines()))).toEqual([0, 2, 3, 6]);
 });

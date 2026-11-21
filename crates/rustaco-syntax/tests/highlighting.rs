@@ -311,3 +311,13 @@ fn brackets_match_through_the_tree_and_have_depths() {
     assert_eq!(depth_of(src.find('[').unwrap()), Some(2));
     assert_eq!(depth_of(quote_paren), None);
 }
+
+#[test]
+fn fold_ranges_cover_bracket_pairs_and_comments() {
+    let src = "/* a\n   b */\nfn f() {\n    g(\n        1,\n        2,\n    );\n    let x = [1, 2];\n}\n";
+    let doc = Document::new(src);
+    let mut syntax = Syntax::new(by_id("rust").unwrap()).unwrap();
+    syntax.update(doc.model());
+    // The block comment, the function body (the closing brace stays shown) and the call.
+    assert_eq!(syntax.fold_ranges(), vec![(0, 1), (2, 7), (3, 5)]);
+}

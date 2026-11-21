@@ -232,3 +232,30 @@ test('shift+alt drag selects a column, ctrl+u undoes cursor changes', async ({ p
   await page.keyboard.press(`${mod}+u`);
   expect(await selections(page)).toEqual([{ anchor: 0, head: 0 }]);
 });
+
+test('folding hides lines, carets step over folds, the gutter marker unfolds', async ({ page }) => {
+  await open(page, 'fn a() {\n    one\n    two\n}\nlast');
+  await page.waitForTimeout(400); // folding ranges are computed once typing pauses
+  await setCursor(page, 12);
+  if (mod === 'Control') await page.keyboard.press('Control+Shift+BracketLeft');
+  else await page.evaluate(() => window.editor.runCommand('editor.fold'));
+  expect(await page.evaluate(() => Array.from(window.editor.core.visibleLines()))).toEqual([0, 1, 3, 5]);
+  expect((await selections(page))[0].head).toBe(8);
+  await page.keyboard.press('ArrowDown');
+  const line3 = 'fn a() {\n    one\n    two\n'.length;
+  expect((await selections(page))[0].head).toBe(line3 + 1);
+
+  const marker = await page.evaluate(() => {
+    const e = window.editor;
+    e.setSelections([{ anchor: 0, head: 0 }]);
+    e.core.render(true);
+    const x0 = e.core.caret_x();
+    e.setSelections([{ anchor: 1, head: 1 }]);
+    e.core.render(true);
+    const cw = e.core.caret_x() - x0;
+    return { x: x0 - 1.5 * cw, y: e.core.line_height() / 2 };
+  });
+  const box = await page.locator('canvas').first().boundingBox();
+  await page.mouse.click(box.x + marker.x, box.y + marker.y);
+  expect(await page.evaluate(() => Array.from(window.editor.core.visibleLines()))).toEqual([0, 5]);
+});

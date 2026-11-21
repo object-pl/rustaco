@@ -17,7 +17,7 @@ use rustaco_core::{
     Searcher, Selection, Selections, Stickiness, TextModel, default_keymap, jetbrains_keymap, next_match, word_at,
 };
 use rustaco_syntax::{Colors, Style, Theme, ThemeRule, themes};
-use rustaco_view::{Metrics, Rect, StyleSpan, Styler, View};
+use rustaco_view::{Metrics, Rect, StyleSpan, Styler, View, indent_fold_ranges};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
@@ -315,13 +315,17 @@ impl EditBatch {
 /// Style spans for the lines last highlighted by a language module.
 #[derive(Default)]
 struct ExternalHighlights {
-    first_line: usize,
-    lines: Vec<Vec<StyleSpan>>,
+    /// (first line, spans per line), one entry per run of shown lines.
+    segments: Vec<(usize, Vec<Vec<StyleSpan>>)>,
 }
 
 impl Styler for ExternalHighlights {
     fn spans(&self, line: usize) -> Vec<StyleSpan> {
-        line.checked_sub(self.first_line).and_then(|i| self.lines.get(i)).cloned().unwrap_or_default()
+        self.segments
+            .iter()
+            .find_map(|(first, lines)| line.checked_sub(*first).and_then(|i| lines.get(i)))
+            .cloned()
+            .unwrap_or_default()
     }
 }
 
@@ -443,17 +447,28 @@ impl Editor {
         self.reveal_primary();
     }
 
-    /// First and end line (exclusive) currently on screen.
+    /// The lines on screen as pairs of first and end line (exclusive), one pair per run of
+    /// lines not hidden by a fold.
     #[wasm_bindgen(js_name = visibleLines)]
-    pub fn visible_lines(&self) -> Vec<u32> {
-        let lines = self.view.visible_lines(self.model.borrow().rope());
-        vec![lines.start as u32, lines.end as u32]
+    pub fn visible_lines(&mut self) -> Vec<u32> {
+        let model = self.model.borrow();
+        self.view.sync(&model);
+        let lines = self.view.visible_lines(model.rope());
+        self.view.shown_segments(lines).into_iter().flat_map(|r| [r.start as u32, r.end as u32]).collect()
     }
 
     /// Takes highlights from a language module: quads of line, start column, end column
     /// (chars) and style id, covering lines from `first_line`. Lines without quads are plain.
+    /// Replaces all highlights; [`Editor::add_highlights`] adds another run of lines.
     #[wasm_bindgen(js_name = setHighlights)]
     pub fn set_highlights(&mut self, first_line: u32, end_line: u32, quads: &[u32]) {
+        self.highlights.segments.clear();
+        self.add_highlights(first_line, end_line, quads);
+    }
+
+    /// Adds highlights for another run of lines, as [`Editor::set_highlights`] takes them.
+    #[wasm_bindgen(js_name = addHighlights)]
+    pub fn add_highlights(&mut self, first_line: u32, end_line: u32, quads: &[u32]) {
         let first = first_line as usize;
         let mut lines = vec![Vec::new(); end_line.saturating_sub(first_line) as usize];
         for q in quads.chunks_exact(4) {
@@ -461,7 +476,43 @@ impl Editor {
                 row.push(StyleSpan { start: q[1] as usize, end: q[2] as usize, style: q[3] });
             }
         }
-        self.highlights = ExternalHighlights { first_line: first, lines };
+        self.highlights.segments.push((first, lines));
+    }
+
+    /// Recomputes the regions that can be folded, from indentation. The JS side calls it
+    /// once typing pauses; with a syntax tree it passes ranges through
+    /// [`Editor::set_folding_ranges`] instead.
+    #[wasm_bindgen(js_name = refreshFoldingRanges)]
+    pub fn refresh_folding_ranges(&mut self) {
+        let model = self.model.borrow();
+        self.view.sync(&model);
+        self.view.set_foldable(indent_fold_ranges(model.rope(), model.options.tab_size));
+    }
+
+    /// Sets the regions that can be folded: pairs of header line and last line, from a syntax
+    /// tree. With `with_indentation`, regions from indentation are added where no pair starts
+    /// on the same line (Python, YAML: blocks without brackets).
+    #[wasm_bindgen(js_name = setFoldingRanges)]
+    pub fn set_folding_ranges(&mut self, pairs: &[u32], with_indentation: bool) {
+        let model = self.model.borrow();
+        self.view.sync(&model);
+        let mut ranges: Vec<(usize, usize)> = pairs.chunks_exact(2).map(|p| (p[0] as usize, p[1] as usize)).collect();
+        if with_indentation {
+            let headers: std::collections::HashSet<usize> = ranges.iter().map(|r| r.0).collect();
+            ranges.extend(
+                indent_fold_ranges(model.rope(), model.options.tab_size)
+                    .into_iter()
+                    .filter(|r| !headers.contains(&r.0)),
+            );
+        }
+        self.view.set_foldable(ranges);
+    }
+
+    /// Folds or unfolds the region headed at `line`, as a click on the gutter marker does.
+    #[wasm_bindgen(js_name = toggleFold)]
+    pub fn toggle_fold(&mut self, line: u32) -> bool {
+        let model = self.model.borrow();
+        self.view.toggle_fold(&model, line as usize)
     }
 
     /// Drops highlights, e.g. when the model's language is turned off.
@@ -529,6 +580,21 @@ impl Editor {
             "cursorPageDownSelect" => Some((page, true)),
             _ => None,
         };
+        let vertical = match command {
+            "cursorUp" => Some((-1, false)),
+            "cursorUpSelect" => Some((-1, true)),
+            "cursorDown" => Some((1, false)),
+            "cursorDownSelect" => Some((1, true)),
+            _ => None,
+        };
+        if let Some((lines, extend)) = vertical {
+            self.move_vertical(lines, extend);
+            self.reveal_primary();
+            return true;
+        }
+        if let Some(handled) = self.fold_command(command) {
+            return handled;
+        }
         let find_step = match command {
             "editor.action.nextMatchFindAction" => Some(true),
             "editor.action.jumpToBracket" => {
@@ -552,8 +618,8 @@ impl Editor {
         }
         let handled = match page_move {
             Some((lines, extend)) => {
-                self.edit(|ed| ed.move_vertical(lines, extend));
-                let dy = lines as f32 * self.view.metrics.line_height;
+                self.move_vertical(lines, extend);
+                let dy = lines as f64 * self.view.metrics.line_height as f64;
                 self.view.scroll_by(self.model.borrow().rope(), 0.0, dy);
                 true
             }
@@ -776,7 +842,7 @@ impl Editor {
     }
 
     pub fn wheel(&mut self, dx: f64, dy: f64) {
-        self.view.scroll_by(self.model.borrow().rope(), dx as f32, dy as f32);
+        self.view.scroll_by(self.model.borrow().rope(), dx as f32, dy);
     }
 
     /// `clicks` is the DOM `detail`: 1 places a cursor, 2 selects a word, 3 a line.
@@ -786,6 +852,17 @@ impl Editor {
             2 => DragUnit::Word,
             _ => DragUnit::Line,
         };
+        {
+            let model = self.model.borrow();
+            self.view.sync(&model);
+            let rope = model.rope();
+            if self.view.in_fold_gutter(rope, x as f32) {
+                let (line, _) = self.view.line_and_cells_at(rope, x as f32, y as f32);
+                if self.view.toggle_fold(&model, line) {
+                    return;
+                }
+            }
+        }
         let (pos, (start, end)) = {
             let model = self.model.borrow();
             let pos = self.view.hit_test(model.rope(), x as f32, y as f32);
@@ -926,6 +1003,14 @@ impl Editor {
         for r in &frame.selections {
             fill(&chrome.selection, r);
         }
+        for r in &frame.fold_ellipses {
+            let inset = Rect { y: r.y + 2.0, height: r.height - 4.0, ..*r };
+            fill(&chrome.word_highlight, &inset);
+            ctx.set_fill_style_str(&chrome.line_number);
+            ctx.set_text_align("center");
+            ctx.set_text_baseline("middle");
+            ctx.fill_text("\u{22ef}", (r.x + r.width / 2.0) as f64, (r.y + r.height / 2.0) as f64)?;
+        }
         ctx.set_text_baseline("middle");
         ctx.set_text_align("left");
         // All text goes to JS in one call: one string, one number array, one font change per
@@ -1009,13 +1094,31 @@ impl Editor {
             let color = if line.line == primary_line { &chrome.line_number_active } else { &chrome.line_number };
             ctx.set_fill_style_str(color);
             let y = (line.y + line.height / 2.0) as f64;
-            ctx.fill_text(&(line.line + 1).to_string(), gutter - 1.5 * cw, y)?;
+            ctx.fill_text(&(line.line + 1).to_string(), gutter - 3.5 * cw, y)?;
+        }
+        ctx.set_fill_style_str(&chrome.line_number);
+        for m in &frame.fold_markers {
+            // A small triangle: pointing right when folded, down when open.
+            let (cx, cy) = (gutter - 1.5 * cw, (m.y + m.height / 2.0) as f64);
+            let r = (cw * 0.35).max(3.0);
+            ctx.begin_path();
+            if m.folded {
+                ctx.move_to(cx - r * 0.6, cy - r);
+                ctx.line_to(cx + r * 0.6, cy);
+                ctx.line_to(cx - r * 0.6, cy + r);
+            } else {
+                ctx.move_to(cx - r, cy - r * 0.6);
+                ctx.line_to(cx + r, cy - r * 0.6);
+                ctx.line_to(cx, cy + r * 0.6);
+            }
+            ctx.close_path();
+            ctx.fill();
         }
 
-        let content = self.view.content_height(rope) as f64;
+        let content = self.view.content_height(rope);
         if content > h {
             let thumb = (h * h / content).max(20.0);
-            let top = self.view.scroll_top() as f64 / (content - h) * (h - thumb);
+            let top = self.view.scroll_top() / (content - h) * (h - thumb);
             ctx.set_fill_style_str(&chrome.scrollbar);
             ctx.fill_rect(w - 10.0, top, 10.0, thumb);
         }
@@ -1061,11 +1164,83 @@ impl Editor {
         f(&mut Commands::new(&mut model, &mut self.cursors))
     }
 
+    /// Opens folds that hide a caret, then scrolls the primary caret into view.
     fn reveal_primary(&mut self) {
         let model = self.model.borrow();
         self.cursors.sync(&model);
-        let head = self.cursors.selections().primary().head;
-        self.view.reveal(model.rope(), head);
+        let sels = self.cursors.selections();
+        self.view.reveal_positions(&model, sels.iter().map(|s| s.head));
+        self.view.reveal(model.rope(), sels.primary().head);
+    }
+
+    /// Moves carets by shown lines, stepping over folds.
+    fn move_vertical(&mut self, lines: isize, extend: bool) {
+        let targets: Vec<(usize, Option<usize>)> = {
+            let model = self.model.borrow();
+            self.cursors.sync(&model);
+            self.view.sync(&model);
+            let rope = model.rope();
+            self.cursors
+                .selections()
+                .iter()
+                .map(|s| self.view.vertical_target(rope, s.head, s.goal_column, lines))
+                .collect()
+        };
+        let mut targets = targets.into_iter();
+        self.edit(|ed| ed.move_heads(extend, |_, s| targets.next().unwrap_or((s.head, s.goal_column))));
+    }
+
+    /// Runs a folding command; None when `command` is not one.
+    fn fold_command(&mut self, command: &str) -> Option<bool> {
+        let model = self.model.borrow();
+        self.cursors.sync(&model);
+        let lines: Vec<usize> = self.cursors.selections().iter().map(|s| model.rope().char_to_line(s.head)).collect();
+        let view = &mut self.view;
+        let handled = match command {
+            "editor.fold" => lines.iter().fold(false, |acc, &l| view.fold(&model, l) | acc),
+            "editor.unfold" => lines.iter().fold(false, |acc, &l| view.unfold(&model, l) | acc),
+            "editor.toggleFold" => lines.iter().fold(false, |acc, &l| view.toggle_fold(&model, l) | acc),
+            "editor.foldAll" => {
+                view.fold_all(&model);
+                true
+            }
+            "editor.unfoldAll" => {
+                view.unfold_all(&model);
+                true
+            }
+            _ => return None,
+        };
+        drop(model);
+        // A caret inside the region just folded moves to its header line first.
+        self.carets_out_of_folds();
+        self.reveal_primary();
+        Some(handled)
+    }
+
+    /// Moves carets that a new fold hid to the end of the fold's header line.
+    fn carets_out_of_folds(&mut self) {
+        let targets: Vec<usize> = {
+            let model = self.model.borrow();
+            self.cursors.sync(&model);
+            let rope = model.rope();
+            self.cursors
+                .selections()
+                .iter()
+                .map(|s| {
+                    let line = rope.char_to_line(s.head);
+                    if !self.view.is_hidden(line) {
+                        return s.head;
+                    }
+                    let mut header = line;
+                    while header > 0 && self.view.is_hidden(header) {
+                        header -= 1;
+                    }
+                    rustaco_core::line_end(rope, header)
+                })
+                .collect()
+        };
+        let mut targets = targets.into_iter();
+        self.edit(|ed| ed.move_heads(false, |_, s| (targets.next().unwrap_or(s.head), None)));
     }
 }
 

@@ -44,6 +44,9 @@ function loadPack(pack) {
 
 const editors = new Set();
 
+/** Languages whose blocks are marked by indentation, so indentation adds fold regions. */
+const INDENTATION_BLOCKS = new Set(['python', 'yaml']);
+
 /** Physical keys whose unshifted symbol names them in keybindings. */
 const SYMBOL_CODES = {
   Backslash: '\\', Slash: '/', BracketLeft: '[', BracketRight: ']', Semicolon: ';', Quote: "'",
@@ -158,7 +161,10 @@ export class RustacoModel {
       this.highlighterVersion = this.core.version();
       ok = true;
     }
-    for (const e of this.editors) e.schedule();
+    for (const e of this.editors) {
+      e.refreshFoldingSoon();
+      e.schedule();
+    }
     return ok;
   }
 
@@ -208,7 +214,12 @@ export class RustacoModel {
   changed() {
     for (const e of this.editors) e.schedule();
     const v0 = this.version;
-    if (this.core.version() !== v0) for (const e of this.editors) e.refreshFindSoon();
+    if (this.core.version() !== v0) {
+      for (const e of this.editors) {
+        e.refreshFindSoon();
+        e.refreshFoldingSoon();
+      }
+    }
     const v = this.core.version();
     if (v !== this.version) {
       this.version = v;
@@ -251,6 +262,7 @@ export class RustacoEditor {
     this.setKeymap(keymap);
     this.options = {};
     this.setOptions({ rulers, renderWhitespace, guides, occurrencesHighlight, bracketPairColorization });
+    this.refreshFolding();
     this.model.editors.add(this);
     this.caretOn = true;
     this.focused = false;
@@ -338,6 +350,28 @@ export class RustacoEditor {
     if (!this.findActive) return;
     clearTimeout(this.findTimer);
     this.findTimer = setTimeout(() => { this.core.refreshFind(); this.schedule(); }, 100);
+  }
+
+  /** Recomputes foldable regions once typing pauses; the scan reads the whole file. */
+  refreshFoldingSoon() {
+    clearTimeout(this.foldTimer);
+    this.foldTimer = setTimeout(() => { this.refreshFolding(); this.schedule(); }, 300);
+  }
+
+  /**
+   * Foldable regions from the language module's tree when it has one (bracket pairs,
+   * comments, markdown sections), from indentation otherwise. Languages whose blocks are
+   * indentation get both.
+   */
+  refreshFolding() {
+    const h = this.model.highlighter;
+    if (h && h.hasTree()) {
+      this.model.updateHighlighter(20);
+      const lang = this.model.language;
+      this.core.setFoldingRanges(Uint32Array.from(h.foldingRanges()), INDENTATION_BLOCKS.has(lang));
+    } else {
+      this.core.refreshFoldingRanges();
+    }
   }
 
   /** Runs a command by id (`editor.action.commentLine`, `cursorWordLeft`, ...). */
@@ -501,8 +535,14 @@ export class RustacoEditor {
       const h = model.highlighter;
       if (h) {
         const parsed = model.updateHighlighter();
-        const [first, end] = core.visibleLines();
-        core.setHighlights(first, end, h.highlight(first, end, !!this.options.bracketPairColorization));
+        // One run of lines per stretch between folds, so folded lines are never highlighted.
+        const runs = core.visibleLines();
+        const colorize = !!this.options.bracketPairColorization;
+        for (let i = 0; i < runs.length; i += 2) {
+          const quads = h.highlight(runs[i], runs[i + 1], colorize);
+          if (i === 0) core.setHighlights(runs[i], runs[i + 1], quads);
+          else core.addHighlights(runs[i], runs[i + 1], quads);
+        }
         if (h.hasTree()) core.setTreeBrackets(h.matchingBracket(core.primaryRange()[0]));
         else core.clearTreeBrackets();
         if (!parsed) this.schedule();

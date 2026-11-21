@@ -35,9 +35,10 @@ Monaco's default editor keybindings (Windows and Linux keys; macOS uses Cmd wher
 | Ctrl+K Ctrl+X | trim trailing whitespace | done |
 | Ctrl+F / Ctrl+H | find / replace widget | phase 6 (API exists: `find`, `replace`, `replaceAll`) |
 | Ctrl+G | go to line | phase 6 |
-| Ctrl+Shift+\ | jump to matching bracket | phase 4 |
-| Ctrl+Shift+[ / Ctrl+Shift+] | fold / unfold | phase 5 |
-| Ctrl+K Ctrl+0 / Ctrl+K Ctrl+J | fold all / unfold all | phase 5 |
+| Ctrl+Shift+\ | jump to matching bracket | done |
+| Ctrl+Shift+[ / Ctrl+Shift+] | fold / unfold | done |
+| Ctrl+K Ctrl+L | toggle fold | done |
+| Ctrl+K Ctrl+0 / Ctrl+K Ctrl+J | fold all / unfold all | done |
 | Ctrl+Space | trigger suggestions | phase 8 |
 | Ctrl+Shift+Space | parameter hints | phase 8 |
 | F12 / Alt+F12 / Shift+F12 | go to definition / peek / references | phases 8 and 9 |

@@ -255,6 +255,12 @@ fn every_bound_command_runs() {
         // Find navigation needs the frontend's current query.
         "editor.action.nextMatchFindAction",
         "editor.action.previousMatchFindAction",
+        // Folds belong to the view.
+        "editor.fold",
+        "editor.unfold",
+        "editor.toggleFold",
+        "editor.foldAll",
+        "editor.unfoldAll",
     ];
     for platform in [Platform::Windows, Platform::Mac] {
         for keymap in [default_keymap(platform), jetbrains_keymap(platform)] {

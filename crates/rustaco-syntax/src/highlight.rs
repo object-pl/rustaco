@@ -162,6 +162,56 @@ impl Syntax {
         None
     }
 
+    /// Regions worth folding, as (header row, last hidden row): the inside of every bracket
+    /// pair spanning lines (the closing bracket's line stays visible), multi-line comments,
+    /// and markdown sections. One region per header row, the outermost. Walks only nodes
+    /// that span lines, but still the whole tree, so call it once typing pauses.
+    pub fn fold_ranges(&self) -> Vec<(usize, usize)> {
+        let Some(tree) = self.tree.as_ref() else { return Vec::new() };
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        let mut cursor = tree.walk();
+        let last_row = |n: Node| {
+            let end = n.end_position();
+            if end.column == 0 && end.row > n.start_position().row { end.row - 1 } else { end.row }
+        };
+        loop {
+            let node = cursor.node();
+            let multi_line = node.end_position().row > node.start_position().row;
+            if multi_line {
+                let count = node.child_count();
+                let open =
+                    (0..count.min(3)).filter_map(|i| node.child(i)).find(|c| !c.is_named() && is_opening(c.kind()));
+                let close = count.checked_sub(1).and_then(|i| node.child(i));
+                if let (Some(open), Some(close)) = (open, close)
+                    && bracket_partner(open.kind()) == Some(close.kind())
+                {
+                    let (a, b) = (open.start_position().row, close.start_position().row);
+                    if b > a + 1 {
+                        out.push((a, b - 1));
+                    }
+                } else if node.kind().contains("comment") || node.kind() == "section" {
+                    let (a, b) = (node.start_position().row, last_row(node));
+                    if b > a {
+                        out.push((a, b));
+                    }
+                }
+            }
+            if multi_line && cursor.goto_first_child() {
+                continue;
+            }
+            loop {
+                if cursor.goto_next_sibling() {
+                    break;
+                }
+                if !cursor.goto_parent() {
+                    out.sort_unstable_by_key(|&(a, b)| (a, std::cmp::Reverse(b)));
+                    out.dedup_by_key(|r| r.0);
+                    return out;
+                }
+            }
+        }
+    }
+
     /// Bracket tokens starting in `bytes`, with their nesting depth (0 for the outermost
     /// pair): (start byte, depth). The walk descends only into nodes that reach the range, so
     /// its cost follows the visible text, not the file. Depth counts the enclosing nodes that

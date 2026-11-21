@@ -257,6 +257,11 @@ const WINDOWS_LINUX: &[Entry] = &[
     ("ctrl+shift+\\", "editor.action.jumpToBracket", None),
     ("ctrl+]", "editor.action.indentLines", None),
     ("ctrl+[", "editor.action.outdentLines", None),
+    ("ctrl+shift+[", "editor.fold", None),
+    ("ctrl+shift+]", "editor.unfold", None),
+    ("ctrl+k ctrl+l", "editor.toggleFold", None),
+    ("ctrl+k ctrl+0", "editor.foldAll", None),
+    ("ctrl+k ctrl+j", "editor.unfoldAll", None),
 ];
 
 const MAC: &[Entry] = &[
@@ -292,6 +297,11 @@ const MAC: &[Entry] = &[
     ("shift+cmd+\\", "editor.action.jumpToBracket", None),
     ("cmd+]", "editor.action.indentLines", None),
     ("cmd+[", "editor.action.outdentLines", None),
+    ("alt+cmd+[", "editor.fold", None),
+    ("alt+cmd+]", "editor.unfold", None),
+    ("cmd+k cmd+l", "editor.toggleFold", None),
+    ("cmd+k cmd+0", "editor.foldAll", None),
+    ("cmd+k cmd+j", "editor.unfoldAll", None),
     ("cmd+g", "editor.action.nextMatchFindAction", None),
     ("shift+cmd+g", "editor.action.previousMatchFindAction", None),
 ];
