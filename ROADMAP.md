@@ -2,7 +2,12 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Done: phases 0 to 11 (all 2026-11-21). Next: phase 12.
+Done: phases 0 to 11 (all 2026-11-21). Phase 12 in progress.
+
+Phase 12 so far:
+- Done: guides for embedding in a web page and in a native application and for adding a language (`docs/`); a performance report from the repository's benchmarks (`docs/performance.md`); an API review with what to settle before 1.0 (`docs/api-review.md`); provider text is never parsed as HTML (tested), pastes above `maxPasteLength` are refused.
+- Waiting for decisions: the 1.0 version and API freeze, the repository URL for the manifests, and publishing to crates.io and npm, which are not reversible. The browser packs depend on a patched `tree-sitter-language` that crates.io cannot carry.
+- Not done: the comparison with Monaco on the same files (`docs/performance.md`, last section).
 
 Phase 11 summary:
 - `rustaco-desktop`: a `DesktopEditor` that takes winit's keys, text, IME and mouse events, runs the same keymap and commands as the browser, highlights on a background thread (`BackgroundSyntax`, all grammars compiled in), and draws the view's `Frame` into a pixel buffer. Glyphs come from a system monospace font (`fontdb` finds Cascadia, Consolas, SF Mono, Menlo, DejaVu Sans Mono, ...; `fontdue` rasterizes) and are cached; clipboard through `arboard`.

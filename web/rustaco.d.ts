@@ -169,6 +169,8 @@ export interface ViewOptions {
   stickyScroll?: { enabled: boolean; maxLineCount?: number };
   /** Open the completion list while typing a word (default true). */
   quickSuggestions?: boolean;
+  /** Longest paste accepted, in UTF-16 units (default 50,000,000); longer ones are refused. */
+  maxPasteLength?: number;
 }
 
 export interface Selection {
@@ -244,6 +246,8 @@ export class RustacoEditor {
   triggerSuggest(): Promise<void>;
   /** Symbols from a provider, else from the syntax tree. */
   getDocumentSymbols(): Promise<DocumentSymbol[]>;
+  /** Called with the length of a paste refused for exceeding `maxPasteLength`. */
+  onPasteTooLarge?: (length: number) => void;
   /** Called when go to definition lands in another model; the host opens it. */
   onOpenLocation?: (location: { model: RustacoModel; range: Range }) => void;
 

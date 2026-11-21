@@ -14,7 +14,8 @@
     "./lsp": {
       "types": "./lsp.d.ts",
       "default": "./lsp.js"
-    }
+    },
+    "./diff": "./diff.js"
   },
   "files": [
     "rustaco.js",

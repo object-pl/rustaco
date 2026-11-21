@@ -166,3 +166,39 @@ test('semantic tokens colour a language without a grammar; inlay hints push text
   await page.evaluate(() => window.editor.features.refreshInlayHints());
   await expect.poll(() => page.evaluate((o) => { window.editor.core.render(false); return window.editor.core.positionOf(o)[0]; }, eq)).toBeGreaterThan(before);
 });
+
+test('provider text never becomes HTML; oversized pastes are refused', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.editor?.ready);
+  await page.evaluate(async () => {
+    const { languages } = await import('/rustaco.js');
+    languages.registerHoverProvider('html-probe', {
+      provideHover: () => ({ contents: ['<img src=x onerror="window.injected=1"> **bold** <b>tag</b>'] }),
+    });
+    const e = window.editor;
+    e.setValue('word');
+    await e.getModel().setLanguage('html-probe');
+    e.focus();
+    e.setSelections([{ anchor: 1, head: 1 }]);
+    e.runCommand('editor.action.showHover');
+  });
+  const hover = page.locator('[role="tooltip"][aria-label="Hover"]');
+  await expect(hover).toContainText('<img src=x');
+  expect(await hover.locator('img').count()).toBe(0);
+  expect(await page.evaluate(() => window.injected)).toBeUndefined();
+
+  const refused = await page.evaluate(() => {
+    const e = window.editor;
+    e.setOptions({ maxPasteLength: 10 });
+    let seen = 0;
+    e.onPasteTooLarge = (n) => { seen = n; };
+    const input = document.querySelector('textarea');
+    const data = new DataTransfer();
+    data.setData('text/plain', 'x'.repeat(11));
+    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    return { seen, value: e.getValue() };
+  });
+  // Firefox ignores data in synthetic clipboard events; there nothing is pasted either way.
+  if (refused.seen) expect(refused.seen).toBe(11);
+  expect(refused.value).toBe('word');
+});

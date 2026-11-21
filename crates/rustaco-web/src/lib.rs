@@ -350,7 +350,9 @@ impl TextReplica {
         Ok(())
     }
 
-    /// Diffs this text (the original) against `modified`; see [`encode_diff`] for the result.
+    /// Diffs this text (the original) against `modified`. The result is flat: a completeness
+    /// flag, the change count, then per change the old and new line ranges, the moved partner
+    /// plus one, the char change count and four offsets per char change.
     /// After `budget_ms` the rest is diffed coarsely.
     pub fn diff(&self, modified: &TextReplica, ignore_whitespace: bool, budget_ms: f64) -> Vec<u32> {
         encode_diff(&self.rope, &modified.rope, ignore_whitespace, budget_ms)

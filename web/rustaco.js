@@ -228,6 +228,17 @@ let workersByDefault = true;
 export function setWorkersEnabled(on) { workersByDefault = !!on; }
 
 
+/** Commands the JS side runs: they need the language module, providers or the DOM. */
+const FRONTEND_COMMANDS = new Set([
+  'editor.action.smartSelect.expand', 'editor.action.jumpToBracket', 'actions.find',
+  'editor.action.startFindReplaceAction', 'editor.action.triggerSuggest', 'editor.action.triggerParameterHints',
+  'editor.action.revealDefinition', 'editor.action.referenceSearch.trigger', 'editor.action.rename',
+  'editor.action.formatDocument', 'editor.action.showHover', 'editor.action.quickFix', 'editor.action.quickOutline',
+]);
+
+/** Longest paste accepted, in UTF-16 units (option `maxPasteLength`). */
+const MAX_PASTE_LENGTH = 50_000_000;
+
 /** Clipboard type of the per-cursor pieces of a multi-cursor copy. */
 const CLIPBOARD_META = 'application/x-rustaco-editor';
 
@@ -883,8 +894,12 @@ export class RustacoEditor {
 
   /** Runs a command by id (`editor.action.commentLine`, `cursorWordLeft`, ...). */
   runCommand(id) {
+    if (FRONTEND_COMMANDS.has(id)) {
+      this.#frontendCommand(id);
+      return true;
+    }
     const ok = this.core.runCommand(id);
-    if (ok) this.#changed();
+    if (ok) this.afterEdit();
     return ok;
   }
   getValue() { return this.model.getValue(); }
@@ -1098,6 +1113,11 @@ export class RustacoEditor {
     input.addEventListener('paste', (e) => {
       e.preventDefault();
       const text = e.clipboardData.getData('text/plain');
+      // A runaway clipboard (hundreds of megabytes) would freeze the page; it is refused.
+      if (text.length > (this.options.maxPasteLength ?? MAX_PASTE_LENGTH)) {
+        this.onPasteTooLarge?.(text.length);
+        return;
+      }
       let meta = null;
       try { meta = JSON.parse(e.clipboardData.getData(CLIPBOARD_META) || 'null'); } catch { meta = null; }
       const cursors = core.selections().length / 2;

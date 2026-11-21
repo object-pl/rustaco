@@ -25,7 +25,7 @@ The editor module is about 230 KB gzipped; each language module (290 to 690 KB) 
 cargo test
 ```
 
-The crate layout is in [ARCHITECTURE.md](ARCHITECTURE.md), the plan in [ROADMAP.md](ROADMAP.md).
+The crate layout is in [ARCHITECTURE.md](ARCHITECTURE.md), the plan in [ROADMAP.md](ROADMAP.md). Guides: [embedding in a web page](docs/embedding-web.md), [embedding in a native application](docs/embedding-desktop.md), [adding a language](docs/adding-a-language.md); measurements in [docs/performance.md](docs/performance.md); the open API questions before 1.0 in [docs/api-review.md](docs/api-review.md).
 
 Browser demo (requires `wasm-bindgen-cli` 0.2.130, the `wasm32-unknown-unknown` target and clang; on Windows a portable LLVM unpacked into `~/tools` is found automatically):
 

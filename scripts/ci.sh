@@ -18,6 +18,9 @@ cargo clippy -p rustaco-syntax-wasm --features textmate --target wasm32-unknown-
 echo "== tests"
 cargo test --workspace
 
+echo "== docs"
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+
 echo "== licenses and advisories"
 cargo deny check
 
