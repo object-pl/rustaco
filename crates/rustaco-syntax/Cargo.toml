@@ -1,0 +1,61 @@
+[package]
+name = "rustaco-syntax"
+description = "Syntax highlighting for the Rustaco editor: incremental tree-sitter parsing and themes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rustaco-core = { workspace = true, optional = true }
+rustaco-view = { workspace = true, optional = true }
+tree-sitter = { version = "0.27", default-features = false, optional = true }
+ropey = { workspace = true, optional = true }
+tree-sitter-rust = { version = "0.24", optional = true }
+tree-sitter-javascript = { version = "0.25", optional = true }
+tree-sitter-json = { version = "0.24", optional = true }
+tree-sitter-python = { version = "0.25", optional = true }
+tree-sitter-typescript = { version = "0.23", optional = true }
+tree-sitter-c = { version = "0.24", optional = true }
+tree-sitter-cpp = { version = "0.23", optional = true }
+tree-sitter-go = { version = "0.25", optional = true }
+tree-sitter-java = { version = "0.23", optional = true }
+tree-sitter-c-sharp = { version = "0.24", optional = true }
+tree-sitter-html = { version = "0.23", optional = true }
+tree-sitter-css = { version = "0.25", optional = true }
+tree-sitter-bash = { version = "0.25", optional = true }
+tree-sitter-toml-ng = { version = "0.7", optional = true }
+tree-sitter-yaml = { version = "0.7", optional = true }
+tree-sitter-sequel = { version = "0.3", optional = true }
+tree-sitter-md = { version = "0.5", optional = true }
+
+[features]
+default = ["all-languages"]
+all-languages = [
+    "rust", "javascript", "typescript", "json", "python", "c", "cpp", "go", "java", "csharp",
+    "html", "css", "bash", "toml", "yaml", "sql", "markdown",
+]
+# The parser and highlighter. Without it the crate provides only themes and highlight names,
+# which is all the browser editor bundle needs; parsing runs in separate language modules.
+engine = ["dep:tree-sitter", "dep:rustaco-core", "dep:rustaco-view", "dep:ropey"]
+rust = ["engine", "dep:tree-sitter-rust"]
+javascript = ["engine", "dep:tree-sitter-javascript"]
+json = ["engine", "dep:tree-sitter-json"]
+python = ["engine", "dep:tree-sitter-python"]
+typescript = ["engine", "dep:tree-sitter-typescript", "dep:tree-sitter-javascript"]
+c = ["engine", "dep:tree-sitter-c"]
+cpp = ["engine", "dep:tree-sitter-cpp", "dep:tree-sitter-c"]
+go = ["engine", "dep:tree-sitter-go"]
+java = ["engine", "dep:tree-sitter-java"]
+csharp = ["engine", "dep:tree-sitter-c-sharp"]
+html = ["engine", "dep:tree-sitter-html"]
+css = ["engine", "dep:tree-sitter-css"]
+bash = ["engine", "dep:tree-sitter-bash"]
+toml = ["engine", "dep:tree-sitter-toml-ng"]
+yaml = ["engine", "dep:tree-sitter-yaml"]
+sql = ["engine", "dep:tree-sitter-sequel"]
+markdown = ["engine", "dep:tree-sitter-md"]
+
+[dev-dependencies]
+proptest = "1"
+rustaco-core.workspace = true

@@ -11,9 +11,19 @@ rust-version = "1.85"
 [workspace.dependencies]
 rustaco-core = { path = "crates/rustaco-core", version = "0.1.0" }
 rustaco-view = { path = "crates/rustaco-view", version = "0.1.0" }
+rustaco-syntax = { path = "crates/rustaco-syntax", version = "0.1.0" }
 ropey = { version = "1.6", default-features = false, features = ["cr_lines", "simd"] }
 
 [profile.release]
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# Smaller output for the browser bundle: size over raw speed, no symbol names.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "s"
+strip = true
+
+[patch.crates-io]
+tree-sitter-language = { path = "vendor/tree-sitter-language" }

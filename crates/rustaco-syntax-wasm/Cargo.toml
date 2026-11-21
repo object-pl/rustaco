@@ -1,0 +1,37 @@
+[package]
+name = "rustaco-syntax-wasm"
+description = "Language module for the Rustaco browser editor: tree-sitter parsing and highlighting in WASM"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rustaco-core.workspace = true
+rustaco-syntax = { workspace = true, default-features = false, features = ["engine"] }
+wasm-bindgen = "=0.2.130"
+js-sys = "0.3"
+
+# One feature per language; scripts/build-web.sh builds one module per language pack.
+[features]
+rust = ["rustaco-syntax/rust"]
+javascript = ["rustaco-syntax/javascript"]
+typescript = ["rustaco-syntax/typescript"]
+json = ["rustaco-syntax/json"]
+python = ["rustaco-syntax/python"]
+c = ["rustaco-syntax/c"]
+cpp = ["rustaco-syntax/cpp"]
+go = ["rustaco-syntax/go"]
+java = ["rustaco-syntax/java"]
+csharp = ["rustaco-syntax/csharp"]
+html = ["rustaco-syntax/html"]
+css = ["rustaco-syntax/css"]
+bash = ["rustaco-syntax/bash"]
+toml = ["rustaco-syntax/toml"]
+yaml = ["rustaco-syntax/yaml"]
+sql = ["rustaco-syntax/sql"]
+markdown = ["rustaco-syntax/markdown"]

@@ -6,8 +6,9 @@
 |---|---|---|
 | `rustaco-core` | v0 | `TextModel` (rope buffer, version, undo history, change log) shared by several editors, per-editor `Cursors`, editing commands through `Editor`, `Document` for the single-editor case. Multi-cursor selections, change sets, undo grouping, word movement, clipboard, edit events. No UI, no I/O, builds for `wasm32-unknown-unknown`. |
 | `rustaco-view` | v0 | Renderer-agnostic layout: viewport, scrolling, visual columns with tabs and wide chars, hit testing, display list (text runs, carets, selection rects). Lays out visible lines and visible columns only. |
-| `rustaco-web` | v0 | `wasm-bindgen` frontend drawing on a 2D canvas. `web/rustaco.js` forwards DOM events; keyboard input goes through a hidden `textarea`, so IME and dead keys work. |
-| `rustaco-syntax` | planned | Incremental tree-sitter parsing driven by `EditEvent`, highlight queries feeding `rustaco_view::Styler`, bracket matching, indentation hints. |
+| `rustaco-web` | v0 | `wasm-bindgen` frontend drawing on a 2D canvas, without tree-sitter. `web/rustaco.js` forwards DOM events (keyboard through a hidden `textarea`, so IME and dead keys work), loads language modules and passes edits and highlights between them and the editor. |
+| `rustaco-syntax` | v0 | Language catalog (detection, comment and bracket configuration) and themes in the TextMate scope model, always available. Behind the `engine` feature: incremental tree-sitter parsing driven by `EditEvent`, resumable parsing within a time budget, highlighting of requested lines, 18 grammars. |
+| `rustaco-syntax-wasm` | v0 | Browser language module: one WASM file per language pack, loaded on first use. Keeps its own copy of the text, takes edits and returns highlights as plain data. |
 | `rustaco-lsp` | planned | LSP client over an abstract transport: stdio on desktop, WebSocket or a JS callback in the browser. Completion, diagnostics, hover, go-to-definition, formatting. |
 | `rustaco-diff` | planned | Line diff (histogram) with a char-level pass inside changed lines. Side-by-side and inline diff views, both sides editable, the diff recomputed incrementally after edits. |
 | `rustaco-markdown` | later | Markdown rendering, postponed until after the first release. |
@@ -28,6 +29,16 @@
 - Vertical geometry goes through `View::line_top` and `View::line_at_y` only. Lines have one height today. Markdown headings, diff filler blocks and inline widgets need per-line heights and blocks between lines; they will be added behind these two functions as a height map with prefix sums, without touching frontends.
 - Frontends draw a `Frame` and never measure text or walk the rope.
 
+## Syntax highlighting in the browser
+
+The editor module contains no parser. Each language pack is a separate WASM module with the tree-sitter runtime and its grammars (`web/pkg/syntax-<pack>/`), loaded the first time a model uses one of its languages; a page that edits only Rust never downloads the C++ grammar. Measured gzipped sizes: editor 97 KB, language modules 290 to 690 KB (JSON smallest, C# largest). Twenty grammars in one module would be about 2 MB.
+
+The language module receives edits as data (`Model.editsSince`: nine numbers per edit plus the inserted text) and returns highlights as data (quads of line, start column, end column, style id). No shared memory and no callbacks, so the module can move into a Web Worker behind `postMessage` without interface changes (roadmap phase 7).
+
+tree-sitter's incremental reparse walks the top-level nodes of the file, so its cost grows with their number: about 30 ms for 25,000 Rust functions, 500 ms for 100,000 top-level statements. Parsing therefore runs in slices: each frame gives the module 4 ms, a halted parse resumes on the next frame, and until it finishes the editor highlights from the previous tree shifted by the edits. Measured per keystroke in a 100,000-line Rust file, Chromium: parse 3.8 ms (the budget), highlight 2.3 ms, drawing 2.0 ms, the rest under 0.5 ms; Firefox is about 30% slower.
+
+Pattern priority: when several patterns capture the same node, the later pattern in the query wins. The bundled queries start with generic captures (`(identifier) @variable`) and refine them further down.
+
 ## Performance
 
 Measured in Chromium with the release WASM build on a 1,000,000-line file (54 MB):
@@ -36,9 +47,9 @@ Measured in Chromium with the release WASM build on a 1,000,000-line file (54 MB
 - a keystroke including a full frame render: 0.46 ms;
 - a scroll frame: under 0.1 ms.
 
-The WASM module is 304 KB, 98 KB after gzip. Budget: under 1 MB gzip without grammars; grammars load on demand.
+Budgets (checked by `scripts/check-size.sh`): the editor module under 1 MB gzipped (now 97 KB), each language module under 700 KB gzipped. SQL's tree-sitter grammar compiles to 1.2 MB and is left out of the browser build.
 
-Syntax parsing and LSP will run outside the input path. Highlighting from the previous tree is drawn until the new tree is ready.
+LSP will run outside the input path.
 
 ## Known gaps
 

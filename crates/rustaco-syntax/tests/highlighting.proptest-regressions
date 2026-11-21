@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc ef3532bc62a690541fc36b64f4c6eab1ef9e0f5768a143eaad47c6bc0634b79a # shrinks to edits = [(9, 0, "\""), (49, 2, "/*"), (103, 0, "r#\"")]
+cc e9b34a0a9afcfc14b4608e808903b21e599ba5cc248a347d7773e0f559d9b233 # shrinks to edits = [(9699030799589863417, false, "/* c */"), (0, true, " "), (17205319818543422914, false, "\n// note\n"), (62286213401, false, " "), (0, false, " "), (7544197558615, false, " "), (0, false, " "), (67997117378506, false, " "), (0, false, " ")]
+cc 4285a2256a7b2db6714e9a049640d88cc9429c7c44cba6180463cca4a4fbb6ec # shrinks to edits = [(1579021205715155, true, " "), (5664732756078388980, true, " "), (4585916538227682872, false, "  "), (2156533315283, true, " "), (3310884096306471476, true, " "), (5882330596147233759, false, "  "), (8104140093294157212, false, "/* c */"), (4943609730715424064, false, " "), (6276145994720334753, true, " "), (9709455934615360128, false, " "), (1709918352260631116, false, "/* c */"), (297168197156796297, true, " "), (2042821265059100518, false, " "), (7839824490165050121, false, "\n\n"), (6329878863087069773, true, " "), (13458947901240048615, false, "  "), (1229117609300869460, true, " "), (1258810266825140865, false, "\n// note\n"), (1653817746975296261, false, "\n// note\n"), (5287053935045295179, false, "\n"), (15882170992572500949, true, " "), (15926048471995675894, false, " "), (4711196658191156663, true, "  ")]

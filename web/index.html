@@ -25,7 +25,7 @@ fn main() {
 }
 ` + Array.from({ length: 5000 }, (_, i) => `// filler line ${i + 1}`).join('\n');
 
-    const editor = await createEditor(document.getElementById("root"), { value: sample });
+    const editor = await createEditor(document.getElementById("root"), { value: sample, language: 'rust' });
     editor.focus();
     window.editor = editor;
   </script>

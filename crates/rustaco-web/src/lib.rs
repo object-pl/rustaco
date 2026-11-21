@@ -11,12 +11,13 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rustaco_core::{Cursors, Editor as Commands, EditorId, Rope, Selection, Selections, TextModel, word_at};
-use rustaco_view::{Metrics, Plain, Rect, View};
+use rustaco_syntax::{Style, Theme, ThemeRule, themes};
+use rustaco_view::{Metrics, Rect, StyleSpan, Styler, View};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
-struct Theme {
+struct Chrome {
     background: &'static str,
     gutter: &'static str,
     line_number: &'static str,
@@ -28,7 +29,7 @@ struct Theme {
     scrollbar: &'static str,
 }
 
-const DARK: Theme = Theme {
+const DARK: Chrome = Chrome {
     background: "#1e1e1e",
     gutter: "#1e1e1e",
     line_number: "#6e7681",
@@ -40,8 +41,86 @@ const DARK: Theme = Theme {
     scrollbar: "rgba(121,121,121,0.4)",
 };
 
+#[wasm_bindgen(inline_js = "
+export function draw_runs(ctx, text, ops, colors, fonts) {
+  const c = colors.split('\\n'), f = fonts.split('\\n');
+  let font = -1, color = -1;
+  for (let i = 0; i < ops.length; i += 6) {
+    if (ops[i + 5] !== font) { font = ops[i + 5]; ctx.font = f[font]; }
+    if (ops[i + 4] !== color) { color = ops[i + 4]; ctx.fillStyle = c[color]; }
+    ctx.fillText(text.substring(ops[i + 2], ops[i + 3]), ops[i], ops[i + 1]);
+  }
+}")]
+extern "C" {
+    /// Draws text runs. `ops` holds six numbers per run: x, y, start and end of the run in
+    /// `text` (UTF-16 units), colour index and font index into the newline-separated lists.
+    fn draw_runs(ctx: &CanvasRenderingContext2d, text: &str, ops: &[f64], colors: &str, fonts: &str);
+}
+
 thread_local! {
     static NEXT_EDITOR_ID: Cell<u32> = const { Cell::new(1) };
+    /// CSS colour and font prefix per style id, from the current theme. Shared by all editors.
+    static STYLES: RefCell<Vec<CssStyle>> = RefCell::new(css_styles(&themes::dark()));
+}
+
+#[derive(Clone)]
+struct CssStyle {
+    color: String,
+    /// `"italic bold "` or a part of it, prepended to the font size and family.
+    font_prefix: &'static str,
+}
+
+fn css_styles(theme: &Theme) -> Vec<CssStyle> {
+    theme
+        .style_table()
+        .iter()
+        .map(|s: &Style| CssStyle {
+            color: s.foreground.map_or_else(|| DARK.text.to_owned(), |c| format!("#{:08x}", c)),
+            font_prefix: match (s.italic.unwrap_or(false), s.bold.unwrap_or(false)) {
+                (true, true) => "italic bold ",
+                (true, false) => "italic ",
+                (false, true) => "bold ",
+                (false, false) => "",
+            },
+        })
+        .collect()
+}
+
+/// Selects a bundled theme: `"dark"` or `"light"`.
+#[wasm_bindgen(js_name = setBuiltinTheme)]
+pub fn set_builtin_theme(name: &str) -> bool {
+    let theme = match name {
+        "dark" => themes::dark(),
+        "light" => themes::light(),
+        _ => return false,
+    };
+    STYLES.with(|s| *s.borrow_mut() = css_styles(&theme));
+    true
+}
+
+/// Sets a theme from VS Code `tokenColors` rules flattened by the JS side: one selector
+/// per line in `selectors`, a foreground `0xRRGGBBAA` per selector (0 = unset), and font
+/// flags per selector (bit 0: fontStyle present, bit 1 bold, bit 2 italic, bit 3 underline).
+#[wasm_bindgen(js_name = setThemeRules)]
+pub fn set_theme_rules(selectors: &str, foregrounds: &[u32], font_flags: &[u8]) {
+    let rules = selectors
+        .split('\n')
+        .zip(foregrounds.iter().zip(font_flags))
+        .map(|(selector, (&fg, &flags))| {
+            let font = |bit: u8| (flags & 1 != 0).then_some(flags & bit != 0);
+            ThemeRule {
+                selector: selector.to_owned(),
+                style: Style {
+                    foreground: (fg != 0).then_some(fg),
+                    bold: font(2),
+                    italic: font(4),
+                    underline: font(8),
+                    ..Style::default()
+                },
+            }
+        })
+        .collect();
+    STYLES.with(|s| *s.borrow_mut() = css_styles(&Theme { rules }));
 }
 
 /// A text model that one or more editors can show.
@@ -72,6 +151,93 @@ impl Model {
     pub fn version(&self) -> f64 {
         self.inner.borrow().version() as f64
     }
+
+    /// Edits made after `version`, encoded for a language module (see [`EditBatch`]).
+    #[wasm_bindgen(js_name = editsSince)]
+    pub fn edits_since(&self, version: f64) -> EditBatch {
+        let model = self.inner.borrow();
+        let mut batch = EditBatch { numbers: Vec::new(), text: String::new(), stale: false };
+        match model.events_since(version as u64) {
+            Ok(events) => {
+                for ev in events {
+                    batch.numbers.extend(
+                        [
+                            ev.start_byte,
+                            ev.old_end_byte,
+                            ev.new_end_byte,
+                            ev.start_point.row,
+                            ev.start_point.column,
+                            ev.old_end_point.row,
+                            ev.old_end_point.column,
+                            ev.new_end_point.row,
+                            ev.new_end_point.column,
+                        ]
+                        .map(|n| n as u32),
+                    );
+                    batch.text.push_str(&ev.text);
+                }
+            }
+            Err(_) => batch.stale = true,
+        }
+        batch
+    }
+
+    /// Language id for a file path and first line, or `""` when none matches.
+    #[wasm_bindgen(js_name = detectLanguage)]
+    pub fn detect_language(path: &str, first_line: &str) -> String {
+        rustaco_syntax::detect(path, first_line).map_or_else(String::new, |l| l.id.to_owned())
+    }
+
+    /// The language module (pack) that parses `language`, or `""` for an unknown id.
+    #[wasm_bindgen(js_name = languagePack)]
+    pub fn language_pack(language: &str) -> String {
+        rustaco_syntax::info(language).map_or_else(String::new, |l| l.pack.to_owned())
+    }
+
+    /// Ids of every language the editor knows.
+    #[wasm_bindgen(js_name = knownLanguages)]
+    pub fn known_languages() -> Vec<String> {
+        rustaco_syntax::catalog().iter().map(|l| l.id.to_owned()).collect()
+    }
+}
+
+/// Edits for a language module: `numbers` holds 9 values per edit (start, old end, new end
+/// in bytes; rows and byte columns of the same three points), `text` the inserted texts
+/// concatenated. `stale` means the model's log no longer reaches back to the requested
+/// version, and the module must be reset with the full text.
+#[wasm_bindgen]
+pub struct EditBatch {
+    numbers: Vec<u32>,
+    text: String,
+    stale: bool,
+}
+
+#[wasm_bindgen]
+impl EditBatch {
+    pub fn numbers(&self) -> Vec<u32> {
+        self.numbers.clone()
+    }
+
+    pub fn text(&self) -> String {
+        self.text.clone()
+    }
+
+    pub fn stale(&self) -> bool {
+        self.stale
+    }
+}
+
+/// Style spans for the lines last highlighted by a language module.
+#[derive(Default)]
+struct ExternalHighlights {
+    first_line: usize,
+    lines: Vec<Vec<StyleSpan>>,
+}
+
+impl Styler for ExternalHighlights {
+    fn spans(&self, line: usize) -> Vec<StyleSpan> {
+        line.checked_sub(self.first_line).and_then(|i| self.lines.get(i)).cloned().unwrap_or_default()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -94,6 +260,7 @@ struct Drag {
 #[wasm_bindgen]
 pub struct Editor {
     model: Rc<RefCell<TextModel>>,
+    highlights: ExternalHighlights,
     cursors: Cursors,
     view: View,
     canvas: HtmlCanvasElement,
@@ -119,6 +286,7 @@ impl Editor {
         let cursors = Cursors::new(id, &model.inner.borrow());
         Ok(Editor {
             model: model.inner.clone(),
+            highlights: ExternalHighlights::default(),
             cursors,
             view: View::new(metrics, canvas.client_width() as f32, canvas.client_height() as f32),
             canvas,
@@ -158,6 +326,33 @@ impl Editor {
         }
         self.edit(|ed| ed.set_selections(Selections::new(ranges, 0)));
         self.reveal_primary();
+    }
+
+    /// First and end line (exclusive) currently on screen.
+    #[wasm_bindgen(js_name = visibleLines)]
+    pub fn visible_lines(&self) -> Vec<u32> {
+        let lines = self.view.visible_lines(self.model.borrow().rope());
+        vec![lines.start as u32, lines.end as u32]
+    }
+
+    /// Takes highlights from a language module: quads of line, start column, end column
+    /// (chars) and style id, covering lines from `first_line`. Lines without quads are plain.
+    #[wasm_bindgen(js_name = setHighlights)]
+    pub fn set_highlights(&mut self, first_line: u32, end_line: u32, quads: &[u32]) {
+        let first = first_line as usize;
+        let mut lines = vec![Vec::new(); end_line.saturating_sub(first_line) as usize];
+        for q in quads.chunks_exact(4) {
+            if let Some(row) = (q[0] as usize).checked_sub(first).and_then(|i| lines.get_mut(i)) {
+                row.push(StyleSpan { start: q[1] as usize, end: q[2] as usize, style: q[3] });
+            }
+        }
+        self.highlights = ExternalHighlights { first_line: first, lines };
+    }
+
+    /// Drops highlights, e.g. when the model's language is turned off.
+    #[wasm_bindgen(js_name = clearHighlights)]
+    pub fn clear_highlights(&mut self) {
+        self.highlights = ExternalHighlights::default();
     }
 
     /// Scrolls to the top; used after the model's text is replaced.
@@ -335,7 +530,7 @@ impl Editor {
         let model = self.model.borrow();
         self.cursors.sync(&model);
         let selections = self.cursors.selections();
-        let frame = self.view.layout(&model, selections, &Plain);
+        let frame = self.view.layout(&model, selections, &self.highlights);
         let ctx = &self.ctx;
         let (w, h) = (self.view.width as f64, self.view.height as f64);
         let gutter = frame.gutter_width as f64;
@@ -359,16 +554,46 @@ impl Editor {
         for r in &frame.selections {
             fill(DARK.selection, r);
         }
-        ctx.set_font(&self.font);
         ctx.set_text_baseline("middle");
         ctx.set_text_align("left");
-        ctx.set_fill_style_str(DARK.text);
-        for line in &frame.lines {
-            let y = (line.y + line.height / 2.0) as f64;
-            for run in &line.runs {
-                ctx.fill_text(&run.text, run.x as f64, y)?;
+        // All text goes to JS in one call: one string, one number array, one font change per
+        // font. Crossing into JS per run costs more than the drawing itself.
+        STYLES.with(|styles| {
+            let styles = styles.borrow();
+            let style_of = |id: u32| styles.get(id as usize).unwrap_or(&styles[0]);
+            let mut runs: Vec<(&str, u32, f64, f64)> = frame
+                .lines
+                .iter()
+                .flat_map(|line| {
+                    let y = (line.y + line.height / 2.0) as f64;
+                    line.runs.iter().map(move |r| (r.text.as_str(), r.style, r.x as f64, y))
+                })
+                .collect();
+            runs.sort_by_key(|&(_, style, _, _)| (style_of(style).font_prefix, style));
+
+            let mut text = String::new();
+            let mut ops: Vec<f64> = Vec::with_capacity(runs.len() * 6);
+            let (mut colors, mut fonts): (Vec<&str>, Vec<String>) = (Vec::new(), Vec::new());
+            let mut utf16 = 0usize;
+            for (run_text, style, x, y) in runs {
+                let s = style_of(style);
+                let font = format!("{}{}", s.font_prefix, self.font);
+                let font_index = fonts.iter().position(|f| *f == font).unwrap_or_else(|| {
+                    fonts.push(font);
+                    fonts.len() - 1
+                });
+                let color_index = colors.iter().position(|c| *c == s.color).unwrap_or_else(|| {
+                    colors.push(&s.color);
+                    colors.len() - 1
+                });
+                let len: usize = run_text.chars().map(char::len_utf16).sum();
+                text.push_str(run_text);
+                ops.extend([x, y, utf16 as f64, (utf16 + len) as f64, color_index as f64, font_index as f64]);
+                utf16 += len;
             }
-        }
+            draw_runs(ctx, &text, &ops, &colors.join("\n"), &fonts.join("\n"));
+        });
+        ctx.set_font(&self.font);
         if caret_visible {
             for r in &frame.carets {
                 fill(DARK.caret, r);

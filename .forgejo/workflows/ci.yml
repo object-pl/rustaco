@@ -12,6 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Toolchain components
         run: |
+          apt-get update && apt-get install -y --no-install-recommends clang llvm
           rustup component add rustfmt clippy
           rustup target add wasm32-unknown-unknown
       - name: Tools
@@ -27,6 +28,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Rust
         run: |
+          apt-get update && apt-get install -y --no-install-recommends clang llvm
           curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --target wasm32-unknown-unknown
           . "$HOME/.cargo/env"
           cargo install --locked wasm-bindgen-cli@0.2.130

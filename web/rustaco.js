@@ -1,7 +1,9 @@
 // DOM glue for the Rustaco editor. Rust draws and edits; this file forwards browser events.
-import init, { Editor, Model } from './pkg/rustaco_web.js';
+import init, { Editor, Model, setBuiltinTheme, setThemeRules } from './pkg/rustaco_web.js';
 
 const BLINK_MS = 530;
+/** Parsing time per frame; the rest of a long parse continues on later frames. */
+const PARSE_BUDGET_MS = 4;
 
 let ready;
 function load() {
@@ -9,10 +11,83 @@ function load() {
   return ready;
 }
 
-/** Creates a text model that several editors can show. */
-export async function createModel(value = '') {
+/** Creates a text model that several editors can show. `language` is an id such as `"rust"`. */
+export async function createModel(value = '', language = '') {
   await load();
-  return new RustacoModel(value);
+  const model = new RustacoModel(value);
+  if (language) await model.setLanguage(language);
+  return model;
+}
+
+/** Language id for a file name and its first line, or `""`. */
+export async function detectLanguage(path, firstLine = '') {
+  await load();
+  return Model.detectLanguage(path, firstLine);
+}
+
+/** Ids of every language the editor knows. */
+export async function knownLanguages() {
+  await load();
+  return Model.knownLanguages();
+}
+
+const packModules = new Map();
+
+/** Loads the language module for `pack` once; resolves to the module or null when absent. */
+function loadPack(pack) {
+  if (!packModules.has(pack)) {
+    const url = new URL(`./pkg/syntax-${pack}/rustaco_syntax_wasm.js`, import.meta.url);
+    packModules.set(pack, import(url.href).then(async (m) => { await m.default(); return m; }).catch(() => null));
+  }
+  return packModules.get(pack);
+}
+
+const editors = new Set();
+
+/**
+ * Sets the theme for every editor on the page: `"dark"`, `"light"`, or a VS Code colour
+ * theme object (the parsed JSON of a `*-color-theme.json` file, `tokenColors` part).
+ */
+export async function setTheme(theme) {
+  await load();
+  if (typeof theme === 'string') {
+    if (!setBuiltinTheme(theme)) throw new Error(`unknown built-in theme: ${theme}`);
+  } else {
+    const selectors = [];
+    const foregrounds = [];
+    const flags = [];
+    for (const rule of theme.tokenColors ?? []) {
+      const settings = rule.settings ?? {};
+      const scopes = Array.isArray(rule.scope) ? rule.scope : String(rule.scope ?? '').split(',');
+      const fg = parseColor(settings.foreground);
+      const fontStyle = settings.fontStyle;
+      let f = 0;
+      if (typeof fontStyle === 'string') {
+        f = 1;
+        if (fontStyle.includes('bold')) f |= 2;
+        if (fontStyle.includes('italic')) f |= 4;
+        if (fontStyle.includes('underline')) f |= 8;
+      }
+      for (const scope of scopes) {
+        const sel = scope.trim();
+        if (!sel) continue;
+        selectors.push(sel);
+        foregrounds.push(fg);
+        flags.push(f);
+      }
+    }
+    setThemeRules(selectors.join('\n'), Uint32Array.from(foregrounds), Uint8Array.from(flags));
+  }
+  for (const e of editors) e.schedule();
+}
+
+/** `#rgb`, `#rrggbb` or `#rrggbbaa` to 0xRRGGBBAA; 0 when absent or invalid. */
+function parseColor(c) {
+  if (typeof c !== 'string' || c[0] !== '#') return 0;
+  let hex = c.slice(1);
+  if (hex.length === 3) hex = [...hex].map((x) => x + x).join('');
+  if (hex.length === 6) hex += 'ff';
+  return hex.length === 8 && /^[0-9a-f]+$/i.test(hex) ? parseInt(hex, 16) >>> 0 : 0;
 }
 
 /**
@@ -30,9 +105,61 @@ export class RustacoModel {
     this.editors = new Set();
     this.listeners = new Set();
     this.version = this.core.version();
+    this.language = '';
+    this.highlighter = null;
+    this.highlighterVersion = 0;
   }
 
   getValue() { return this.core.getValue(); }
+
+  /**
+   * Sets the language by id; `""` turns highlighting off. Loads the language module on first
+   * use and resolves to false when the id is unknown or its module is not available.
+   */
+  async setLanguage(id) {
+    this.language = id;
+    this.highlighter?.free();
+    this.highlighter = null;
+    let ok = id === '';
+    const pack = id ? Model.languagePack(id) : '';
+    const module = pack ? await loadPack(pack) : null;
+    if (module && this.language === id) {
+      this.highlighter = new module.Highlighter(id, this.getValue());
+      this.highlighterVersion = this.core.version();
+      ok = true;
+    }
+    for (const e of this.editors) e.schedule();
+    return ok;
+  }
+
+  getLanguage() { return this.language; }
+
+  /**
+   * Brings the language module up to date: sends new edits and parses for at most
+   * `budgetMs`. Returns true when the module's tree matches the text.
+   */
+  updateHighlighter(budgetMs = PARSE_BUDGET_MS) {
+    if (!this.highlighter) return true;
+    this.syncHighlighter();
+    return this.highlighter.parse(budgetMs);
+  }
+
+  /** Sends the edits made since the last call to the language module. */
+  syncHighlighter() {
+    if (!this.highlighter) return;
+    const v = this.core.version();
+    if (v === this.highlighterVersion) return;
+    const batch = this.core.editsSince(this.highlighterVersion);
+    try {
+      if (batch.stale()) this.highlighter.reset(this.getValue());
+      else this.highlighter.edit(batch.numbers(), batch.text());
+    } catch {
+      this.highlighter.reset(this.getValue());
+    } finally {
+      batch.free();
+    }
+    this.highlighterVersion = v;
+  }
 
   /** Replaces the text and clears the undo history. */
   setValue(text) {
@@ -61,6 +188,7 @@ export class RustacoModel {
 export class RustacoEditor {
   constructor(container, {
     value = '',
+    language = '',
     model = null,
     fontFamily = '"Cascadia Code", Consolas, "Courier New", monospace',
     fontSize = 14,
@@ -79,6 +207,8 @@ export class RustacoEditor {
     container.append(this.canvas, this.input);
 
     this.model = model ?? new RustacoModel(value);
+    this.ready = language ? this.model.setLanguage(language) : Promise.resolve(true);
+    editors.add(this);
     this.core = new Editor(this.canvas, this.model.core, fontFamily, fontSize);
     this.model.editors.add(this);
     this.caretOn = true;
@@ -116,6 +246,7 @@ export class RustacoEditor {
   /** Detaches the editor from its model and removes its DOM. */
   dispose() {
     this.model.editors.delete(this);
+    editors.delete(this);
     clearInterval(this.blink);
     this.canvas.remove();
     this.input.remove();
@@ -211,7 +342,16 @@ export class RustacoEditor {
     if (this.frame) return;
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
-      this.core.render(this.focused && this.caretOn);
+      const { model, core } = this;
+      if (model.highlighter) {
+        const parsed = model.updateHighlighter();
+        const [first, end] = core.visibleLines();
+        core.setHighlights(first, end, model.highlighter.highlight(first, end));
+        if (!parsed) this.schedule();
+      } else {
+        core.clearHighlights();
+      }
+      core.render(this.focused && this.caretOn);
       this.input.style.transform = `translate(${this.core.caret_x()}px, ${this.core.caret_y()}px)`;
     });
   }
