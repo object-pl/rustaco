@@ -292,7 +292,13 @@ export class RustacoEditor {
       'position:absolute;left:0;top:0;width:1px;height:1em;padding:0;border:0;margin:0;' +
       'opacity:0;resize:none;overflow:hidden;white-space:pre;outline:none;pointer-events:none';
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
-    container.append(this.canvas, this.input);
+    // DOM nodes of view zones and widgets go here, over the canvas.
+    this.overlay = document.createElement('div');
+    this.overlay.style.cssText = 'position:absolute;inset:0;overflow:hidden;pointer-events:none';
+    container.append(this.canvas, this.input, this.overlay);
+    this.zones = new Map();
+    this.contentWidgets = new Set();
+    this.nextZoneId = 1;
 
     this.model = model ?? new RustacoModel(value);
     this.ready = language ? this.model.setLanguage(language) : Promise.resolve(true);
@@ -419,6 +425,91 @@ export class RustacoEditor {
     }
   }
 
+  /**
+   * Opens empty space after line `afterLine` (0-based; -1 for above the first line),
+   * `height` pixels tall, and shows `domNode` in it. The zone moves with edits. Returns
+   * an id for `removeViewZone`.
+   */
+  addViewZone({ afterLine, height, domNode }) {
+    const id = this.nextZoneId++;
+    domNode.style.position = 'absolute';
+    domNode.style.pointerEvents = 'auto';
+    domNode.style.display = 'none';
+    this.overlay.append(domNode);
+    this.zones.set(id, domNode);
+    this.core.addViewZone(id, afterLine, height);
+    this.schedule();
+    return id;
+  }
+
+  removeViewZone(id) {
+    this.zones.get(id)?.remove();
+    this.zones.delete(id);
+    this.core.removeViewZone(id);
+    this.schedule();
+  }
+
+  /**
+   * Shows `domNode` next to the text at char `position`: below that line, or above it with
+   * `preference: 'above'`. Hidden while the position is scrolled out of view. Call
+   * `layoutContentWidget` after changing the widget's position.
+   */
+  addContentWidget(widget) {
+    widget.domNode.style.position = 'absolute';
+    widget.domNode.style.pointerEvents = 'auto';
+    this.overlay.append(widget.domNode);
+    this.contentWidgets.add(widget);
+    this.schedule();
+  }
+
+  layoutContentWidget() { this.schedule(); }
+
+  removeContentWidget(widget) {
+    widget.domNode.remove();
+    this.contentWidgets.delete(widget);
+  }
+
+  /**
+   * Shows `domNode` over the editor at a fixed place: `'top-right'`, `'bottom-right'` or
+   * `'top-center'` (a find bar, for example).
+   */
+  addOverlayWidget({ domNode, position = 'top-right' }) {
+    const place = {
+      'top-right': 'top:0;right:16px',
+      'bottom-right': 'bottom:0;right:16px',
+      'top-center': 'top:0;left:50%;transform:translateX(-50%)',
+    }[position] ?? 'top:0;right:16px';
+    domNode.style.cssText += `;position:absolute;pointer-events:auto;${place}`;
+    this.overlay.append(domNode);
+  }
+
+  removeOverlayWidget({ domNode }) { domNode.remove(); }
+
+  /** Places view zone nodes and content widgets after a frame. */
+  #layoutOverlays() {
+    if (this.zones.size) {
+      const shown = new Set();
+      const r = this.core.viewZoneRects();
+      for (let i = 0; i < r.length; i += 5) {
+        const node = this.zones.get(r[i]);
+        if (!node) continue;
+        shown.add(r[i]);
+        Object.assign(node.style, {
+          display: '', left: `${r[i + 1]}px`, top: `${r[i + 2]}px`, width: `${r[i + 3]}px`, height: `${r[i + 4]}px`,
+        });
+      }
+      for (const [id, node] of this.zones) if (!shown.has(id)) node.style.display = 'none';
+    }
+    for (const w of this.contentWidgets) {
+      const p = this.core.positionOf(w.position);
+      if (p.length === 0) { w.domNode.style.display = 'none'; continue; }
+      const above = w.preference === 'above';
+      w.domNode.style.display = '';
+      w.domNode.style.left = `${p[0]}px`;
+      w.domNode.style.top = above ? `${p[1] - w.domNode.offsetHeight}px` : `${p[1] + p[2]}px`;
+    }
+  }
+
   getScrollTop() { return this.core.scrollTop(); }
 
   setScrollTop(top) {
@@ -460,6 +551,7 @@ export class RustacoEditor {
     clearInterval(this.blink);
     this.canvas.remove();
     this.input.remove();
+    this.overlay.remove();
     this.core.free();
   }
 
@@ -604,6 +696,7 @@ export class RustacoEditor {
       }
       core.render(this.focused && this.caretOn);
       this.input.style.transform = `translate(${this.core.caret_x()}px, ${this.core.caret_y()}px)`;
+      this.#layoutOverlays();
     });
   }
 }

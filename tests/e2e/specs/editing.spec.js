@@ -362,3 +362,30 @@ test('sticky scroll pins the enclosing headers; a click on one goes there', asyn
   expect((await selections(page))[0].head).toBe('impl Thing {\n    '.length);
   expect(await page.evaluate(() => window.editor.getScrollTop())).toBe(0);
 });
+
+test('view zones open space between lines; content widgets follow their position', async ({ page }) => {
+  await open(page, 'one\ntwo\nthree');
+  const info = await page.evaluate(() => {
+    const e = window.editor;
+    const lh = e.core.line_height();
+    const zone = document.createElement('div');
+    zone.textContent = 'zone';
+    e.addViewZone({ afterLine: 0, height: 40, domNode: zone });
+    const widget = { domNode: document.createElement('div'), position: 5, preference: 'below' };
+    widget.domNode.textContent = 'hover';
+    e.addContentWidget(widget);
+    e.setSelections([{ anchor: 4, head: 4 }]);
+    e.core.render(false);
+    window.zoneNode = zone;
+    window.widget = widget;
+    return { lh, lineTwoY: e.core.caret_y() };
+  });
+  expect(info.lineTwoY).toBe(info.lh + 40);
+  await page.waitForFunction(() => window.zoneNode.style.display !== 'none' && window.widget.domNode.style.top !== '');
+  const placed = await page.evaluate(() => ({
+    zoneTop: parseFloat(window.zoneNode.style.top),
+    widgetTop: parseFloat(window.widget.domNode.style.top),
+  }));
+  expect(placed.zoneTop).toBe(info.lh);
+  expect(placed.widgetTop).toBe(info.lh + 40 + info.lh);
+});

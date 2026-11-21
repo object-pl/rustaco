@@ -2,7 +2,15 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Done: phases 0 to 4 (all 2026-11-21). Next: phase 5.
+Done: phases 0 to 5 (all 2026-11-21). Next: phase 6.
+
+Phase 5 summary:
+- A height map (chunked per-line heights with prefix sums) holds every line's own height: rows times the line height plus view zones. Folds are taken out on top of it, so folding never rewrites it.
+- Folding: regions from the syntax tree (bracket pairs, multi-line comments, markdown sections) or from indentation, both for Python and YAML; gutter markers, placeholders, Monaco's fold keys; carets step over folds and a caret landing inside opens one.
+- Word wrap at the viewport's width, with indented continuation rows; carets, selections, hit testing and vertical moves (by row, keeping an x goal) work per row. A wrapped frame at the middle of a 1,000,000-line file lays out in about 0.16 ms.
+- Decoration types (background, solid, wavy or dotted underline, whole-line band, gutter bar, overview ruler mark) and decoration collections in the JS API; find matches on the overview ruler.
+- Minimap with a slider (click and drag scroll), sticky scroll from the foldable regions, view zones, content widgets and overlay widgets (DOM nodes placed over the canvas).
+- Deviations: text stays on a monospace grid. Chars outside ASCII get runs of their own placed on the grid, which ends the drift after CJK and emoji, but proportional fonts and ligatures are not supported and the `TextMeasurer` trait was not built; that work moves to phase 11, where `parley` measures text anyway. Wrapping is computed for all lines when it is turned on or the width changes (0.3 to 0.45 s for 1,000,000 lines in the benchmark) instead of lazily with estimated heights. Inlay hints (virtual text in the projection) move to phase 8 with their provider. Visual checks are pixel probes in the browser tests, not full screenshot comparisons.
 
 Phase 4 summary: matching bracket highlight and jump (Ctrl+Shift+\), partners taken from the syntax tree, so brackets in strings never match code, with a text scan for languages without a tree; bracket pair colours by depth (three colours, from the theme); indentation guides with the cursor's block marked; highlighting of other occurrences of the word at the cursor; whitespace marks; rulers. Not done: bracket pair guides (lines joining a pair), occurrence highlighting scoped by locals queries (the bundled grammars ship few of them; whole-word matching is used).
 

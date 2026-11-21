@@ -101,6 +101,20 @@ pub struct Frame {
     /// Headers of the scopes the top of the viewport is inside, pinned over the text, the
     /// outermost first. Drawn last, over everything else in the text area.
     pub sticky: Vec<FrameLine>,
+    /// Visible view zones: the id the frontend gave each and the space it occupies.
+    pub zones: Vec<(u32, Rect)>,
+}
+
+/// A view zone: empty space of a given height after a line (or above the first), for the
+/// frontend to fill (diff filler, inline widgets, code lens). The anchor is a char offset
+/// at the end of the line, so the zone follows edits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Zone {
+    id: u32,
+    anchor: Option<usize>,
+    /// The line the zone's height is counted in, as of the last sync.
+    line: Option<usize>,
+    height: f32,
 }
 
 /// The minimap: the document at a small scale beside the text, each char a block of
@@ -155,6 +169,9 @@ pub struct View {
     minimap_width: f32,
     /// Most scope headers sticky scroll pins; 0 turns it off.
     sticky_max: usize,
+    zones: Vec<Zone>,
+    /// Height of the zones above the first line.
+    top_padding: f64,
     heights: HeightMap,
     /// What `heights` was computed for: model version, line height, wrap width, tab size.
     synced: Option<Synced>,
@@ -185,6 +202,8 @@ impl View {
             wrap: false,
             minimap_width: 0.0,
             sticky_max: 0,
+            zones: Vec::new(),
+            top_padding: 0.0,
             heights: HeightMap::new(1, metrics.line_height),
             synced: None,
             folds: Vec::new(),
@@ -316,6 +335,7 @@ impl View {
         if let Some(s) = self.synced.filter(|_| layout_same)
             && let (Ok(events), Ok(changes)) = (model.events_since(s.version), model.changes_since(s.version))
         {
+            self.remove_zone_heights();
             // Lines whose rows must be measured again, in final coordinates.
             let mut touched: Vec<Range<usize>> = Vec::new();
             for e in events {
@@ -336,6 +356,10 @@ impl View {
                     f.start = c.map(f.start, Assoc::After);
                     f.end = c.map(f.end, Assoc::After);
                 }
+                // Text typed at the end of the line goes before the zone; a new line after it.
+                for z in &mut self.zones {
+                    z.anchor = z.anchor.map(|a| c.map(a, Assoc::Before));
+                }
             }
             incremental = self.heights.len() == rope.len_lines();
             if incremental && target.wrap_cells.is_some() {
@@ -349,6 +373,9 @@ impl View {
             }
         }
         if !incremental {
+            for z in &mut self.zones {
+                z.line = None;
+            }
             let stale = self.synced.is_some() && layout_same;
             self.synced = Some(target);
             self.heights = match target.wrap_cells {
@@ -369,10 +396,83 @@ impl View {
             }
         }
         self.synced = Some(target);
+        self.add_zone_heights(rope);
         self.apply_folds(rope);
     }
 
-    /// Recomputes the hidden lines from `folds`.
+    /// Takes the zones' heights out of the lines they are counted in.
+    fn remove_zone_heights(&mut self) {
+        for z in &mut self.zones {
+            if let Some(l) = z.line.take()
+                && l < self.heights.len()
+            {
+                let h = self.heights.height(l);
+                self.heights.set(l, (h - z.height).max(0.0));
+            }
+        }
+        self.top_padding = 0.0;
+    }
+
+    /// Adds the zones' heights to the lines they now follow.
+    fn add_zone_heights(&mut self, rope: &Rope) {
+        let len = rope.len_chars();
+        self.top_padding = 0.0;
+        for z in &mut self.zones {
+            match z.anchor {
+                None => self.top_padding += z.height as f64,
+                Some(a) => {
+                    let l = rope.char_to_line(a.min(len));
+                    let h = self.heights.height(l);
+                    self.heights.set(l, h + z.height);
+                    z.line = Some(l);
+                }
+            }
+        }
+    }
+
+    /// Adds a view zone after `after` (None: above the first line), `height` pixels tall.
+    /// Other zones keep the positions edits gave them.
+    pub fn add_zone(&mut self, model: &TextModel, id: u32, after: Option<usize>, height: f32) {
+        self.sync(model);
+        self.remove_zone_heights();
+        let rope = model.rope();
+        let anchor = after.map(|l| line_end(rope, l.min(rope.len_lines() - 1)));
+        self.zones.push(Zone { id, anchor, line: None, height: height.max(0.0) });
+        self.add_zone_heights(rope);
+        self.apply_folds(rope);
+    }
+
+    /// Removes the view zone `id`. Returns false when there is none.
+    pub fn remove_zone(&mut self, model: &TextModel, id: u32) -> bool {
+        self.sync(model);
+        self.remove_zone_heights();
+        let before = self.zones.len();
+        self.zones.retain(|z| z.id != id);
+        let rope = model.rope();
+        self.add_zone_heights(rope);
+        self.apply_folds(rope);
+        self.zones.len() != before
+    }
+
+    /// Replaces the view zones: (id, line the zone follows or None for above the first line,
+    /// height in pixels).
+    pub fn set_zones(&mut self, model: &TextModel, zones: impl IntoIterator<Item = (u32, Option<usize>, f32)>) {
+        self.sync(model);
+        self.remove_zone_heights();
+        let rope = model.rope();
+        let last = rope.len_lines() - 1;
+        self.zones = zones
+            .into_iter()
+            .map(|(id, after, height)| Zone {
+                id,
+                anchor: after.map(|l| line_end(rope, l.min(last))),
+                line: None,
+                height: height.max(0.0),
+            })
+            .collect();
+        self.add_zone_heights(rope);
+        self.apply_folds(rope);
+    }
     fn apply_folds(&mut self, rope: &Rope) {
         let len = rope.len_chars();
         let mut ranges: Vec<Range<usize>> = Vec::new();
@@ -529,7 +629,7 @@ impl View {
     /// Document y of the top of `line`. A hidden line sits at the top of the next shown line.
     pub fn line_top(&self, line: usize) -> f64 {
         if line < self.heights.len() {
-            self.hidden.top(&self.heights, line)
+            self.top_padding + self.hidden.top(&self.heights, line)
         } else {
             // Not synced yet: extrapolate past the known lines.
             self.hidden.total(&self.heights) + (line - self.heights.len()) as f64 * self.metrics.line_height as f64
@@ -554,7 +654,7 @@ impl View {
             // Not synced yet: extrapolate past the known lines.
             self.heights.len() + ((y - total) / self.metrics.line_height as f64) as usize
         } else {
-            self.hidden.line_at(&self.heights, y)
+            self.hidden.line_at(&self.heights, y - self.top_padding)
         };
         line.min(rope.len_lines() - 1)
     }
@@ -563,7 +663,7 @@ impl View {
     fn row_at_y(&self, rope: &Rope, y: f64) -> (usize, usize) {
         let line = self.line_at_y(rope, y);
         let row = ((y - self.line_top(line)) / self.metrics.line_height as f64).max(0.0) as usize;
-        let rows = (self.line_height(line) / self.metrics.line_height).round().max(1.0) as usize;
+        let rows = self.line_rows(rope, line).count();
         (line, row.min(rows - 1))
     }
 
@@ -818,6 +918,7 @@ impl View {
         }
         self.widest_cells = widest;
         frame.minimap = self.minimap(rope, styler);
+        frame.zones = self.zone_rects(rope, visible.clone());
         for (line, y) in self.sticky_lines(rope) {
             let spans = styler.spans(line);
             let x_of = |cells: usize| gutter + cells as f32 * cw - self.scroll_left;
@@ -826,6 +927,43 @@ impl View {
             frame.sticky.push(FrameLine { line, row: 0, y, height: lh, runs });
         }
         frame
+    }
+
+    /// Viewport rectangles of the zones on the visible lines.
+    fn zone_rects(&self, rope: &Rope, visible: Range<usize>) -> Vec<(u32, Rect)> {
+        let gutter = self.gutter_width(rope);
+        let width = self.width - gutter - self.minimap_width;
+        let lh = self.metrics.line_height;
+        let mut below: Vec<(usize, f32)> = Vec::new(); // (line, zone height already placed)
+        let mut top = -(self.scroll_top as f32);
+        let mut out = Vec::new();
+        for z in &self.zones {
+            match z.line {
+                None if z.anchor.is_none() => {
+                    out.push((z.id, Rect { x: gutter, y: top, width, height: z.height }));
+                    top += z.height;
+                }
+                Some(l) if visible.contains(&l) && !self.is_hidden(l) => {
+                    let placed = match below.iter_mut().find(|(line, _)| *line == l) {
+                        Some((_, h)) => {
+                            let at = *h;
+                            *h += z.height;
+                            at
+                        }
+                        None => {
+                            below.push((l, z.height));
+                            0.0
+                        }
+                    };
+                    let rows = self.line_rows(rope, l).count() as f32;
+                    let y = self.y_of(l) + rows * lh + placed;
+                    out.push((z.id, Rect { x: gutter, y, width, height: z.height }));
+                }
+                _ => {}
+            }
+        }
+        out.sort_by(|a, b| a.1.y.total_cmp(&b.1.y));
+        out
     }
 
     /// Document height (with the scroll room past the last line) and the scale and
@@ -947,6 +1085,12 @@ impl View {
         } else {
             1.0 / scale
         }
+    }
+
+    /// Where a caret at char `pos` would be drawn, if its line is visible: for placing
+    /// widgets next to text.
+    pub fn position_rect(&self, rope: &Rope, pos: usize) -> Option<Rect> {
+        self.caret_rect(rope, pos.min(rope.len_chars()), self.gutter_width(rope))
     }
 
     /// The caret at char `pos`, if its line is visible.
@@ -1269,6 +1413,7 @@ fn layout_line(
     let mut runs: Vec<TextRun> = Vec::new();
     let mut span_idx = 0;
     let mut acc = 0usize;
+    let mut prev_off_grid = false;
     for (col, c) in rope.line(line).chars().take(cols.end).enumerate() {
         let w = cell_width(c, acc, tab);
         if acc >= window.end {
@@ -1281,7 +1426,12 @@ fn layout_line(
                 span_idx += 1;
             }
             let style = spans.get(span_idx).filter(|s| s.start <= col).map_or(0, |s| s.style);
-            let start_new = runs.last().is_none_or(|r| r.style != style);
+            // A char outside ASCII may come from a fallback font whose advance is not a whole
+            // number of cells (CJK, emoji), so it gets a run of its own, placed on the grid,
+            // and the text after it starts on the grid again instead of drifting.
+            let off_grid = !c.is_ascii();
+            let start_new = off_grid || prev_off_grid || runs.last().is_none_or(|r| r.style != style);
+            prev_off_grid = off_grid;
             if start_new {
                 runs.push(TextRun { x: x_of(acc), text: String::new(), style });
             }
@@ -1642,5 +1792,62 @@ mod sticky_tests {
         // At the top nothing is pinned.
         v.scroll_to(doc.rope(), 0.0, 0.0);
         assert!(v.sticky_lines(doc.rope()).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod zone_tests {
+    use super::*;
+    use rustaco_core::{Document, Edit};
+
+    fn view() -> View {
+        View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 400.0)
+    }
+
+    #[test]
+    fn zones_add_space_between_lines_and_follow_edits() {
+        let mut doc = Document::new("a\nb\nc\nd");
+        let mut v = view();
+        v.set_zones(doc.model(), [(7, Some(1), 50.0), (8, None, 10.0)]);
+        let frame = v.layout(doc.model(), doc.selections(), &Plain);
+        let tops: Vec<(usize, f32)> = frame.lines.iter().map(|l| (l.line, l.y)).collect();
+        assert_eq!(tops, vec![(0, 10.0), (1, 30.0), (2, 100.0), (3, 120.0)]);
+        assert_eq!(
+            frame.zones,
+            vec![
+                (8, Rect { x: frame.gutter_width, y: 0.0, width: 400.0 - frame.gutter_width, height: 10.0 }),
+                (7, Rect { x: frame.gutter_width, y: 50.0, width: 400.0 - frame.gutter_width, height: 50.0 }),
+            ]
+        );
+        // A click inside the zone lands on the line above it, not below.
+        assert_eq!(doc.rope().char_to_line(v.hit_test(doc.rope(), 100.0, 80.0)), 1);
+        // A line inserted above moves the zone down with its line.
+        doc.apply_edits(vec![Edit::insert(0, "new\n")]);
+        let frame = v.layout(doc.model(), doc.selections(), &Plain);
+        assert_eq!(frame.zones[1].1.y, 70.0);
+        assert_eq!(v.line_top(3), 120.0);
+        // Typing at the end of the zone's line keeps the zone after it.
+        let end_of_b = doc.rope().line_to_char(2) + 1;
+        doc.apply_edits(vec![Edit::insert(end_of_b, "\nmore")]);
+        v.sync(doc.model());
+        assert_eq!(v.line_top(3), 10.0 + 3.0 * 20.0 + 50.0, "the zone stays after line 2, before the new line");
+        v.set_zones(doc.model(), []);
+        assert_eq!(v.line_top(3), 60.0);
+    }
+}
+
+#[cfg(test)]
+mod grid_tests {
+    use super::*;
+    use rustaco_core::Document;
+
+    #[test]
+    fn chars_outside_ascii_sit_on_the_grid() {
+        let doc = Document::new("a\u{4E2D}b\u{e9}cd");
+        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 100.0);
+        let frame = v.layout(doc.model(), doc.selections(), &Plain);
+        let g = frame.gutter_width;
+        let runs: Vec<(&str, f32)> = frame.lines[0].runs.iter().map(|r| (r.text.as_str(), r.x - g)).collect();
+        assert_eq!(runs, vec![("a", 0.0), ("\u{4E2D}", 10.0), ("b", 30.0), ("\u{e9}", 40.0), ("cd", 50.0)]);
     }
 }

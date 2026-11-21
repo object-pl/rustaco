@@ -454,6 +454,8 @@ pub struct Editor {
     minimap_drag: Option<(f64, f64)>,
     /// Sticky scroll lines of the last frame: y, height and line.
     sticky: Vec<(f32, f32, usize)>,
+    /// View zones of the last frame: id and rectangle.
+    zone_rects: Vec<(u32, Rect)>,
 }
 
 /// Display options (Monaco's names in the JS API).
@@ -500,6 +502,7 @@ impl Editor {
             tree_brackets: None,
             minimap_drag: None,
             sticky: Vec::new(),
+            zone_rects: Vec::new(),
         })
     }
 
@@ -775,6 +778,41 @@ impl Editor {
             guides,
             occurrences,
         };
+    }
+
+    /// Adds a view zone (empty space for a DOM node) after line `after_line` (-1: above the
+    /// first line), `height` pixels tall.
+    #[wasm_bindgen(js_name = addViewZone)]
+    pub fn add_view_zone(&mut self, id: u32, after_line: i32, height: f64) {
+        let model = self.model.borrow();
+        self.view.add_zone(&model, id, usize::try_from(after_line).ok(), height as f32);
+    }
+
+    #[wasm_bindgen(js_name = removeViewZone)]
+    pub fn remove_view_zone(&mut self, id: u32) -> bool {
+        let model = self.model.borrow();
+        self.view.remove_zone(&model, id)
+    }
+
+    /// View zones drawn in the last frame: id, x, y, width and height for each.
+    #[wasm_bindgen(js_name = viewZoneRects)]
+    pub fn view_zone_rects(&self) -> Vec<f64> {
+        self.zone_rects
+            .iter()
+            .flat_map(|(id, r)| [*id as f64, r.x as f64, r.y as f64, r.width as f64, r.height as f64])
+            .collect()
+    }
+
+    /// Where char `offset` is on screen: x, y and line height, or empty when its line is
+    /// not visible. Content widgets are placed with it.
+    #[wasm_bindgen(js_name = positionOf)]
+    pub fn position_of(&mut self, offset: u32) -> Vec<f64> {
+        let model = self.model.borrow();
+        self.view.sync(&model);
+        match self.view.position_rect(model.rope(), offset as usize) {
+            Some(r) => vec![r.x as f64, r.y as f64, r.height as f64],
+            None => Vec::new(),
+        }
     }
 
     /// Pins up to `max` headers of the enclosing scopes at the top; 0 turns it off.
@@ -1221,6 +1259,7 @@ impl Editor {
         }
         ctx.restore();
         self.sticky = frame.sticky.iter().map(|l| (l.y, l.height, l.line)).collect();
+        self.zone_rects = frame.zones.clone();
 
         ctx.set_fill_style_str(&chrome.gutter);
         ctx.fill_rect(0.0, 0.0, gutter, h);
