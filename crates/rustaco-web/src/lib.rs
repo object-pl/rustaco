@@ -45,6 +45,12 @@ struct Chrome {
 /// Decoration kind of find matches.
 const FIND_MATCH: u32 = 1;
 
+/// Decoration kind of the text an IME composition is building.
+const COMPOSITION: u32 = 2;
+
+/// Composition decorations belong to this owner plus the editor's id.
+const COMPOSITION_OWNER: u32 = 1 << 19;
+
 /// Decoration kinds from here on are types defined through [`define_decoration_type`].
 const FIRST_DECORATION_TYPE: u32 = 100;
 
@@ -995,6 +1001,133 @@ impl Editor {
         self.edit(|ed| ed.copy())
     }
 
+    /// One step of an IME composition: replaces the `before` chars ahead of each caret (the
+    /// previous step's text, 0 at the start) with `text` and underlines it.
+    pub fn compose(&mut self, before: u32, text: &str) {
+        self.edit(|ed| ed.compose(before as usize, text));
+        let owner = COMPOSITION_OWNER + self.cursors.id().0;
+        let len = text.chars().count();
+        let mut model = self.model.borrow_mut();
+        self.cursors.sync(&model);
+        let ranges: Vec<std::ops::Range<usize>> =
+            self.cursors.selections().iter().map(|s| s.head.saturating_sub(len)..s.head).collect();
+        model.decorations.set(owner, COMPOSITION, Stickiness::NeverGrows, ranges);
+        drop(model);
+        self.reveal_primary();
+    }
+
+    /// Ends the composition: its text stays, the underline goes.
+    #[wasm_bindgen(js_name = endComposition)]
+    pub fn end_composition(&mut self) {
+        self.model.borrow_mut().decorations.clear(COMPOSITION_OWNER + self.cursors.id().0);
+    }
+
+    /// The text of each non-empty selection, for clipboard metadata.
+    #[wasm_bindgen(js_name = selectionTexts)]
+    pub fn selection_texts(&mut self) -> Vec<String> {
+        self.edit(|ed| ed.selection_texts())
+    }
+
+    /// Pastes one piece per cursor (as copied from that many selections), or the pieces
+    /// joined when the counts differ.
+    #[wasm_bindgen(js_name = pasteEach)]
+    pub fn paste_each(&mut self, pieces: Vec<String>) {
+        self.edit(|ed| ed.paste_each(&pieces));
+        self.reveal_primary();
+    }
+
+    /// The primary caret's line for screen readers, mirrored into the hidden textarea: the
+    /// line's text (at most 2000 chars around the caret) and the selection in it as UTF-16
+    /// offsets, start then end (the selection is clipped to the line).
+    #[wasm_bindgen(js_name = accessibleLine)]
+    pub fn accessible_line(&mut self) -> js_sys::Array {
+        let model = self.model.borrow();
+        self.cursors.sync(&model);
+        let rope = model.rope();
+        let sel = self.cursors.selections().primary();
+        let line = rope.char_to_line(sel.head);
+        let start = rope.line_to_char(line);
+        let len = rustaco_core::line_len(rope, line);
+        let head = sel.head - start;
+        let from = head.saturating_sub(1000);
+        let to = (head + 1000).min(len);
+        let text: String = rope.slice(start + from..start + to).to_string();
+        let utf16 = |col: usize| -> u32 {
+            let col = col.clamp(from, to);
+            rope.slice(start + from..start + col).chars().map(char::len_utf16).sum::<usize>() as u32
+        };
+        let (a, b) = (sel.start().max(start) - start, sel.end().min(start + len).max(start) - start);
+        let out = js_sys::Array::new();
+        out.push(&JsValue::from_str(&text));
+        out.push(&JsValue::from(utf16(a)));
+        out.push(&JsValue::from(utf16(b)));
+        out
+    }
+
+    /// The selections as HTML with syntax colours, for copying into rich text editors.
+    /// Colours come from the highlights of the lines on screen; text beyond them is plain.
+    #[wasm_bindgen(js_name = copyHtml)]
+    pub fn copy_html(&mut self) -> String {
+        let model = self.model.borrow();
+        self.cursors.sync(&model);
+        let rope = model.rope();
+        let mut by_line: HashMap<usize, Vec<(usize, usize, u32)>> = HashMap::new();
+        for sel in self.cursors.selections().iter() {
+            for line in rope.char_to_line(sel.start())..=rope.char_to_line(sel.end()) {
+                by_line
+                    .entry(line)
+                    .or_insert_with(|| self.highlights.spans(line).iter().map(|s| (s.start, s.end, s.style)).collect());
+            }
+        }
+        let chrome = CHROME.with(|c| c.borrow().clone());
+        let styles = STYLES.with(|s| s.borrow().clone());
+        let escape = |c: char, out: &mut String| match c {
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '&' => out.push_str("&amp;"),
+            _ => out.push(c),
+        };
+        let mut html = format!(
+            "<pre style=\"background:{};color:{};font-family:{}\">",
+            &chrome.background[..7],
+            &styles[0].color[..7],
+            self.font.split_once(' ').map_or("monospace", |(_, family)| family).replace('"', "'")
+        );
+        for (i, sel) in self.cursors.selections().iter().filter(|s| !s.is_empty()).enumerate() {
+            if i > 0 {
+                html.push('\n');
+            }
+            let mut pos = sel.start();
+            while pos < sel.end() {
+                let line = rope.char_to_line(pos);
+                let line_start = rope.line_to_char(line);
+                let col = pos - line_start;
+                let spans = by_line.get(&line);
+                let span = spans.and_then(|v| v.iter().find(|&&(a, b, _)| a <= col && col < b));
+                let end = match span {
+                    Some(&(_, b, _)) => (line_start + b).min(sel.end()),
+                    None => {
+                        let next = spans.and_then(|v| v.iter().filter(|&&(a, _, _)| a > col).map(|&(a, _, _)| a).min());
+                        let line_end = rope.line_to_char((line + 1).min(rope.len_lines()));
+                        next.map_or(line_end, |a| line_start + a).min(sel.end()).max(pos + 1)
+                    }
+                };
+                let text: String = rope.slice(pos..end).chars().collect();
+                match span.and_then(|&(_, _, style)| styles.get(style as usize)) {
+                    Some(style) => {
+                        html.push_str(&format!("<span style=\"color:{}\">", &style.color[..7]));
+                        text.chars().for_each(|c| escape(c, &mut html));
+                        html.push_str("</span>");
+                    }
+                    None => text.chars().for_each(|c| escape(c, &mut html)),
+                }
+                pos = end;
+            }
+        }
+        html.push_str("</pre>");
+        html
+    }
+
     pub fn cut(&mut self) -> String {
         let text = self.edit(|ed| ed.cut());
         self.reveal_primary();
@@ -1240,6 +1373,10 @@ impl Editor {
             }
         }
         for (r, kind) in &decorations {
+            if *kind == COMPOSITION {
+                draw_underline(ctx, r, 1, &chrome.caret);
+                continue;
+            }
             let Some(t) = type_of(*kind).filter(|t| t.underline != 0 && !t.whole_line) else { continue };
             draw_underline(ctx, r, t.underline, &t.underline_color);
         }

@@ -44,6 +44,9 @@ function loadPack(pack) {
 
 const editors = new Set();
 
+/** Clipboard type of the per-cursor pieces of a multi-cursor copy. */
+const CLIPBOARD_META = 'application/x-rustaco-editor';
+
 /** Languages whose blocks are marked by indentation, so indentation adds fold regions. */
 const INDENTATION_BLOCKS = new Set(['python', 'yaml']);
 
@@ -280,6 +283,7 @@ export class RustacoEditor {
     stickyScroll = { enabled: false },
     fontFamily = '"Cascadia Code", Consolas, "Courier New", monospace',
     fontSize = 14,
+    ariaLabel = 'Editor content',
   } = {}) {
     this.container = container;
     this.canvas = document.createElement('canvas');
@@ -288,6 +292,10 @@ export class RustacoEditor {
     this.input.setAttribute('autocorrect', 'off');
     this.input.setAttribute('autocapitalize', 'off');
     this.input.setAttribute('spellcheck', 'false');
+    // Screen readers read the textarea: it holds the caret's line and selection (see #mirror).
+    this.input.setAttribute('aria-label', ariaLabel);
+    this.input.setAttribute('aria-roledescription', 'editor');
+    this.input.setAttribute('aria-multiline', 'true');
     this.input.style.cssText =
       'position:absolute;left:0;top:0;width:1px;height:1em;padding:0;border:0;margin:0;' +
       'opacity:0;resize:none;overflow:hidden;white-space:pre;outline:none;pointer-events:none';
@@ -601,28 +609,89 @@ export class RustacoEditor {
       if (result === 2) this.#frontendCommand(core.takeFrontendCommand());
       this.#changed();
     });
+    // Text arrives through beforeinput, which can be cancelled, so the textarea keeps the
+    // mirrored line and the model stays the only copy of the text.
+    input.addEventListener('beforeinput', (e) => {
+      if (this.composing || e.isComposing) return;
+      const commands = {
+        deleteContentBackward: 'deleteLeft',
+        deleteContentForward: 'deleteRight',
+        deleteWordBackward: 'deleteWordLeft',
+        deleteWordForward: 'deleteWordRight',
+        historyUndo: 'undo',
+        historyRedo: 'redo',
+      };
+      if (e.inputType === 'insertText' || e.inputType === 'insertReplacementText') {
+        e.preventDefault();
+        const text = e.data ?? e.dataTransfer?.getData('text/plain') ?? '';
+        if (text) { core.insert_text(text, this.#inLiteral()); this.#changed(); }
+      } else if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') {
+        e.preventDefault();
+        core.key_down('Enter', false, false, false, false);
+        this.#changed();
+      } else if (commands[e.inputType]) {
+        e.preventDefault();
+        core.runCommand(commands[e.inputType]);
+        this.#changed();
+      } else if (e.inputType !== 'insertFromPaste' && e.inputType !== 'insertFromDrop' && e.inputType !== 'deleteByCut') {
+        // Formatting and other edits a plain textarea would apply have no meaning here.
+        e.preventDefault();
+      }
+    });
+    // Where beforeinput could not be cancelled, the textarea changed: apply the difference.
     input.addEventListener('input', () => {
       if (this.composing) return;
-      const text = input.value;
-      input.value = '';
-      if (text) { core.insert_text(text, this.#inLiteral()); this.#changed(); }
+      const before = this.mirrored ?? '';
+      const after = input.value;
+      if (after === before) return;
+      let p = 0;
+      while (p < before.length && p < after.length && before[p] === after[p]) p++;
+      let q = 0;
+      while (q < before.length - p && q < after.length - p && before[before.length - 1 - q] === after[after.length - 1 - q]) q++;
+      const inserted = after.slice(p, after.length - q);
+      const removed = before.length - p - q;
+      if (inserted) core.insert_text(inserted, this.#inLiteral());
+      else if (removed > 0) core.runCommand('deleteLeft');
+      this.#changed();
     });
-    input.addEventListener('compositionstart', () => { this.composing = true; });
+    // IME: each step replaces the previous step's text in the model, underlined, so the
+    // composition shows inline where it will land.
+    input.addEventListener('compositionstart', () => { this.composing = true; this.composed = 0; });
+    input.addEventListener('compositionupdate', (e) => {
+      core.compose(this.composed, e.data ?? '');
+      this.composed = [...(e.data ?? '')].length;
+      this.#changed();
+    });
     input.addEventListener('compositionend', (e) => {
+      core.compose(this.composed, e.data ?? '');
+      core.endComposition();
       this.composing = false;
-      input.value = '';
-      if (e.data) { core.insert_text(e.data, false); this.#changed(); }
+      this.composed = 0;
+      this.#changed();
     });
 
-    input.addEventListener('copy', (e) => { e.preventDefault(); e.clipboardData.setData('text/plain', core.copy()); });
+    input.addEventListener('copy', (e) => {
+      e.preventDefault();
+      this.#writeClipboard(e.clipboardData, core.copy());
+    });
     input.addEventListener('cut', (e) => {
       e.preventDefault();
-      e.clipboardData.setData('text/plain', core.cut());
+      const pieces = core.selectionTexts();
+      const html = core.copyHtml();
+      this.#writeClipboard(e.clipboardData, core.cut(), pieces, html);
       this.#changed();
     });
     input.addEventListener('paste', (e) => {
       e.preventDefault();
-      core.paste(e.clipboardData.getData('text/plain'));
+      const text = e.clipboardData.getData('text/plain');
+      let meta = null;
+      try { meta = JSON.parse(e.clipboardData.getData(CLIPBOARD_META) || 'null'); } catch { meta = null; }
+      const cursors = core.selections().length / 2;
+      if (meta?.pieces?.length > 1 && meta.pieces.length === cursors && meta.pieces.join('\n') === text.replace(/\r\n/g, '\n')) {
+        core.pasteEach(meta.pieces);
+      } else {
+        core.paste(text);
+      }
       this.#changed();
     });
 
@@ -669,6 +738,28 @@ export class RustacoEditor {
   #changed() {
     if (this.focused) this.#restartBlink();
     this.model.changed();
+    this.#mirror();
+  }
+
+  /**
+   * Puts the caret's line and selection into the hidden textarea, the way VS Code does, so a
+   * screen reader reads the line the caret moves to and the selected text.
+   */
+  #mirror() {
+    if (this.composing) return;
+    const [text, start, end] = this.core.accessibleLine();
+    if (this.input.value !== text) this.input.value = text;
+    if (document.activeElement === this.input || this.container.getRootNode().activeElement === this.input) {
+      this.input.setSelectionRange(start, end);
+    }
+    this.mirrored = text;
+  }
+
+  /** Clipboard data for a copy or cut: plain text, the pieces per cursor and coloured HTML. */
+  #writeClipboard(data, text, pieces = this.core.selectionTexts(), html = this.core.copyHtml()) {
+    data.setData('text/plain', text);
+    if (pieces.length > 1) data.setData(CLIPBOARD_META, JSON.stringify({ pieces }));
+    if (pieces.length) data.setData('text/html', html);
   }
 
   schedule() {

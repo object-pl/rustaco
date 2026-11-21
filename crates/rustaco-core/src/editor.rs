@@ -136,18 +136,60 @@ impl<'a> Editor<'a> {
 
     /// Replaces every selection with the text `f` returns for it; carets land after the text.
     fn replace_each(&mut self, kind: EditKind, mut f: impl FnMut(&Rope, usize, &Selection) -> String) {
+        self.replace_ranges(kind, |rope, i, sel| (sel.start(), sel.end(), f(rope, i, sel)));
+    }
+
+    /// Replaces the range `f` returns for each selection (ranges must not overlap and come
+    /// in selection order) with its text; carets land after the inserted text.
+    fn replace_ranges(
+        &mut self,
+        kind: EditKind,
+        mut f: impl FnMut(&Rope, usize, &Selection) -> (usize, usize, String),
+    ) {
         let mut edits = Vec::with_capacity(self.cursors.selections.len());
         let mut carets = Vec::with_capacity(self.cursors.selections.len());
         let mut delta = 0isize;
         for (i, sel) in self.cursors.selections.iter().enumerate() {
-            let text = f(&self.model.rope, i, sel);
+            let (start, end, text) = f(&self.model.rope, i, sel);
             let inserted = text.chars().count();
-            carets.push(Selection::cursor(sel.start().wrapping_add_signed(delta) + inserted));
-            delta += inserted as isize - sel.len() as isize;
-            edits.push(Edit::new(sel.start(), sel.end(), text));
+            carets.push(Selection::cursor(start.wrapping_add_signed(delta) + inserted));
+            delta += inserted as isize - (end - start) as isize;
+            edits.push(Edit::new(start, end, text));
         }
         let after = Selections::new(carets, self.cursors.selections.primary_index());
         self.commit(ChangeSet::new(edits).snap_crlf(&self.model.rope), after, kind);
+    }
+
+    /// Replaces the `before` chars ahead of each caret (or a selection, when there is one)
+    /// with `text`: one step of an IME composition, which replaces what the previous step
+    /// inserted. Steps undo together with the typing around them.
+    pub fn compose(&mut self, before: usize, text: &str) {
+        self.replace_ranges(EditKind::Typing, |_, _, sel| {
+            if sel.is_empty() {
+                (sel.head.saturating_sub(before), sel.head, text.to_owned())
+            } else {
+                (sel.start(), sel.end(), text.to_owned())
+            }
+        });
+    }
+
+    /// Pastes one piece per cursor, as copied from the same number of selections.
+    pub fn paste_each(&mut self, pieces: &[String]) {
+        if pieces.len() != self.cursors.selections.len() {
+            return self.paste(&pieces.join(self.model.line_ending.as_str()));
+        }
+        self.replace_each(EditKind::Other, |_, i, _| pieces[i].clone());
+        self.model.history.break_group();
+    }
+
+    /// The text of each non-empty selection, in order; for clipboard metadata.
+    pub fn selection_texts(&self) -> Vec<String> {
+        self.cursors
+            .selections
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| self.model.rope.slice(s.start()..s.end()).to_string())
+            .collect()
     }
 
     /// Deletes the range `f` returns for each selection; carets collapse to the range start.

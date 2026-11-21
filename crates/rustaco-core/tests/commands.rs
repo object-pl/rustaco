@@ -272,3 +272,25 @@ fn every_bound_command_runs() {
         }
     }
 }
+
+#[test]
+fn composition_steps_replace_each_other_and_undo_as_one() {
+    let mut d = doc("ab", &[(1, 1)]);
+    d.editor().compose(0, "k");
+    d.editor().compose(1, "ka");
+    d.editor().compose(2, "\u{304B}");
+    assert_eq!(d.text(), "a\u{304B}b");
+    assert_eq!(d.selections().primary().head, 2);
+    d.editor().undo();
+    assert_eq!(d.text(), "ab");
+}
+
+#[test]
+fn pasting_pieces_gives_each_cursor_its_own() {
+    let mut d = doc("x\ny\nz", &[(1, 1), (3, 3), (5, 5)]);
+    d.editor().paste_each(&["1".into(), "2".into(), "3".into()]);
+    assert_eq!(d.text(), "x1\ny2\nz3");
+    let mut d = doc("x\ny", &[(1, 1)]);
+    d.editor().paste_each(&["1".into(), "2".into()]);
+    assert_eq!(d.text(), "x1\n2\ny", "one cursor takes the pieces joined");
+}

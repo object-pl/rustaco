@@ -389,3 +389,56 @@ test('view zones open space between lines; content widgets follow their position
   expect(placed.zoneTop).toBe(info.lh);
   expect(placed.widgetTop).toBe(info.lh + 40 + info.lh);
 });
+
+test('IME composition shows inline and commits once', async ({ page }) => {
+  await open(page, 'ab');
+  await setCursor(page, 1);
+  await page.evaluate(() => {
+    const input = document.querySelector('textarea');
+    const fire = (type, data) => input.dispatchEvent(new CompositionEvent(type, { data, bubbles: true }));
+    fire('compositionstart', '');
+    fire('compositionupdate', 'k');
+    fire('compositionupdate', 'ka');
+    window.during = window.editor.getValue();
+    fire('compositionupdate', 'か');
+    fire('compositionend', 'か');
+  });
+  expect(await page.evaluate(() => window.during)).toBe('akab');
+  expect(await value(page)).toBe('aかb');
+  await page.keyboard.press(`${mod}+z`);
+  expect(await value(page)).toBe('ab');
+});
+
+test('the textarea mirrors the caret line for screen readers', async ({ page }) => {
+  await open(page, 'first line\nsecond line');
+  await setCursor(page, 14);
+  await page.keyboard.press('Shift+ArrowRight');
+  const mirror = await page.evaluate(() => {
+    const t = document.querySelector('textarea');
+    return [t.value, t.selectionStart, t.selectionEnd, t.getAttribute('aria-label')];
+  });
+  expect(mirror).toEqual(['second line', 3, 4, 'Editor content']);
+  // beforeinput from a virtual keyboard deletes through the editor.
+  await page.evaluate(() => document.querySelector('textarea').dispatchEvent(
+    new InputEvent('beforeinput', { inputType: 'deleteContentBackward', cancelable: true, bubbles: true })));
+  expect(await value(page)).toBe('first line\nsecnd line');
+});
+
+test('a multi-cursor copy pastes back one piece per cursor', async ({ page, browserName }) => {
+  test.skip(browserName === 'firefox', 'Firefox drops clipboardData from synthetic clipboard events');
+  await open(page, 'aa bb\ncc dd\nee ff');
+  const result = await page.evaluate(() => {
+    const e = window.editor;
+    const input = document.querySelector('textarea');
+    e.setSelections([{ anchor: 0, head: 2 }, { anchor: 6, head: 8 }]);
+    const data = new DataTransfer();
+    input.dispatchEvent(new ClipboardEvent('copy', { clipboardData: data, bubbles: true, cancelable: true }));
+    const copied = { text: data.getData('text/plain'), html: data.getData('text/html') };
+    e.setSelections([{ anchor: 5, head: 5 }, { anchor: 11, head: 11 }]);
+    input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }));
+    return { ...copied, value: e.getValue() };
+  });
+  expect(result.text).toBe('aa\ncc');
+  expect(result.html).toContain('<pre');
+  expect(result.value).toBe('aa bbaa\ncc ddcc\nee ff');
+});
