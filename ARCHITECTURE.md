@@ -9,10 +9,10 @@
 | `rustaco-web` | v0 | `wasm-bindgen` frontend drawing on a 2D canvas, without tree-sitter. `web/rustaco.js` forwards DOM events (keyboard through a hidden `textarea`, so IME and dead keys work), loads language modules and passes edits and highlights between them and the editor. |
 | `rustaco-syntax` | v0 | Language catalog (detection, comment and bracket configuration) and themes in the TextMate scope model, always available. Behind the `engine` feature: incremental tree-sitter parsing driven by `EditEvent`, resumable parsing within a time budget, highlighting of requested lines, 18 grammars. |
 | `rustaco-syntax-wasm` | v0 | Browser language module: one WASM file per language pack, loaded on first use. Keeps its own copy of the text, takes edits and returns highlights as plain data. |
-| `rustaco-lsp` | planned | LSP client over an abstract transport: stdio on desktop, WebSocket or a JS callback in the browser. Completion, diagnostics, hover, go-to-definition, formatting. |
-| `rustaco-diff` | planned | Line diff (histogram) with a char-level pass inside changed lines. Side-by-side and inline diff views, both sides editable, the diff recomputed incrementally after edits. |
+| `rustaco-lsp` | v0 | LSP client over any byte streams (a server's stdio): handshake with position encoding negotiation, incremental sync from edit events, every editor feature's request mapped to char offsets. The browser has its own client in `web/lsp.js` over WebSocket. |
+| diff | v0 | `rustaco_core::diff` (Myers line diff with a char-level pass, moves, a time budget) and `web/diff.js` (side-by-side and inline views). |
 | `rustaco-markdown` | later | Markdown rendering, postponed until after the first release. |
-| `rustaco-desktop` | planned | Native frontend: `winit` plus GPU text rendering (`wgpu` with a glyph atlas), drawing the same `Frame`. |
+| `rustaco-desktop` | v0 | Native frontend: `winit` events, the same `Frame` drawn in software into a pixel buffer with glyphs from a system monospace font (`fontdb`, `fontdue`), clipboard through `arboard`, IME through winit, highlighting on a background thread. `examples/editor.rs` opens and saves files and talks to an LSP server. |
 
 ## Rules for the core
 
@@ -66,7 +66,7 @@ LSP will run outside the input path.
 
 Rustaco is MIT-licensed and everything it depends on or ships must allow that without conditions on the user's code.
 
-- Allowed for dependencies and bundled files (grammars, queries, themes, data): MIT, MIT-0, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, Unicode-DFS-2016, 0BSD, CC0-1.0.
+- Allowed for dependencies and bundled files (grammars, queries, themes, data): MIT, MIT-0, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Zlib, Unicode-3.0, Unicode-DFS-2016, 0BSD, CC0-1.0, BSL-1.0 (Boost; the Windows clipboard crates under `arboard` in the desktop frontend).
 - Not allowed: GPL, LGPL, AGPL, MPL, EPL, CDDL, SSPL, any license with copyleft or field-of-use restrictions, and files without a license.
 - `deny.toml` enforces the list for Rust crates; CI fails on a violation.
 - Bundled non-crate files are listed in `THIRD_PARTY.md` with source URL, commit and license, and their license texts ship with the package.

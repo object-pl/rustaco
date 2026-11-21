@@ -14,6 +14,9 @@ allow = [
     "Unicode-DFS-2016",
     "0BSD",
     "CC0-1.0",
+    # Boost: permissive like MIT (keep the notice, no copyleft). Used by `clipboard-win` and
+    # `error-code`, the Windows clipboard under `arboard` in the desktop frontend.
+    "BSL-1.0",
 ]
 confidence-threshold = 0.9
 unused-allowed-license = "allow"

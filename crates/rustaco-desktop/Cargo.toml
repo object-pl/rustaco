@@ -1,0 +1,22 @@
+[package]
+name = "rustaco-desktop"
+description = "Native frontend for the Rustaco editor: winit window, software rendering of the view's frames, system fonts, clipboard and IME"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rustaco-core.workspace = true
+rustaco-view.workspace = true
+rustaco-syntax = { workspace = true, features = ["engine", "all-languages"] }
+winit = "0.30"
+fontdue = "0.9"
+fontdb = "0.23"
+arboard = { version = "3", default-features = false }
+unicode-width = "0.2"
+
+[dev-dependencies]
+# The example application presents frames with softbuffer and talks to LSP servers.
+softbuffer = "0.4"
+rustaco-lsp = { path = "../rustaco-lsp", version = "0.1.0" }

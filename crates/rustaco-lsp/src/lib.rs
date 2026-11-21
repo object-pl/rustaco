@@ -20,6 +20,8 @@ use std::time::Duration;
 pub use convert::{PositionEncoding, char_range, offset, position, range};
 pub use rpc::{Connection, RpcError, ServerMessage, read_message, write_message};
 use rustaco_core::TextModel;
+/// JSON values as the protocol carries them (serde_json's).
+pub use serde_json::Value as JsonValue;
 use serde_json::{Value, json};
 
 /// A hover answer.
