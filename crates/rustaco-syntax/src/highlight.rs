@@ -1,12 +1,14 @@
 //! Incremental parsing of a [`TextModel`] and highlighting of visible lines.
 
+use std::cell::RefCell;
 use std::ops::{ControlFlow, Range};
 
 use rustaco_core::{EditEvent, Rope, TextModel};
 use rustaco_view::{StyleSpan, Styler};
 use tree_sitter::{InputEdit, Node, ParseOptions, ParseState, Parser, Point, StreamingIterator, TextProvider, Tree};
 
-use crate::language::LanguageDef;
+use crate::injection::{InjectionCache, find_regions};
+use crate::language::{CompiledQuery, LanguageDef};
 
 /// Lines longer than this are highlighted only up to this column, as in Monaco.
 pub const MAX_HIGHLIGHT_COLUMNS: usize = 20_000;
@@ -21,6 +23,7 @@ pub struct Syntax {
     /// Edits were recorded (or no tree exists yet) and the tree does not match the text.
     stale: bool,
     version: u64,
+    injections: RefCell<InjectionCache>,
 }
 
 impl Syntax {
@@ -28,7 +31,7 @@ impl Syntax {
         let mut parser = Parser::new();
         parser.set_language(&language.grammar()).map_err(|e| format!("{}: {e}", language.id))?;
         language.highlight_query().map_err(str::to_owned)?;
-        Ok(Self { language, parser, tree: None, stale: true, version: 0 })
+        Ok(Self { language, parser, tree: None, stale: true, version: 0, injections: RefCell::default() })
     }
 
     pub fn language(&self) -> &'static LanguageDef {
@@ -136,23 +139,24 @@ impl Syntax {
         }
 
         let byte_range = rope.line_to_byte(lines.start)..rope.line_to_byte(lines.end);
-        let mut cursor = tree_sitter::QueryCursor::new();
-        cursor.set_byte_range(byte_range);
-        let mut found: Vec<(usize, usize, usize, u32)> = Vec::new();
-        let mut captures = cursor.captures(&compiled.query, tree.root_node(), RopeText(rope));
-        while let Some((m, index)) = captures.next() {
-            let capture = m.captures()[*index];
-            let style = compiled.capture_styles[capture.index as usize];
-            if style != 0 {
-                found.push((capture.node.start_byte(), capture.node.end_byte(), m.pattern_index, style));
+        let mut spans = collect_captures(compiled, tree, byte_range.clone(), RopeText(rope));
+
+        // Injected languages paint over the host's colours inside their regions.
+        let regions = find_regions(self.language, tree, byte_range, RopeText(rope), |n| {
+            rope.byte_slice(n.start_byte()..n.end_byte().min(rope.len_bytes())).to_string()
+        });
+        if !regions.is_empty() {
+            let mut cache = self.injections.borrow_mut();
+            for region in regions {
+                let end = region.bytes.end.min(rope.len_bytes());
+                let text = rope.byte_slice(region.bytes.start.min(end)..end).to_string();
+                let inner = cache.spans(region.language, &text, 1);
+                spans
+                    .extend(inner.iter().map(|&(s, e, style)| (s + region.bytes.start, e + region.bytes.start, style)));
             }
         }
-        // Outer nodes first so inner ones paint over them. For one node captured by several
-        // patterns, the later pattern paints last and wins: the bundled queries start with
-        // generic captures such as `(identifier) @variable` and refine them further down.
-        found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
 
-        for (start_byte, end_byte, _, style) in found {
+        for (start_byte, end_byte, style) in spans {
             let start = rope.byte_to_char(start_byte.min(rope.len_bytes()));
             let end = rope.byte_to_char(end_byte.min(rope.len_bytes()));
             let (first, last) = (rope.char_to_line(start), rope.char_to_line(end));
@@ -167,6 +171,31 @@ impl Syntax {
         }
         Highlights::from_paint(lines.start, paint)
     }
+}
+
+/// Styled captures of `query` in `range`, as (start byte, end byte, style) in paint order:
+/// outer nodes before inner ones, and for one node the later pattern last, so it wins. The
+/// bundled queries start with generic captures such as `(identifier) @variable` and refine
+/// them further down.
+pub(crate) fn collect_captures<I: AsRef<[u8]>, T: TextProvider<I>>(
+    compiled: &CompiledQuery,
+    tree: &Tree,
+    range: Range<usize>,
+    provider: T,
+) -> Vec<(usize, usize, u32)> {
+    let mut cursor = tree_sitter::QueryCursor::new();
+    cursor.set_byte_range(range);
+    let mut found: Vec<(usize, usize, usize, u32)> = Vec::new();
+    let mut captures = cursor.captures(&compiled.query, tree.root_node(), provider);
+    while let Some((m, index)) = captures.next() {
+        let capture = m.captures()[*index];
+        let style = compiled.capture_styles[capture.index as usize];
+        if style != 0 {
+            found.push((capture.node.start_byte(), capture.node.end_byte(), m.pattern_index, style));
+        }
+    }
+    found.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)).then(a.2.cmp(&b.2)));
+    found.into_iter().map(|(s, e, _, style)| (s, e, style)).collect()
 }
 
 fn point(p: rustaco_core::Point) -> Point {

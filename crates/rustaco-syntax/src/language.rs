@@ -5,6 +5,7 @@ use std::sync::OnceLock;
 use tree_sitter::{Language, Query};
 
 use crate::catalog::{LanguageInfo, info};
+use crate::injection::CompiledInjections;
 use crate::names::style_for_capture;
 
 /// A highlight query compiled for one language, with the style id of each capture.
@@ -14,13 +15,16 @@ pub(crate) struct CompiledQuery {
 }
 
 type Compiled = OnceLock<Result<CompiledQuery, String>>;
+type CompiledInj = OnceLock<Result<CompiledInjections, String>>;
 
 pub struct LanguageDef {
     pub id: &'static str,
     grammar: fn() -> Language,
     /// Query sources joined in order; TypeScript builds on the JavaScript query, C++ on C.
     highlights: &'static [&'static str],
+    injections: &'static [&'static str],
     compiled: &'static Compiled,
+    compiled_injections: &'static CompiledInj,
 }
 
 impl LanguageDef {
@@ -45,17 +49,36 @@ impl LanguageDef {
             .as_ref()
             .map_err(String::as_str)
     }
+
+    /// Compiles the injection query on first use; `None` for languages without one.
+    pub(crate) fn injection_query(&self) -> Option<Result<&CompiledInjections, &str>> {
+        if self.injections.is_empty() {
+            return None;
+        }
+        let compiled = self.compiled_injections.get_or_init(|| {
+            let source = self.injections.join("\n");
+            Query::new(&self.grammar(), &source)
+                .map(CompiledInjections::new)
+                .map_err(|e| format!("{} injections: {e}", self.id))
+        });
+        Some(compiled.as_ref().map_err(String::as_str))
+    }
 }
 
 #[allow(unused_macros)] // unused when the build enables no language
 macro_rules! language {
-    ($id:literal, $grammar:expr, [$($query:expr),+ $(,)?]) => {
+    ($id:literal, $grammar:expr, [$($query:expr),+ $(,)?] $(, injections: [$($inj:expr),* $(,)?])?) => {
         LanguageDef {
             id: $id,
             grammar: || $grammar.into(),
             highlights: &[$($query),+],
+            injections: &[$($($inj),*)?],
             compiled: {
                 static COMPILED: Compiled = OnceLock::new();
+                &COMPILED
+            },
+            compiled_injections: {
+                static COMPILED: CompiledInj = OnceLock::new();
                 &COMPILED
             },
         }
@@ -64,12 +87,14 @@ macro_rules! language {
 
 static LANGUAGES: &[LanguageDef] = &[
     #[cfg(feature = "rust")]
-    language!("rust", tree_sitter_rust::LANGUAGE, [tree_sitter_rust::HIGHLIGHTS_QUERY]),
+    language!("rust", tree_sitter_rust::LANGUAGE, [tree_sitter_rust::HIGHLIGHTS_QUERY],
+        injections: [tree_sitter_rust::INJECTIONS_QUERY]),
     #[cfg(feature = "javascript")]
     language!(
         "javascript",
         tree_sitter_javascript::LANGUAGE,
-        [tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,]
+        [tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY],
+        injections: [tree_sitter_javascript::INJECTIONS_QUERY]
     ),
     #[cfg(feature = "typescript")]
     language!(
@@ -102,7 +127,8 @@ static LANGUAGES: &[LanguageDef] = &[
     #[cfg(feature = "csharp")]
     language!("csharp", tree_sitter_c_sharp::LANGUAGE, [tree_sitter_c_sharp::HIGHLIGHTS_QUERY]),
     #[cfg(feature = "html")]
-    language!("html", tree_sitter_html::LANGUAGE, [tree_sitter_html::HIGHLIGHTS_QUERY]),
+    language!("html", tree_sitter_html::LANGUAGE, [tree_sitter_html::HIGHLIGHTS_QUERY],
+        injections: [tree_sitter_html::INJECTIONS_QUERY]),
     #[cfg(feature = "css")]
     language!("css", tree_sitter_css::LANGUAGE, [tree_sitter_css::HIGHLIGHTS_QUERY]),
     #[cfg(feature = "bash")]
@@ -114,7 +140,11 @@ static LANGUAGES: &[LanguageDef] = &[
     #[cfg(feature = "sql")]
     language!("sql", tree_sitter_sequel::LANGUAGE, [tree_sitter_sequel::HIGHLIGHTS_QUERY]),
     #[cfg(feature = "markdown")]
-    language!("markdown", tree_sitter_md::LANGUAGE, [tree_sitter_md::HIGHLIGHT_QUERY_BLOCK]),
+    language!("markdown", tree_sitter_md::LANGUAGE, [tree_sitter_md::HIGHLIGHT_QUERY_BLOCK],
+        injections: [tree_sitter_md::INJECTION_QUERY_BLOCK]),
+    #[cfg(feature = "markdown")]
+    language!("markdown_inline", tree_sitter_md::INLINE_LANGUAGE, [tree_sitter_md::HIGHLIGHT_QUERY_INLINE],
+        injections: [tree_sitter_md::INJECTION_QUERY_INLINE]),
 ];
 
 /// The languages compiled into this build.
@@ -136,6 +166,9 @@ mod tests {
             let q = lang.highlight_query().unwrap_or_else(|e| panic!("{e}"));
             assert!(q.capture_styles.iter().any(|&s| s != 0), "{} maps no capture to a style", lang.id);
             assert_eq!(lang.info().id, lang.id);
+            if let Some(inj) = lang.injection_query() {
+                inj.unwrap_or_else(|e| panic!("{e}"));
+            }
         }
     }
 }

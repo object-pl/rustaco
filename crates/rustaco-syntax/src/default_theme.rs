@@ -37,6 +37,11 @@ const DARK: &[(&str, u32, bool)] = &[
     ("support.type.property-name", 0x9cdcfe, false),
     ("punctuation", 0xd4d4d4, false),
     ("punctuation.bracket", 0xffd700, false),
+    ("markup.heading", 0x569cd6, false),
+    ("markup.inline.raw", 0xce9178, false),
+    ("markup.underline.link", 0x3794ff, false),
+    ("markup.quote", 0x6a9955, false),
+    ("keyword.control.at-rule", 0xc586c0, false),
 ];
 
 const LIGHT: &[(&str, u32, bool)] = &[
@@ -64,18 +69,37 @@ const LIGHT: &[(&str, u32, bool)] = &[
     ("variable.other.property", 0x001080, false),
     ("support.type.property-name", 0x0451a5, false),
     ("punctuation", 0x000000, false),
+    ("markup.heading", 0x800000, false),
+    ("markup.inline.raw", 0xa31515, false),
+    ("markup.underline.link", 0x0000ff, false),
+    ("markup.quote", 0x008000, false),
+    ("keyword.control.at-rule", 0xaf00db, false),
+];
+
+/// Font-only rules shared by every bundled theme: (selector, bold, italic, underline).
+const FONT: &[(&str, bool, bool, bool)] = &[
+    ("markup.heading", true, false, false),
+    ("markup.bold", true, false, false),
+    ("markup.italic", false, true, false),
+    ("markup.underline.link", false, false, true),
+    ("markup.strikethrough", false, false, false),
 ];
 
 fn build(rules: &[(&str, u32, bool)]) -> Theme {
-    Theme {
-        rules: rules
-            .iter()
-            .map(|&(selector, fg, italic)| ThemeRule {
-                selector: selector.to_owned(),
-                style: Style { foreground: Some(rgb(fg)), italic: italic.then_some(true), ..Style::default() },
-            })
-            .collect(),
-    }
+    let colours = rules.iter().map(|&(selector, fg, italic)| ThemeRule {
+        selector: selector.to_owned(),
+        style: Style { foreground: Some(rgb(fg)), italic: italic.then_some(true), ..Style::default() },
+    });
+    let fonts = FONT.iter().map(|&(selector, bold, italic, underline)| ThemeRule {
+        selector: selector.to_owned(),
+        style: Style {
+            bold: bold.then_some(true),
+            italic: italic.then_some(true),
+            underline: underline.then_some(true),
+            ..Style::default()
+        },
+    });
+    Theme { rules: colours.chain(fonts).collect() }
 }
 
 pub fn dark() -> Theme {

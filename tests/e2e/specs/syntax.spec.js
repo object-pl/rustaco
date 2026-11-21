@@ -135,3 +135,11 @@ test('a long parse finishes over several frames and then colours the text', asyn
   expect(result.frames).toBeGreaterThan(1);
   expect(result.colouredSpans).toBeGreaterThan(5);
 });
+
+test('scripts inside HTML are coloured as JavaScript', async ({ page }) => {
+  await open(page, '<script>\nconst x = 1;\n</script>', 'html');
+  const plainText = '212,212,212';
+  const keyword = await colorAt(page, 9);
+  expect(keyword).not.toBeNull();
+  expect(keyword).not.toBe(plainText);
+});

@@ -10,6 +10,8 @@ mod default_theme;
 #[cfg(feature = "engine")]
 mod highlight;
 #[cfg(feature = "engine")]
+mod injection;
+#[cfg(feature = "engine")]
 mod language;
 mod names;
 mod theme;
@@ -17,6 +19,8 @@ mod theme;
 pub use catalog::{LanguageConfig, LanguageInfo, catalog, detect, info};
 #[cfg(feature = "engine")]
 pub use highlight::{Highlights, MAX_HIGHLIGHT_COLUMNS, Syntax};
+#[cfg(feature = "engine")]
+pub use injection::{MAX_INJECTION_BYTES, resolve as resolve_injection_language};
 #[cfg(feature = "engine")]
 pub use language::{LanguageDef, by_id, languages};
 pub use names::{HIGHLIGHT_NAMES, name_of_style, style_for_capture};

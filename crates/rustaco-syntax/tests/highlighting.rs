@@ -240,3 +240,34 @@ fn budgeted_parse_resumes_to_the_same_tree() {
     fresh.update(doc.model());
     assert_eq!(sliced.tree().unwrap().root_node().to_sexp(), fresh.tree().unwrap().root_node().to_sexp());
 }
+
+#[test]
+fn injections_colour_embedded_languages() {
+    let html = "<script>\nconst x = 42;\n</script>\n<style>.a { color: red; }</style>\n";
+    let doc = Document::new(html);
+    let mut syntax = Syntax::new(by_id("html").unwrap()).unwrap();
+    let h = highlight_all(&doc, &mut syntax);
+    let script = names_on(&h, 1, html);
+    assert!(script.contains(&("const".into(), Some("keyword"))), "{script:?}");
+    assert!(script.contains(&("42".into(), Some("number"))), "{script:?}");
+    let style = names_on(&h, 3, html);
+    assert!(style.contains(&("color".into(), Some("property"))), "{style:?}");
+
+    let md = "# Title\n\nSome *em*.\n\n```python\ndef f(): return None\n```\n";
+    let doc = Document::new(md);
+    let mut syntax = Syntax::new(by_id("markdown").unwrap()).unwrap();
+    let h = highlight_all(&doc, &mut syntax);
+    assert!(names_on(&h, 2, md).contains(&("em".into(), Some("text.emphasis"))));
+    let code = names_on(&h, 5, md);
+    assert!(code.contains(&("def".into(), Some("keyword"))), "{code:?}");
+    assert!(code.contains(&("None".into(), Some("constant.builtin"))), "{code:?}");
+}
+
+#[test]
+fn unknown_fence_languages_keep_the_code_block_style() {
+    let md = "```klingon\nqapla'\n```\n";
+    let doc = Document::new(md);
+    let mut syntax = Syntax::new(by_id("markdown").unwrap()).unwrap();
+    let h = highlight_all(&doc, &mut syntax);
+    assert_eq!(names_on(&h, 1, md), vec![("qapla'".to_string(), Some("text.literal"))]);
+}

@@ -89,6 +89,10 @@ static CATALOG: &[LanguageInfo] = &[
         LanguageConfig { line_comment: Some("--"), ..C_STYLE }),
     lang!("markdown", "Markdown", "markdown", ext: &["md", "markdown"], files: &[], shebangs: &[],
         LanguageConfig { line_comment: None, block_comment: Some(("<!--", "-->")), brackets: BRACKETS, auto_closing: CLOSE_C }),
+    // Inline Markdown (emphasis, links, code spans); reached only through the Markdown
+    // grammar's injections, never detected from a file name.
+    lang!("markdown_inline", "Markdown (inline)", "markdown", ext: &[], files: &[], shebangs: &[],
+        LanguageConfig { line_comment: None, block_comment: None, brackets: BRACKETS, auto_closing: CLOSE_C }),
     lang!("dockerfile", "Dockerfile", "dockerfile", ext: &["dockerfile"], files: &["Dockerfile", "Containerfile"],
         shebangs: &[], HASH_STYLE),
 ];
