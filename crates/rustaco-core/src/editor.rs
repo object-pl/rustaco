@@ -46,6 +46,11 @@ impl Cursors {
         self.id
     }
 
+    /// Whether a snippet is being filled in.
+    pub fn snippet_active(&self) -> bool {
+        self.snippet.is_some()
+    }
+
     /// The selections as of the last [`Cursors::sync`]. Call `sync` first when another
     /// editor may have changed the model.
     pub fn selections(&self) -> &Selections {
@@ -82,6 +87,11 @@ impl<'a> Editor<'a> {
     pub fn new(model: &'a mut TextModel, cursors: &'a mut Cursors) -> Self {
         cursors.sync(model);
         Self { model, cursors }
+    }
+
+    /// The model being edited.
+    pub fn model(&self) -> &TextModel {
+        self.model
     }
 
     pub fn selections(&self) -> &Selections {

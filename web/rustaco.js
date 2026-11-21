@@ -2,6 +2,9 @@
 import init, {
   Editor, Model, defineDecorationType as defineType, setBuiltinTheme, setThemeRules, widgetColors,
 } from './pkg/rustaco_web.js';
+import { SuggestController } from './suggest.js';
+
+export { languages, CompletionItemKind, SymbolKind, fuzzyScore } from './languages.js';
 
 const BLINK_MS = 530;
 /** Parsing time per frame; the rest of a long parse continues on later frames. */
@@ -339,6 +342,26 @@ export class RustacoModel {
 
   getValue() { return this.core.getValue(); }
 
+  /** The text between two char offsets. */
+  getTextRange(start, end) { return this.core.getTextRange(start, end); }
+
+  /** `{ line, column }` (0-based, chars) of an offset. */
+  positionAt(offset) {
+    const [line, column] = this.core.positionAt(offset);
+    return { line, column };
+  }
+
+  /** The offset of `{ line, column }` (0-based), clamped into the text. */
+  offsetAt({ line, column }) { return this.core.offsetAt(line, column); }
+
+  getLineCount() { return this.core.lineCount(); }
+
+  /** The text of a line (0-based), without its line break. */
+  getLineContent(line) {
+    const start = this.core.offsetAt(line, 0);
+    return this.core.getTextRange(start, this.core.offsetAt(line, 1 << 30));
+  }
+
   /**
    * Sets the language by id; `""` turns highlighting off. Loads the language module on first
    * use and resolves to false when the id is unknown or its module is not available.
@@ -510,6 +533,7 @@ export class RustacoEditor {
     this.composing = false;
     this.frame = 0;
     this.findRequest = 0;
+    this.suggest = new SuggestController(this, widgetColors);
 
     this.#wire();
     new ResizeObserver(() => this.#resize()).observe(container);
@@ -824,6 +848,7 @@ export class RustacoEditor {
 
     canvas.addEventListener('mousedown', (e) => {
       this.#coverInput(null);
+      this.suggest.close();
       const [x, y] = this.#point(e);
       if (e.button === 2 || (e.button === 1 && platform() === 'linux')) {
         // Right click: keep a selection under the pointer, else move the caret there. Then
@@ -872,7 +897,7 @@ export class RustacoEditor {
     });
     input.addEventListener('contextmenu', () => setTimeout(() => this.#coverInput(null), 0));
     input.addEventListener('paste', () => setTimeout(() => this.#coverInput(null), 0));
-    input.addEventListener('blur', () => this.#coverInput(null));
+    input.addEventListener('blur', () => { this.#coverInput(null); this.suggest.close(); });
 
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
@@ -884,11 +909,12 @@ export class RustacoEditor {
 
     input.addEventListener('keydown', (e) => {
       if (e.isComposing || e.keyCode === 229) return;
+      if (this.suggest.handleKey(e)) { e.preventDefault(); return; }
       const result = core.key_down(bindingKey(e), e.ctrlKey, e.shiftKey, e.altKey, e.metaKey);
       if (result === 0) return;
       e.preventDefault();
       if (result === 2) this.#frontendCommand(core.takeFrontendCommand());
-      this.#changed();
+      this.afterEdit();
     });
     // Text arrives through beforeinput, which can be cancelled, so the textarea keeps the
     // mirrored line and the model stays the only copy of the text.
@@ -905,7 +931,11 @@ export class RustacoEditor {
       if (e.inputType === 'insertText' || e.inputType === 'insertReplacementText') {
         e.preventDefault();
         const text = e.data ?? e.dataTransfer?.getData('text/plain') ?? '';
-        if (text) { core.insert_text(text, this.#inLiteral()); this.#changed(); }
+        if (text) {
+          core.insert_text(text, this.#inLiteral());
+          this.#changed();
+          this.suggest.typed(text);
+        }
       } else if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') {
         e.preventDefault();
         core.key_down('Enter', false, false, false, false);
@@ -982,6 +1012,10 @@ export class RustacoEditor {
 
   /** Commands that need the language module or the DOM. */
   #frontendCommand(command) {
+    if (command === 'editor.action.triggerSuggest') {
+      this.suggest.trigger({ explicit: true });
+      return;
+    }
     if (command === 'actions.find' || command === 'editor.action.startFindReplaceAction') {
       this.findWidget ??= new FindWidget(this);
       this.findWidget.open(command !== 'actions.find');
@@ -1040,6 +1074,26 @@ export class RustacoEditor {
     this.model.changed();
     this.#mirror();
   }
+
+  /**
+   * After a command or an accepted completion: redraw, refilter an open list, and offer a
+   * snippet stop's choices.
+   */
+  afterEdit() {
+    this.#changed();
+    const choices = this.core.snippetChoices();
+    if (choices.length) this.suggest.showChoices(choices);
+    else if (this.suggest.open) this.suggest.refilter();
+  }
+
+  /** Inserts a snippet in VS Code's syntax (`for ${1:i} in $2 {\n\t$0\n}`) at every cursor. */
+  insertSnippet(source) {
+    this.core.insertSnippet(source);
+    this.afterEdit();
+  }
+
+  /** Opens the completion list, as Ctrl+Space does. */
+  triggerSuggest() { return this.suggest.trigger({ explicit: true }); }
 
   /**
    * Puts the caret's line and selection into the hidden textarea, the way VS Code does, so a

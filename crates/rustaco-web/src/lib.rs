@@ -344,6 +344,37 @@ impl Model {
         Model { inner: Rc::new(RefCell::new(TextModel::new(text))) }
     }
 
+    /// The text between two char offsets.
+    #[wasm_bindgen(js_name = getTextRange)]
+    pub fn get_text_range(&self, start: u32, end: u32) -> String {
+        let model = self.inner.borrow();
+        let len = model.len_chars();
+        let end = (end as usize).min(len);
+        model.rope().slice((start as usize).min(end)..end).to_string()
+    }
+
+    /// Line and column (0-based, in chars) of a char offset.
+    #[wasm_bindgen(js_name = positionAt)]
+    pub fn position_at(&self, offset: u32) -> Vec<u32> {
+        let model = self.inner.borrow();
+        let p = rustaco_core::char_to_position(model.rope(), offset as usize);
+        vec![p.line as u32, p.column as u32]
+    }
+
+    /// The char offset of a line and column (0-based), clamped into the text.
+    #[wasm_bindgen(js_name = offsetAt)]
+    pub fn offset_at(&self, line: u32, column: u32) -> u32 {
+        let model = self.inner.borrow();
+        let rope = model.rope();
+        let line = (line as usize).min(rope.len_lines() - 1);
+        (rope.line_to_char(line) + (column as usize).min(rustaco_core::line_len(rope, line))) as u32
+    }
+
+    #[wasm_bindgen(js_name = lineCount)]
+    pub fn line_count(&self) -> u32 {
+        self.inner.borrow().rope().len_lines() as u32
+    }
+
     /// Replaces the decorations of `owner` (an id the caller picks, at or above 2^20 so it
     /// stays clear of editors' own) with triples of start, end (char offsets) and kind from
     /// [`define_decoration_type`]. Every editor showing the model draws them; they move with
@@ -583,6 +614,7 @@ const FRONTEND_COMMANDS: &[&str] = &[
     "editor.action.jumpToBracket",
     "actions.find",
     "editor.action.startFindReplaceAction",
+    "editor.action.triggerSuggest",
 ];
 
 #[wasm_bindgen]
@@ -882,7 +914,7 @@ impl Editor {
         if let Some(forward) = find_step {
             return self.find_next(forward);
         }
-        let handled = match page_move {
+        let handled_page = match page_move {
             Some((lines, extend)) => {
                 self.move_vertical(lines, extend);
                 let dy = lines as f64 * self.view.metrics.line_height as f64;
@@ -891,6 +923,10 @@ impl Editor {
             }
             None => self.edit(|ed| ed.run(command)),
         };
+        let handled = handled_page;
+        if !command.contains("SnippetPlaceholder") {
+            self.edit(|ed| ed.check_snippet());
+        }
         if handled {
             self.reveal_primary();
         }
@@ -910,6 +946,7 @@ impl Editor {
                 ("editorHasSelection".to_owned(), sels.iter().any(|s| !s.is_empty())),
                 ("editorHasMultipleSelections".to_owned(), sels.len() > 1),
                 ("editorTextFocus".to_owned(), true),
+                ("inSnippetMode".to_owned(), self.cursors.snippet_active()),
             ])
         };
         match self.keymap.resolve(&pressed, &context) {
@@ -1247,6 +1284,52 @@ impl Editor {
         self.reveal_primary();
     }
 
+    /// Inserts a snippet (VS Code syntax) at every selection and selects its first tab stop.
+    #[wasm_bindgen(js_name = insertSnippet)]
+    pub fn insert_snippet(&mut self, source: &str) {
+        let snippet = self.parse_snippet(source);
+        self.edit(|ed| ed.insert_snippet(&snippet));
+        self.reveal_primary();
+    }
+
+    /// Accepts a completion at every cursor: replaces `before` chars ahead of each caret and
+    /// `after` chars behind it with `text`, as a snippet when `snippet` is true.
+    #[wasm_bindgen(js_name = acceptCompletion)]
+    pub fn accept_completion(&mut self, before: u32, after: u32, text: &str, snippet: bool) {
+        let parsed = snippet.then(|| self.parse_snippet(text));
+        self.edit(|ed| {
+            let len = ed.model().len_chars();
+            let ranges: Vec<Selection> = ed
+                .selections()
+                .iter()
+                .map(|s| Selection::new(s.head.saturating_sub(before as usize), (s.head + after as usize).min(len)))
+                .collect();
+            let primary = ed.selections().primary_index();
+            ed.set_selections(Selections::new(ranges, primary));
+            match &parsed {
+                Some(sn) => ed.insert_snippet(sn),
+                None => ed.insert(text),
+            }
+        });
+        self.reveal_primary();
+    }
+
+    /// The options of the snippet stop being edited, when it is a choice.
+    #[wasm_bindgen(js_name = snippetChoices)]
+    pub fn snippet_choices(&mut self) -> Vec<String> {
+        self.edit(|ed| ed.snippet().and_then(|s| s.choices()).map(<[String]>::to_vec).unwrap_or_default())
+    }
+
+    /// The word at the primary caret: [start, end] char offsets (equal when there is none).
+    #[wasm_bindgen(js_name = wordAtCaret)]
+    pub fn word_at_caret(&mut self) -> Vec<u32> {
+        let head = self.selections_primary().head;
+        let model = self.model.borrow();
+        let (a, b) = word_at(model.rope(), head);
+        let is_word = model.rope().slice(a..b).chars().all(|c| c.is_alphanumeric() || c == '_');
+        if is_word && a < b { vec![a as u32, b as u32] } else { vec![head as u32, head as u32] }
+    }
+
     /// Ends the composition: its text stays, the underline goes.
     #[wasm_bindgen(js_name = endComposition)]
     pub fn end_composition(&mut self) {
@@ -1558,6 +1641,7 @@ impl Editor {
     /// did not move places the caret there.
     #[wasm_bindgen(js_name = mouseUpWith)]
     pub fn mouse_up_with(&mut self, copy: bool) {
+        self.edit(|ed| ed.check_snippet());
         self.minimap_drag = None;
         self.scrollbar_drag = None;
         self.drag = None;
@@ -1920,6 +2004,55 @@ fn draw_underline(ctx: &CanvasRenderingContext2d, r: &Rect, style: u8, color: &s
 }
 
 impl Editor {
+    /// Parses a snippet, resolving VS Code's variables from this editor's state.
+    fn parse_snippet(&mut self, source: &str) -> rustaco_core::Snippet {
+        let model = self.model.borrow();
+        self.cursors.sync(&model);
+        let rope = model.rope();
+        let sel = self.cursors.selections().primary();
+        let line = rope.char_to_line(sel.head);
+        let selected: String = rope.slice(sel.start()..sel.end()).to_string();
+        let line_text: String = rope.line(line).chars().take(rustaco_core::line_len(rope, line)).collect();
+        let (wa, wb) = word_at(rope, sel.head);
+        let word: String = rope.slice(wa..wb).to_string();
+        let now = js_sys::Date::new_0();
+        let two = |n: u32| format!("{n:02}");
+        let resolve = |name: &str| -> Option<String> {
+            Some(match name {
+                "TM_SELECTED_TEXT" => selected.clone(),
+                "TM_CURRENT_LINE" => line_text.clone(),
+                "TM_CURRENT_WORD" => word.clone(),
+                "TM_LINE_INDEX" => line.to_string(),
+                "TM_LINE_NUMBER" => (line + 1).to_string(),
+                "CURRENT_YEAR" => now.get_full_year().to_string(),
+                "CURRENT_YEAR_SHORT" => two(now.get_full_year() % 100),
+                "CURRENT_MONTH" => two(now.get_month() + 1),
+                "CURRENT_DATE" => two(now.get_date()),
+                "CURRENT_HOUR" => two(now.get_hours()),
+                "CURRENT_MINUTE" => two(now.get_minutes()),
+                "CURRENT_SECOND" => two(now.get_seconds()),
+                "RANDOM" => format!("{:06}", (js_sys::Math::random() * 1e6) as u32),
+                "RANDOM_HEX" => format!("{:06x}", (js_sys::Math::random() * 16_777_216.0) as u32),
+                "UUID" => {
+                    let hex = |n: usize| -> String {
+                        (0..n).map(|_| format!("{:x}", (js_sys::Math::random() * 16.0) as u32)).collect()
+                    };
+                    format!(
+                        "{}-{}-4{}-{}{}-{}",
+                        hex(8),
+                        hex(4),
+                        hex(3),
+                        ["8", "9", "a", "b"][(js_sys::Math::random() * 4.0) as usize % 4],
+                        hex(3),
+                        hex(12)
+                    )
+                }
+                _ => return None,
+            })
+        };
+        rustaco_core::Snippet::parse(source, &resolve)
+    }
+
     /// Vertical scrollbar thumb: top and height, when the content is taller than the view.
     fn vertical_thumb(&self, rope: &Rope) -> Option<(f64, f64)> {
         let h = self.view.height as f64;

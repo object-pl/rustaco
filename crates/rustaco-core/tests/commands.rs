@@ -255,6 +255,12 @@ fn every_bound_command_runs() {
         // Find navigation needs the frontend's current query.
         "editor.action.nextMatchFindAction",
         "editor.action.previousMatchFindAction",
+        // Snippet navigation needs an active snippet.
+        "jumpToNextSnippetPlaceholder",
+        "jumpToPrevSnippetPlaceholder",
+        "leaveSnippet",
+        // Suggestions come from the frontend's providers.
+        "editor.action.triggerSuggest",
         // The find widget is the frontend's.
         "actions.find",
         "editor.action.startFindReplaceAction",

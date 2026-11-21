@@ -749,6 +749,13 @@ impl Editor<'_> {
     /// commands need the platform clipboard).
     pub fn run(&mut self, command: &str) -> bool {
         match command {
+            "jumpToNextSnippetPlaceholder" => return self.next_snippet_stop(),
+            "jumpToPrevSnippetPlaceholder" => return self.prev_snippet_stop(),
+            "leaveSnippet" => {
+                let active = self.snippet().is_some();
+                self.end_snippet();
+                return active;
+            }
             "cursorLeft" => self.move_left(false),
             "cursorLeftSelect" => self.move_left(true),
             "cursorRight" => self.move_right(false),
