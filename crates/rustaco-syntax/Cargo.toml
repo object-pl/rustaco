@@ -4,6 +4,7 @@ description = "Syntax highlighting for the Rustaco editor: incremental tree-sitt
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
