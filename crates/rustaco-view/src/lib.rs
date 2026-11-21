@@ -96,7 +96,35 @@ pub struct Frame {
     pub fold_markers: Vec<FoldMarker>,
     /// Placeholders drawn after the text of folded header lines.
     pub fold_ellipses: Vec<Rect>,
+    /// The minimap, when it is on.
+    pub minimap: Option<MinimapFrame>,
 }
+
+/// The minimap: the document at a small scale beside the text, each char a block of
+/// colour, with a slider over the part the viewport shows.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MinimapFrame {
+    /// Left edge and width of the minimap column.
+    pub x: f32,
+    pub width: f32,
+    /// Height of one row of text.
+    pub row_height: f32,
+    pub blocks: Vec<MinimapBlock>,
+    pub slider: Rect,
+}
+
+/// A run of non-blank chars with one style, in the minimap.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MinimapBlock {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub style: u32,
+}
+
+/// Minimap scale: pixels per text row and per cell.
+const MINIMAP_ROW: f32 = 2.0;
+const MINIMAP_CELL: f32 = 1.0;
 
 /// Width of the fold marker column at the right of the gutter, in cells.
 const FOLD_MARKER_CELLS: f32 = 2.0;
@@ -120,6 +148,8 @@ pub struct View {
     tab_size: usize,
     /// Word wrap at the viewport's width.
     wrap: bool,
+    /// Width of the minimap column at the right; 0 when it is off.
+    minimap_width: f32,
     heights: HeightMap,
     /// What `heights` was computed for: model version, line height, wrap width, tab size.
     synced: Option<Synced>,
@@ -148,6 +178,7 @@ impl View {
             widest_cells: 0,
             tab_size: 4,
             wrap: false,
+            minimap_width: 0.0,
             heights: HeightMap::new(1, metrics.line_height),
             synced: None,
             folds: Vec::new(),
@@ -181,6 +212,21 @@ impl View {
         self.wrap
     }
 
+    /// Shows a minimap `width` pixels wide at the right (0 hides it). The text area
+    /// narrows by the same amount.
+    pub fn set_minimap(&mut self, width: f32) {
+        self.minimap_width = width.max(0.0);
+    }
+
+    pub fn minimap_width(&self) -> f32 {
+        self.minimap_width
+    }
+
+    /// Width of the text area: the viewport less the gutter and the minimap.
+    fn text_width(&self, rope: &Rope) -> f32 {
+        self.width - self.gutter_width(rope) - self.minimap_width
+    }
+
     pub fn gutter_width(&self, rope: &Rope) -> f32 {
         let digits = rope.len_lines().to_string().len().max(2);
         (digits as f32 + 3.0 + FOLD_MARKER_CELLS) * self.metrics.char_width
@@ -189,7 +235,7 @@ impl View {
     /// Wrapping width in cells, when wrapping.
     fn wrap_cells(&self, rope: &Rope) -> Option<usize> {
         self.wrap.then(|| {
-            let text = self.width - self.gutter_width(rope) - SCROLLBAR_WIDTH;
+            let text = self.text_width(rope) - if self.minimap_width > 0.0 { 0.0 } else { SCROLLBAR_WIDTH };
             ((text / self.metrics.char_width).floor().max(0.0) as usize).max(MIN_WRAP_CELLS)
         })
     }
@@ -577,7 +623,7 @@ impl View {
 
     pub fn scroll_to(&mut self, rope: &Rope, top: f64, left: f32) {
         let max_top = (self.content_height(rope) - self.height as f64).max(0.0);
-        let max_left = (self.content_width(rope) - self.width).max(0.0);
+        let max_left = (self.content_width(rope) - self.width + self.minimap_width).max(0.0);
         self.scroll_top = top.clamp(0.0, max_top);
         self.scroll_left = if self.wrap { 0.0 } else { left.clamp(0.0, max_left) };
     }
@@ -604,7 +650,7 @@ impl View {
 
         let cw = self.metrics.char_width;
         self.widest_cells = self.widest_cells.max(x_cells + 1);
-        let text_width = self.width - self.gutter_width(rope);
+        let text_width = self.text_width(rope);
         let margin = 4.0 * cw;
         let x = x_cells as f32 * cw;
         let mut scroll_left = self.scroll_left;
@@ -725,7 +771,129 @@ impl View {
             frame.selections.extend(self.range_rects(rope, sel.start()..sel.end(), gutter));
         }
         self.widest_cells = widest;
+        frame.minimap = self.minimap(rope, styler);
         frame
+    }
+
+    /// Document height (with the scroll room past the last line) and the scale and
+    /// offset of the minimap: minimap y = (document y - offset) * scale.
+    fn minimap_geometry(&self, rope: &Rope) -> (f64, f64, f64) {
+        let lh = self.metrics.line_height as f64;
+        let scale = MINIMAP_ROW as f64 / lh;
+        let max_scroll = (self.content_height(rope) - self.height as f64).max(0.0);
+        // Scrolling goes past the last line by a viewport, and so does the minimap.
+        let document = max_scroll + self.height as f64;
+        let fits = self.height as f64 / scale;
+        // A document taller than the minimap scrolls through it in step with the viewport.
+        let offset =
+            if document <= fits || max_scroll == 0.0 { 0.0 } else { self.scroll_top / max_scroll * (document - fits) };
+        (document, scale, offset)
+    }
+
+    /// Lines the minimap shows, folded ones included; a frontend highlights them too.
+    pub fn minimap_lines(&self, rope: &Rope) -> Range<usize> {
+        if self.minimap_width <= 0.0 {
+            return 0..0;
+        }
+        let (_, scale, offset) = self.minimap_geometry(rope);
+        let first = self.line_at_y(rope, offset);
+        let last = self.line_at_y(rope, offset + self.height as f64 / scale);
+        first..last + 1
+    }
+
+    fn minimap(&self, rope: &Rope, styler: &dyn Styler) -> Option<MinimapFrame> {
+        if self.minimap_width <= 0.0 {
+            return None;
+        }
+        let (_, scale, offset) = self.minimap_geometry(rope);
+        let x0 = self.width - self.minimap_width;
+        let max_cells = (self.minimap_width / MINIMAP_CELL) as usize;
+        let lh = self.metrics.line_height as f64;
+        let tab = self.tab_size;
+        let mut blocks = Vec::new();
+        for line in self.shown(self.minimap_lines(rope)) {
+            let spans = styler.spans(line);
+            let rows = self.line_rows(rope, line);
+            let top = self.line_top(line);
+            let mut row = 0;
+            let mut cells = 0usize; // cells from the line start
+            let mut row_shift = 0isize; // added to `cells` to get the x within the row
+            let mut span_idx = 0;
+            let mut run: Option<MinimapBlock> = None;
+            let y_of_row = |row: usize| ((top + row as f64 * lh - offset) * scale) as f32;
+            for (col, c) in rope.line(line).chars().take(line_len(rope, line)).enumerate() {
+                if rows.starts.get(row + 1) == Some(&col) {
+                    blocks.extend(run.take());
+                    row += 1;
+                    row_shift = rows.indent as isize - cells as isize;
+                }
+                let w = cell_width(c, cells, tab);
+                let x = (cells as isize + row_shift) as usize;
+                cells += w;
+                if x >= max_cells {
+                    continue;
+                }
+                if c.is_whitespace() {
+                    blocks.extend(run.take());
+                    continue;
+                }
+                while span_idx < spans.len() && spans[span_idx].end <= col {
+                    span_idx += 1;
+                }
+                let style = spans.get(span_idx).filter(|s| s.start <= col).map_or(0, |s| s.style);
+                match &mut run {
+                    Some(r) if r.style == style => r.width += w as f32 * MINIMAP_CELL,
+                    _ => {
+                        blocks.extend(run.take());
+                        run = Some(MinimapBlock {
+                            x: x0 + x as f32 * MINIMAP_CELL,
+                            y: y_of_row(row),
+                            width: w as f32 * MINIMAP_CELL,
+                            style,
+                        });
+                    }
+                }
+            }
+            blocks.extend(run);
+        }
+        let slider = self.minimap_slider(rope);
+        Some(MinimapFrame { x: x0, width: self.minimap_width, row_height: MINIMAP_ROW, blocks, slider })
+    }
+
+    /// The minimap's slider: the part of the minimap the viewport shows.
+    pub fn minimap_slider(&self, rope: &Rope) -> Rect {
+        let (document, scale, offset) = self.minimap_geometry(rope);
+        Rect {
+            x: self.width - self.minimap_width,
+            y: ((self.scroll_top - offset) * scale) as f32,
+            width: self.minimap_width,
+            height: (self.height as f64 * scale).min(document * scale) as f32,
+        }
+    }
+
+    /// Whether viewport x falls on the minimap.
+    pub fn in_minimap(&self, x: f32) -> bool {
+        self.minimap_width > 0.0 && x >= self.width - self.minimap_width
+    }
+
+    /// Scroll position that puts the document y under minimap y `y` in the middle of the
+    /// viewport, for a click on the minimap.
+    pub fn minimap_scroll_target(&self, rope: &Rope, y: f32) -> f64 {
+        let (_, scale, offset) = self.minimap_geometry(rope);
+        offset + y as f64 / scale - self.height as f64 / 2.0
+    }
+
+    /// Scroll distance per pixel of slider drag.
+    pub fn minimap_drag_factor(&self, rope: &Rope) -> f64 {
+        let (document, scale, _) = self.minimap_geometry(rope);
+        let fits = self.height as f64 / scale;
+        let max_scroll = (self.content_height(rope) - self.height as f64).max(0.0);
+        if document > fits {
+            let slider = self.height as f64 * scale;
+            max_scroll / (self.height as f64 - slider).max(1.0)
+        } else {
+            1.0 / scale
+        }
     }
 
     /// The caret at char `pos`, if its line is visible.
@@ -1360,5 +1528,32 @@ mod wrap_tests {
                 assert_eq!(v.heights.height(l), fresh.heights.height(l), "line {l} at step {step}");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod minimap_tests {
+    use super::*;
+    use rustaco_core::Document;
+
+    #[test]
+    fn minimap_draws_blocks_and_a_slider() {
+        let text: String = (0..500).map(|i| format!("let x{i} = {i};\n")).collect();
+        let doc = Document::new(&text);
+        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 600.0, 200.0);
+        v.set_minimap(80.0);
+        let frame = v.layout(doc.model(), doc.selections(), &Plain);
+        let m = frame.minimap.expect("the minimap is on");
+        assert_eq!((m.x, m.width), (520.0, 80.0));
+        // "let", "x0", "=", "0;" on the first row.
+        let first_row: Vec<&MinimapBlock> = m.blocks.iter().filter(|b| b.y == 0.0).collect();
+        assert_eq!(first_row.len(), 4);
+        assert_eq!((first_row[0].x, first_row[0].width), (520.0, 3.0));
+        assert_eq!(m.slider.y, 0.0);
+        assert_eq!(m.slider.height, 20.0, "the viewport's 10 rows at 2 px each");
+        // At the bottom the slider reaches the bottom of the minimap.
+        v.scroll_to(doc.rope(), 1e9, 0.0);
+        let m = v.layout(doc.model(), doc.selections(), &Plain).minimap.unwrap();
+        assert!((m.slider.y + m.slider.height - 200.0).abs() < 1.0, "slider at {:?}", m.slider);
     }
 }

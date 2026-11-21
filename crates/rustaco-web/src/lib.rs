@@ -124,6 +124,14 @@ impl Chrome {
 }
 
 #[wasm_bindgen(inline_js = "
+export function draw_blocks(ctx, ops, colors) {
+  const c = colors.split('\\n');
+  let color = -1;
+  for (let i = 0; i < ops.length; i += 5) {
+    if (ops[i + 4] !== color) { color = ops[i + 4]; ctx.fillStyle = c[color]; }
+    ctx.fillRect(ops[i], ops[i + 1], ops[i + 2], ops[i + 3]);
+  }
+}
 export function draw_runs(ctx, text, ops, colors, fonts) {
   const c = colors.split('\\n'), f = fonts.split('\\n');
   let font = -1, color = -1;
@@ -138,6 +146,10 @@ export function draw_runs(ctx, text, ops, colors, fonts) {
   }
 }")]
 extern "C" {
+    /// Fills rectangles: `ops` holds five numbers per rectangle, x, y, width, height and a
+    /// colour index into the newline-separated `colors`.
+    fn draw_blocks(ctx: &CanvasRenderingContext2d, ops: &[f64], colors: &str);
+
     /// Draws text runs. `ops` holds seven numbers per run: x, y, start and end of the run in
     /// `text` (UTF-16 units), colour index and font index into the newline-separated lists,
     /// and the underline offset below the text's middle (0 for no underline).
@@ -438,6 +450,8 @@ pub struct Editor {
     options: ViewOptions,
     /// The bracket pair at the cursor from the language module's tree, set each frame.
     tree_brackets: Option<Option<(usize, usize)>>,
+    /// Minimap slider drag in progress: pointer y and scroll top when it started.
+    minimap_drag: Option<(f64, f64)>,
 }
 
 /// Display options (Monaco's names in the JS API).
@@ -482,6 +496,7 @@ impl Editor {
             frontend_command: None,
             options: ViewOptions { guides: true, occurrences: true, ..ViewOptions::default() },
             tree_brackets: None,
+            minimap_drag: None,
         })
     }
 
@@ -521,7 +536,12 @@ impl Editor {
     pub fn visible_lines(&mut self) -> Vec<u32> {
         let model = self.model.borrow();
         self.view.sync(&model);
-        let lines = self.view.visible_lines(model.rope());
+        let rope = model.rope();
+        let mut lines = self.view.visible_lines(rope);
+        let minimap = self.view.minimap_lines(rope);
+        if !minimap.is_empty() {
+            lines = lines.start.min(minimap.start)..lines.end.max(minimap.end);
+        }
         self.view.shown_segments(lines).into_iter().flat_map(|r| [r.start as u32, r.end as u32]).collect()
     }
 
@@ -592,6 +612,20 @@ impl Editor {
     /// Scrolls to the top; used after the model's text is replaced.
     pub fn scroll_to_top(&mut self) {
         self.view.scroll_to(self.model.borrow().rope(), 0.0, 0.0);
+    }
+
+    /// Vertical scroll position in CSS pixels.
+    #[wasm_bindgen(js_name = scrollTop)]
+    pub fn scroll_top_px(&self) -> f64 {
+        self.view.scroll_top()
+    }
+
+    #[wasm_bindgen(js_name = setScrollTop)]
+    pub fn set_scroll_top(&mut self, top: f64) {
+        let model = self.model.borrow();
+        self.view.sync(&model);
+        let left = self.view.scroll_left();
+        self.view.scroll_to(model.rope(), top, left);
     }
 
     pub fn line_height(&self) -> f64 {
@@ -738,6 +772,12 @@ impl Editor {
             guides,
             occurrences,
         };
+    }
+
+    /// Shows or hides the minimap.
+    #[wasm_bindgen(js_name = setMinimap)]
+    pub fn set_minimap(&mut self, on: bool) {
+        self.view.set_minimap(if on { MINIMAP_WIDTH } else { 0.0 });
     }
 
     /// Turns word wrap at the editor's width on or off.
@@ -930,6 +970,18 @@ impl Editor {
             2 => DragUnit::Word,
             _ => DragUnit::Line,
         };
+        if self.view.in_minimap(x as f32) {
+            let model = self.model.borrow();
+            self.view.sync(&model);
+            let rope = model.rope();
+            let slider = self.view.minimap_slider(rope);
+            if !(slider.y as f64..(slider.y + slider.height) as f64).contains(&y) {
+                let top = self.view.minimap_scroll_target(rope, y as f32);
+                self.view.scroll_to(rope, top, self.view.scroll_left());
+            }
+            self.minimap_drag = Some((y, self.view.scroll_top()));
+            return;
+        }
         {
             let model = self.model.borrow();
             self.view.sync(&model);
@@ -973,6 +1025,13 @@ impl Editor {
 
     /// Extends the selection while a button is held. Returns false when no drag is active.
     pub fn mouse_move(&mut self, x: f64, y: f64) -> bool {
+        if let Some((start_y, start_top)) = self.minimap_drag {
+            let model = self.model.borrow();
+            let rope = model.rope();
+            let top = start_top + (y - start_y) * self.view.minimap_drag_factor(rope);
+            self.view.scroll_to(rope, top, self.view.scroll_left());
+            return true;
+        }
         let Some(drag) = self.drag else { return false };
         if let Some((anchor_line, anchor_cells)) = drag.column {
             let selections = {
@@ -1022,6 +1081,7 @@ impl Editor {
     }
 
     pub fn mouse_up(&mut self) {
+        self.minimap_drag = None;
         self.drag = None;
     }
 
@@ -1059,7 +1119,8 @@ impl Editor {
 
         ctx.save();
         ctx.begin_path();
-        ctx.rect(gutter, 0.0, w - gutter, h);
+        let minimap_width = self.view.minimap_width() as f64;
+        ctx.rect(gutter, 0.0, w - gutter - minimap_width, h);
         ctx.clip();
         // 1px lines at whole device pixels, so they are not blurred across two.
         let dpr = self.dpr;
@@ -1216,6 +1277,28 @@ impl Editor {
         }
 
         let content = self.view.content_height(rope);
+        if let Some(m) = &frame.minimap {
+            ctx.set_fill_style_str(&chrome.background);
+            ctx.fill_rect(m.x as f64, 0.0, m.width as f64, h);
+            STYLES.with(|styles| {
+                let styles = styles.borrow();
+                let mut colors: Vec<&str> = Vec::new();
+                let mut ops = Vec::with_capacity(m.blocks.len() * 5);
+                let row = (m.row_height - 0.5).max(1.0) as f64;
+                for b in &m.blocks {
+                    let color = &styles.get(b.style as usize).unwrap_or(&styles[0]).color;
+                    let index = colors.iter().position(|c| c == color).unwrap_or_else(|| {
+                        colors.push(color);
+                        colors.len() - 1
+                    });
+                    ops.extend([b.x as f64, b.y as f64, b.width as f64, row, index as f64]);
+                }
+                ctx.set_global_alpha(0.7);
+                draw_blocks(ctx, &ops, &colors.join("\n"));
+                ctx.set_global_alpha(1.0);
+            });
+            fill(&chrome.scrollbar, &m.slider);
+        }
         let marks = self
             .view
             .overview_marks(&model, h as f32, |k| k == FIND_MATCH || type_of(k).is_some_and(|t| t.overview.is_some()));
@@ -1251,6 +1334,9 @@ impl Editor {
         Ok(())
     }
 }
+
+/// Width of the minimap column in CSS pixels.
+const MINIMAP_WIDTH: f32 = 90.0;
 
 /// Draws an underline along the bottom of `r`: 1 solid, 2 wavy, 3 dotted.
 fn draw_underline(ctx: &CanvasRenderingContext2d, r: &Rect, style: u8, color: &str) {

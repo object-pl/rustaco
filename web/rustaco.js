@@ -276,6 +276,7 @@ export class RustacoEditor {
     occurrencesHighlight = true,
     bracketPairColorization = true,
     wordWrap = 'off',
+    minimap = { enabled: false },
     fontFamily = '"Cascadia Code", Consolas, "Courier New", monospace',
     fontSize = 14,
   } = {}) {
@@ -298,7 +299,7 @@ export class RustacoEditor {
     this.core = new Editor(this.canvas, this.model.core, fontFamily, fontSize);
     this.setKeymap(keymap);
     this.options = {};
-    this.setOptions({ rulers, renderWhitespace, guides, occurrencesHighlight, bracketPairColorization, wordWrap });
+    this.setOptions({ rulers, renderWhitespace, guides, occurrencesHighlight, bracketPairColorization, wordWrap, minimap });
     this.refreshFolding();
     this.model.editors.add(this);
     this.caretOn = true;
@@ -316,13 +317,14 @@ export class RustacoEditor {
   /**
    * Display options, Monaco's names: `rulers` (columns), `renderWhitespace` (`"none"` or
    * `"all"`), `guides` (indentation guides), `occurrencesHighlight`, `bracketPairColorization`,
-   * `wordWrap` (`"off"` or `"on"`, wrapping at the editor's width).
+   * `wordWrap` (`"off"` or `"on"`, wrapping at the editor's width), `minimap` (`{ enabled }`).
    */
   setOptions(options) {
     Object.assign(this.options, options);
     const o = this.options;
     this.core.setViewOptions(Uint32Array.from(o.rulers ?? []), o.renderWhitespace === 'all', !!o.guides, !!o.occurrencesHighlight);
     this.core.setWordWrap(o.wordWrap === 'on');
+    this.core.setMinimap(!!(typeof o.minimap === 'object' ? o.minimap?.enabled : o.minimap));
     this.schedule();
   }
 
@@ -411,6 +413,13 @@ export class RustacoEditor {
     } else {
       this.core.refreshFoldingRanges();
     }
+  }
+
+  getScrollTop() { return this.core.scrollTop(); }
+
+  setScrollTop(top) {
+    this.core.setScrollTop(top);
+    this.schedule();
   }
 
   /** Runs a command by id (`editor.action.commentLine`, `cursorWordLeft`, ...). */

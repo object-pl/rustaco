@@ -326,3 +326,21 @@ test('decorations draw backgrounds, gutter bars and overview marks, and move wit
   await page.evaluate(() => window.decorations.clear());
   expect(await px(3, lh / 2)).not.toEqual([0, 255, 0]);
 });
+
+test('the minimap shows the document and scrolls it on click and drag', async ({ page }) => {
+  await open(page, Array.from({ length: 2000 }, (_, i) => `let value${i} = ${i};`).join('\n'));
+  await page.evaluate(() => window.editor.setOptions({ minimap: { enabled: true } }));
+  const box = await page.locator('canvas').first().boundingBox();
+  // A click low on the minimap scrolls down.
+  await page.mouse.click(box.x + box.width - 40, box.y + box.height - 10);
+  const afterClick = await page.evaluate(() => window.editor.getScrollTop());
+  expect(afterClick).toBeGreaterThan(1000);
+  // Dragging the slider up scrolls back.
+  const before = await page.evaluate(() => window.editor.getScrollTop());
+  await page.mouse.move(box.x + box.width - 40, box.y + box.height - 10);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width - 40, box.y + 5, { steps: 5 });
+  await page.mouse.up();
+  expect(await page.evaluate(() => window.editor.getScrollTop())).toBeLessThan(before);
+  await page.evaluate(() => window.editor.setOptions({ minimap: { enabled: false } }));
+});
