@@ -1,5 +1,7 @@
 // DOM glue for the Rustaco editor. Rust draws and edits; this file forwards browser events.
-import init, { Editor, Model, defineDecorationType as defineType, setBuiltinTheme, setThemeRules } from './pkg/rustaco_web.js';
+import init, {
+  Editor, Model, defineDecorationType as defineType, setBuiltinTheme, setThemeRules, widgetColors,
+} from './pkg/rustaco_web.js';
 
 const BLINK_MS = 530;
 /** Parsing time per frame; the rest of a long parse continues on later frames. */
@@ -409,7 +411,11 @@ export class RustacoEditor {
   refreshFindSoon() {
     if (!this.findActive) return;
     clearTimeout(this.findTimer);
-    this.findTimer = setTimeout(() => { this.core.refreshFind(); this.schedule(); }, 100);
+    this.findTimer = setTimeout(() => {
+      this.core.refreshFind();
+      this.findWidget?.updateCount();
+      this.schedule();
+    }, 100);
   }
 
   /** Recomputes foldable regions once typing pauses; the scan reads the whole file. */
@@ -736,8 +742,13 @@ export class RustacoEditor {
     input.addEventListener('blur', () => { this.focused = false; clearInterval(this.blink); this.schedule(); });
   }
 
-  /** Commands that need the language module. */
+  /** Commands that need the language module or the DOM. */
   #frontendCommand(command) {
+    if (command === 'actions.find' || command === 'editor.action.startFindReplaceAction') {
+      this.findWidget ??= new FindWidget(this);
+      this.findWidget.open(command !== 'actions.find');
+      return;
+    }
     if (command === 'editor.action.jumpToBracket') {
       const h = this.model.highlighter;
       if (h && h.hasTree()) {
@@ -850,5 +861,157 @@ export class RustacoEditor {
       }
       this.#layoutOverlays();
     });
+  }
+}
+
+/**
+ * The find and replace widget, an overlay at the top right: query with case, whole word and
+ * regex toggles, "n of m", previous and next, and a replace row (Ctrl+H).
+ */
+class FindWidget {
+  constructor(editor) {
+    this.editor = editor;
+    this.options = { caseSensitive: false, wholeWord: false, regex: false };
+    const root = document.createElement('div');
+    root.setAttribute('role', 'dialog');
+    root.setAttribute('aria-label', 'Find');
+    root.innerHTML = `
+      <div data-row="find">
+        <input data-field="find" aria-label="Find" placeholder="Find" spellcheck="false">
+        <button data-toggle="caseSensitive" title="Match case (Alt+C)" aria-pressed="false">Aa</button>
+        <button data-toggle="wholeWord" title="Match whole word (Alt+W)" aria-pressed="false">ab</button>
+        <button data-toggle="regex" title="Use regular expression (Alt+R)" aria-pressed="false">.*</button>
+        <span data-count aria-live="polite">No results</span>
+        <button data-action="previous" title="Previous match (Shift+Enter)" aria-label="Previous match">&#x2191;</button>
+        <button data-action="next" title="Next match (Enter)" aria-label="Next match">&#x2193;</button>
+        <button data-action="close" title="Close (Escape)" aria-label="Close">&#x2715;</button>
+      </div>
+      <div data-row="replace">
+        <input data-field="replace" aria-label="Replace" placeholder="Replace" spellcheck="false">
+        <button data-action="replace" title="Replace (Enter)">Replace</button>
+        <button data-action="replaceAll" title="Replace all (Ctrl+Alt+Enter)">All</button>
+      </div>`;
+    this.root = root;
+    this.findInput = root.querySelector('[data-field="find"]');
+    this.replaceInput = root.querySelector('[data-field="replace"]');
+    this.replaceRow = root.querySelector('[data-row="replace"]');
+    this.count = root.querySelector('[data-count]');
+    this.#style();
+
+    root.addEventListener('mousedown', (e) => e.stopPropagation());
+    this.findInput.addEventListener('input', () => this.search(true));
+    root.addEventListener('click', (e) => {
+      const button = e.target.closest('button');
+      if (!button) return;
+      if (button.dataset.toggle) this.toggle(button.dataset.toggle);
+      const action = button.dataset.action;
+      if (action === 'next') this.step(true);
+      if (action === 'previous') this.step(false);
+      if (action === 'close') this.close();
+      if (action === 'replace') this.replace();
+      if (action === 'replaceAll') this.replaceAll();
+    });
+    root.addEventListener('keydown', (e) => {
+      const inReplace = e.target === this.replaceInput;
+      if (e.key === 'Escape') { e.preventDefault(); this.close(); return; }
+      if (e.altKey && !e.ctrlKey && ['c', 'w', 'r'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        this.toggle({ c: 'caseSensitive', w: 'wholeWord', r: 'regex' }[e.key.toLowerCase()]);
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (inReplace) {
+          if (e.ctrlKey && e.altKey) this.replaceAll();
+          else this.replace();
+        } else {
+          this.step(!e.shiftKey);
+        }
+      }
+      if (e.key === 'F3') { e.preventDefault(); this.step(!e.shiftKey); }
+    });
+  }
+
+  #style() {
+    const [background, foreground, border, input, match] = widgetColors();
+    this.root.style.cssText =
+      `background:${background};color:${foreground};border:1px solid ${border};padding:4px 6px;` +
+      'font:12px system-ui,sans-serif;display:flex;flex-direction:column;gap:4px;min-width:360px;top:0;right:16px';
+    for (const row of this.root.querySelectorAll('[data-row]')) row.style.cssText = 'display:flex;align-items:center;gap:2px';
+    for (const field of this.root.querySelectorAll('input')) {
+      field.style.cssText = `flex:1;min-width:0;background:${input};color:${foreground};border:1px solid ${border};` +
+        'padding:3px 4px;font:inherit;outline:none';
+    }
+    for (const b of this.root.querySelectorAll('button')) {
+      b.style.cssText = `background:transparent;color:${foreground};border:1px solid transparent;padding:2px 5px;` +
+        'font:inherit;cursor:pointer;min-width:22px';
+    }
+    this.count.style.cssText = 'padding:0 6px;white-space:nowrap;min-width:64px';
+    this.matchColor = match;
+    for (const [name, on] of Object.entries(this.options)) this.#mark(name, on);
+  }
+
+  #mark(name, on) {
+    const b = this.root.querySelector(`[data-toggle="${name}"]`);
+    b.setAttribute('aria-pressed', String(on));
+    b.style.borderColor = on ? this.matchColor : 'transparent';
+  }
+
+  open(withReplace) {
+    const e = this.editor;
+    if (!this.root.isConnected) e.addOverlayWidget({ domNode: this.root, position: 'top-right' });
+    this.replaceRow.style.display = withReplace ? 'flex' : 'none';
+    const seed = e.core.selectionSeed();
+    if (seed) this.findInput.value = seed;
+    (withReplace && this.findInput.value ? this.replaceInput : this.findInput).focus();
+    this.findInput.select();
+    this.search(false);
+  }
+
+  close() {
+    this.editor.clearFind();
+    this.editor.removeOverlayWidget({ domNode: this.root });
+    this.editor.focus();
+  }
+
+  toggle(name) {
+    this.options[name] = !this.options[name];
+    this.#mark(name, this.options[name]);
+    this.search(true);
+  }
+
+  /** Runs the query; `move` selects the first match at or after the selection's start. */
+  search(move) {
+    const e = this.editor;
+    const n = e.find(this.findInput.value, this.options);
+    if (n > 0 && move) {
+      const [start] = e.core.primaryRange();
+      e.setSelections([{ anchor: start, head: start }]);
+      e.findNext();
+    }
+    this.updateCount(n < 0);
+  }
+
+  step(forward) {
+    if (forward) this.editor.findNext(); else this.editor.findPrevious();
+    this.updateCount();
+  }
+
+  replace() {
+    this.editor.replace(this.replaceInput.value);
+    this.updateCount();
+  }
+
+  replaceAll() {
+    this.editor.replaceAll(this.replaceInput.value);
+    this.updateCount();
+  }
+
+  updateCount(invalid = false) {
+    if (!this.root.isConnected) return;
+    const [index, total] = this.editor.core.findPosition();
+    this.count.textContent = invalid ? 'Invalid pattern'
+      : total === 0 ? 'No results'
+        : index ? `${index} of ${total}` : `? of ${total}`;
   }
 }

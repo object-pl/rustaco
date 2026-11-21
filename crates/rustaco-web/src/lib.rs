@@ -169,6 +169,7 @@ thread_local! {
     static STYLES: RefCell<Vec<CssStyle>> = RefCell::new(css_styles(&themes::dark()));
     static CHROME: RefCell<Chrome> = RefCell::new(Chrome::from(&Colors::DARK));
     static DECORATION_TYPES: RefCell<Vec<DecorationType>> = const { RefCell::new(Vec::new()) };
+    static WIDGET_COLORS: RefCell<Colors> = const { RefCell::new(Colors::DARK) };
 }
 
 #[derive(Clone)]
@@ -202,6 +203,17 @@ fn css_styles(theme: &Theme) -> Vec<CssStyle> {
 fn apply_theme(theme: &Theme) {
     STYLES.with(|s| *s.borrow_mut() = css_styles(theme));
     CHROME.with(|c| *c.borrow_mut() = Chrome::from(&theme.colors));
+    WIDGET_COLORS.with(|c| *c.borrow_mut() = theme.colors);
+}
+
+/// Colours for DOM widgets drawn over the editor (the find widget, a host's hover boxes):
+/// background, foreground, border, input background and the find match colour, as CSS.
+#[wasm_bindgen(js_name = widgetColors)]
+pub fn widget_colors() -> Vec<String> {
+    let colors = WIDGET_COLORS.with(|c| *c.borrow());
+    [colors.current_line, colors.foreground, colors.indent_guide_active, colors.background, colors.find_match]
+        .map(|c| format!("#{:06x}", c >> 8))
+        .to_vec()
 }
 
 /// Selects a bundled theme: `"dark"`, `"light"` or `"high-contrast"`.
@@ -480,7 +492,12 @@ struct ViewOptions {
 }
 
 /// Commands the JS side runs because they need the language module.
-const FRONTEND_COMMANDS: &[&str] = &["editor.action.smartSelect.expand", "editor.action.jumpToBracket"];
+const FRONTEND_COMMANDS: &[&str] = &[
+    "editor.action.smartSelect.expand",
+    "editor.action.jumpToBracket",
+    "actions.find",
+    "editor.action.startFindReplaceAction",
+];
 
 #[wasm_bindgen]
 impl Editor {
@@ -974,6 +991,35 @@ impl Editor {
         self.find = Some((query, searcher));
         self.refresh_find();
         count as u32
+    }
+
+    /// Which match the primary selection is (1-based, 0 when it is none) and how many
+    /// there are, for "3 of 12".
+    #[wasm_bindgen(js_name = findPosition)]
+    pub fn find_position(&mut self) -> Vec<u32> {
+        let owner = self.cursors.id().0;
+        let primary = self.selections_primary();
+        let model = self.model.borrow();
+        let matches: Vec<std::ops::Range<usize>> = model
+            .decorations
+            .of_owner(owner)
+            .iter()
+            .filter(|d| d.kind == FIND_MATCH)
+            .map(|d| d.range.clone())
+            .collect();
+        let index =
+            matches.iter().position(|m| m.start == primary.start() && m.end == primary.end()).map_or(0, |i| i + 1);
+        vec![index as u32, matches.len() as u32]
+    }
+
+    /// The single-line text of the primary selection, to seed the find widget; empty
+    /// when the selection is empty or spans lines.
+    #[wasm_bindgen(js_name = selectionSeed)]
+    pub fn selection_seed(&mut self) -> String {
+        let primary = self.selections_primary();
+        let model = self.model.borrow();
+        let text: String = model.rope().slice(primary.start()..primary.end()).to_string();
+        if text.contains('\n') || text.contains('\r') { String::new() } else { text }
     }
 
     /// Selects every match (one cursor per match).

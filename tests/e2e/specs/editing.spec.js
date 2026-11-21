@@ -494,3 +494,29 @@ test('a right click keeps the selection and puts the textarea under the pointer'
   expect(textarea.selected).toBe('beta');
   await page.keyboard.press('Escape');
 });
+
+test('the find widget searches, counts, steps and replaces', async ({ page }) => {
+  await open(page, 'foo bar foo baz foo');
+  await page.keyboard.press(`${mod}+f`);
+  const widget = page.locator('[role="dialog"][aria-label="Find"]');
+  await expect(widget).toBeVisible();
+  await page.keyboard.type('foo');
+  await expect(widget.locator('[data-count]')).toHaveText('1 of 3');
+  await page.keyboard.press('Enter');
+  await expect(widget.locator('[data-count]')).toHaveText('2 of 3');
+  expect((await selections(page))[0]).toEqual({ anchor: 8, head: 11 });
+  await page.keyboard.press('Shift+Enter');
+  await expect(widget.locator('[data-count]')).toHaveText('1 of 3');
+  await page.keyboard.press('Alt+r');
+  await page.locator('[data-field="find"]').fill('ba.');
+  await expect(widget.locator('[data-count]')).toHaveText('1 of 2');
+  await page.keyboard.press('Escape');
+  await expect(widget).toBeHidden();
+  // Ctrl+H opens the replace row.
+  await page.keyboard.press(mod === 'Meta' ? 'Meta+Alt+f' : 'Control+h');
+  await page.locator('[data-field="find"]').fill('foo');
+  await page.locator('[data-field="replace"]').fill('X');
+  await page.locator('[data-action="replaceAll"]').click();
+  expect(await value(page)).toBe('X bar X baz X');
+  await expect(widget.locator('[data-count]')).toHaveText('No results');
+});

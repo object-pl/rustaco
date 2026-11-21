@@ -33,7 +33,7 @@ Monaco's default editor keybindings (Windows and Linux keys; macOS uses Cmd wher
 | Shift+Alt+Right / Shift+Alt+Left | expand / shrink selection | done |
 | F3 / Shift+F3 | next / previous match | done |
 | Ctrl+K Ctrl+X | trim trailing whitespace | done |
-| Ctrl+F / Ctrl+H | find / replace widget | phase 6 (API exists: `find`, `replace`, `replaceAll`) |
+| Ctrl+F / Ctrl+H | find / replace widget | done |
 | Ctrl+G | go to line | phase 6 |
 | Ctrl+Shift+\ | jump to matching bracket | done |
 | Ctrl+Shift+[ / Ctrl+Shift+] | fold / unfold | done |

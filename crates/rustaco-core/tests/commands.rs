@@ -255,6 +255,9 @@ fn every_bound_command_runs() {
         // Find navigation needs the frontend's current query.
         "editor.action.nextMatchFindAction",
         "editor.action.previousMatchFindAction",
+        // The find widget is the frontend's.
+        "actions.find",
+        "editor.action.startFindReplaceAction",
         // Folds belong to the view.
         "editor.fold",
         "editor.unfold",
