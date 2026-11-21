@@ -276,6 +276,62 @@ pub fn set_theme_rules(
 }
 
 /// A text model that one or more editors can show.
+/// Most matches a search in the worker returns.
+const MATCHES_LIMIT: usize = 19_999;
+
+/// A copy of a model's text that follows its edits, for work in a worker (search).
+#[wasm_bindgen]
+pub struct TextReplica {
+    rope: Rope,
+}
+
+#[wasm_bindgen]
+impl TextReplica {
+    #[wasm_bindgen(constructor)]
+    pub fn new(text: &str) -> TextReplica {
+        TextReplica { rope: Rope::from_str(text) }
+    }
+
+    pub fn reset(&mut self, text: &str) {
+        self.rope = Rope::from_str(text);
+    }
+
+    /// Applies an edit batch as [`EditBatch`] numbers it: nine numbers per edit (start, old
+    /// end and new end in bytes, then points), the inserted texts concatenated.
+    pub fn edit(&mut self, numbers: &[u32], text: &str) -> Result<(), JsValue> {
+        let mut offset = 0;
+        for e in numbers.chunks_exact(9) {
+            let (start, old_end, new_end) = (e[0] as usize, e[1] as usize, e[2] as usize);
+            if start > old_end || old_end > self.rope.len_bytes() || new_end < start {
+                return Err(JsValue::from_str("edit outside the text"));
+            }
+            let inserted = text
+                .get(offset..offset + (new_end - start))
+                .ok_or_else(|| JsValue::from_str("edit text out of step"))?;
+            offset += inserted.len();
+            let (a, b) = (self.rope.byte_to_char(start), self.rope.byte_to_char(old_end));
+            self.rope.remove(a..b);
+            self.rope.insert(a, inserted);
+        }
+        Ok(())
+    }
+
+    /// Every match of the query as pairs of start and end char offsets, or undefined when the
+    /// regular expression does not compile.
+    #[wasm_bindgen(js_name = findAll)]
+    pub fn find_all(&self, pattern: &str, regex: bool, case_sensitive: bool, whole_word: bool) -> Option<Vec<u32>> {
+        let query = SearchQuery { pattern: pattern.to_owned(), regex, case_sensitive, whole_word };
+        let searcher = Searcher::new(&query).ok()?;
+        if pattern.is_empty() {
+            return Some(Vec::new());
+        }
+        // Like Monaco, at most 19999 matches: past that the highlighting would cost more than
+        // it tells.
+        let matches = searcher.find_all(&self.rope, None);
+        Some(matches.into_iter().take(MATCHES_LIMIT).flat_map(|r| [r.start as u32, r.end as u32]).collect())
+    }
+}
+
 #[wasm_bindgen]
 pub struct Model {
     inner: Rc<RefCell<TextModel>>,
@@ -410,20 +466,48 @@ impl EditBatch {
     }
 }
 
-/// Style spans for the lines last highlighted by a language module.
+/// Style spans for the lines last highlighted by a language module. They move with edits
+/// until fresh ones arrive, so a line inserted above does not shift the colours of every
+/// line below for a frame (highlights from a worker come a frame or two late).
 #[derive(Default)]
 struct ExternalHighlights {
-    /// (first line, spans per line), one entry per run of shown lines.
-    segments: Vec<(usize, Vec<Vec<StyleSpan>>)>,
+    lines: std::collections::BTreeMap<usize, Vec<StyleSpan>>,
+    /// Model version the line numbers refer to.
+    version: u64,
+}
+
+impl ExternalHighlights {
+    /// Moves the lines through the edits made since they were set.
+    fn sync(&mut self, model: &TextModel) {
+        if self.version == model.version() {
+            return;
+        }
+        match model.events_since(self.version) {
+            Ok(events) => {
+                for e in events {
+                    let a = e.start_point.row;
+                    let old = e.old_end_point.row - a;
+                    let new = e.new_end_point.row - a;
+                    if old == 0 && new == 0 {
+                        continue;
+                    }
+                    let moved = self.lines.split_off(&(a + 1));
+                    for (line, spans) in moved {
+                        if line > a + old {
+                            self.lines.insert(line + new - old, spans);
+                        }
+                    }
+                }
+            }
+            Err(_) => self.lines.clear(),
+        }
+        self.version = model.version();
+    }
 }
 
 impl Styler for ExternalHighlights {
     fn spans(&self, line: usize) -> Vec<StyleSpan> {
-        self.segments
-            .iter()
-            .find_map(|(first, lines)| line.checked_sub(*first).and_then(|i| lines.get(i)))
-            .cloned()
-            .unwrap_or_default()
+        self.lines.get(&line).cloned().unwrap_or_default()
     }
 }
 
@@ -472,6 +556,8 @@ pub struct Editor {
     minimap_drag: Option<(f64, f64)>,
     /// Sticky scroll lines of the last frame: y, height and line.
     sticky: Vec<(f32, f32, usize)>,
+    /// Overview ruler marks, kept until [`Editor::refresh_overview`].
+    overview: Option<Vec<(f32, f32, u32)>>,
     /// Scrollbar thumb drag in progress: vertical or not, pointer position and scroll
     /// position when it started, scroll distance per pixel.
     scrollbar_drag: Option<(bool, f64, f64, f64)>,
@@ -531,6 +617,7 @@ impl Editor {
             tree_brackets: None,
             minimap_drag: None,
             sticky: Vec::new(),
+            overview: None,
             scrollbar_drag: None,
             text_drag: None,
             zone_rects: Vec::new(),
@@ -538,6 +625,7 @@ impl Editor {
     }
 
     pub fn resize(&mut self, width: f64, height: f64, dpr: f64) {
+        self.overview = None;
         self.dpr = dpr;
         self.canvas.set_width((width * dpr).round() as u32);
         self.canvas.set_height((height * dpr).round() as u32);
@@ -587,21 +675,60 @@ impl Editor {
     /// Replaces all highlights; [`Editor::add_highlights`] adds another run of lines.
     #[wasm_bindgen(js_name = setHighlights)]
     pub fn set_highlights(&mut self, first_line: u32, end_line: u32, quads: &[u32]) {
-        self.highlights.segments.clear();
+        self.highlights.lines.clear();
         self.add_highlights(first_line, end_line, quads);
     }
 
     /// Adds highlights for another run of lines, as [`Editor::set_highlights`] takes them.
     #[wasm_bindgen(js_name = addHighlights)]
     pub fn add_highlights(&mut self, first_line: u32, end_line: u32, quads: &[u32]) {
-        let first = first_line as usize;
-        let mut lines = vec![Vec::new(); end_line.saturating_sub(first_line) as usize];
+        // The quads describe the text as it is now.
+        self.highlights.version = self.model.borrow().version();
+        let lines = &mut self.highlights.lines;
+        for line in first_line..end_line {
+            lines.insert(line as usize, Vec::new());
+        }
         for q in quads.chunks_exact(4) {
-            if let Some(row) = (q[0] as usize).checked_sub(first).and_then(|i| lines.get_mut(i)) {
-                row.push(StyleSpan { start: q[1] as usize, end: q[2] as usize, style: q[3] });
+            if (first_line..end_line).contains(&q[0]) {
+                let spans = lines.entry(q[0] as usize).or_default();
+                spans.push(StyleSpan { start: q[1] as usize, end: q[2] as usize, style: q[3] });
             }
         }
-        self.highlights.segments.push((first, lines));
+    }
+
+    /// Whether the primary caret sits inside a string or comment, judged from the highlight
+    /// styles around it. Used when the language module runs in a worker and cannot answer
+    /// at once; auto-closing pairs stay closed inside literals.
+    #[wasm_bindgen(js_name = caretInLiteral)]
+    pub fn caret_in_literal(&mut self) -> bool {
+        let model = self.model.borrow();
+        self.cursors.sync(&model);
+        self.highlights.sync(&model);
+        let rope = model.rope();
+        let head = self.cursors.selections().primary().head;
+        let line = rope.char_to_line(head);
+        let col = head - rope.line_to_char(line);
+        let spans = self.highlights.spans(line);
+        let kind_at = |c: usize| {
+            let style = spans.iter().find(|s| s.start <= c && c < s.end).map(|s| s.style)?;
+            let name = rustaco_syntax::name_of_style(style)?;
+            if name.starts_with("comment") {
+                Some(true)
+            } else if name.starts_with("string") {
+                Some(false)
+            } else {
+                None
+            }
+        };
+        let before = col.checked_sub(1).and_then(kind_at);
+        let at = kind_at(col);
+        let at_line_end = col >= rustaco_core::line_len(rope, line);
+        match (before, at) {
+            (Some(_), Some(_)) => true,
+            // A line comment runs to the end of its line.
+            (Some(true), None) => at_line_end,
+            _ => false,
+        }
     }
 
     /// Recomputes the regions that can be folded, from indentation. The JS side calls it
@@ -643,7 +770,7 @@ impl Editor {
     /// Drops highlights, e.g. when the model's language is turned off.
     #[wasm_bindgen(js_name = clearHighlights)]
     pub fn clear_highlights(&mut self) {
-        self.highlights = ExternalHighlights::default();
+        self.highlights.lines.clear();
     }
 
     /// Scrolls to the top; used after the model's text is replaced.
@@ -846,6 +973,13 @@ impl Editor {
         }
     }
 
+    /// Recomputes the overview ruler marks at the next frame. The JS side calls it once
+    /// typing pauses and after decorations or matches change.
+    #[wasm_bindgen(js_name = refreshOverview)]
+    pub fn refresh_overview(&mut self) {
+        self.overview = None;
+    }
+
     /// Pins up to `max` headers of the enclosing scopes at the top; 0 turns it off.
     #[wasm_bindgen(js_name = setStickyScroll)]
     pub fn set_sticky_scroll(&mut self, max: u32) {
@@ -921,9 +1055,51 @@ impl Editor {
         }
     }
 
+    /// Sets the query without searching, for when the matches come from the worker
+    /// ([`Editor::set_find_matches`]). Returns 0, or -1 when the regular expression does
+    /// not compile.
+    #[wasm_bindgen(js_name = setFindQuery)]
+    pub fn set_find_query(&mut self, pattern: &str, regex: bool, case_sensitive: bool, whole_word: bool) -> i32 {
+        let query = SearchQuery { pattern: pattern.to_owned(), regex, case_sensitive, whole_word };
+        match Searcher::new(&query) {
+            Ok(searcher) if !pattern.is_empty() => {
+                self.find = Some((query, searcher));
+                0
+            }
+            Ok(_) => {
+                self.clear_find();
+                0
+            }
+            Err(_) => {
+                self.clear_find();
+                -1
+            }
+        }
+    }
+
+    /// Shows matches found elsewhere (pairs of start and end char offsets) for the current
+    /// query; they move with edits like any decoration.
+    #[wasm_bindgen(js_name = setFindMatches)]
+    pub fn set_find_matches(&mut self, pairs: &[u32]) -> u32 {
+        self.overview = None;
+        let owner = self.cursors.id().0;
+        let mut model = self.model.borrow_mut();
+        if self.find.is_none() {
+            model.decorations.clear(owner);
+            return 0;
+        }
+        let len = model.len_chars();
+        let ranges: Vec<std::ops::Range<usize>> =
+            pairs.chunks_exact(2).map(|p| (p[0] as usize).min(len)..(p[1] as usize).min(len)).collect();
+        let count = ranges.len() as u32;
+        model.decorations.set(owner, FIND_MATCH, Stickiness::NeverGrows, ranges);
+        count
+    }
+
     /// Re-runs the current query, after the text changed. Returns the number of matches.
     #[wasm_bindgen(js_name = refreshFind)]
     pub fn refresh_find(&mut self) -> u32 {
+        self.overview = None;
         let owner = self.cursors.id().0;
         let mut model = self.model.borrow_mut();
         let Some((_, searcher)) = &self.find else {
@@ -938,6 +1114,7 @@ impl Editor {
 
     #[wasm_bindgen(js_name = clearFind)]
     pub fn clear_find(&mut self) {
+        self.overview = None;
         self.find = None;
         let owner = self.cursors.id().0;
         self.model.borrow_mut().decorations.clear(owner);
@@ -1430,6 +1607,7 @@ impl Editor {
         let model = self.model.borrow();
         self.cursors.sync(&model);
         let selections = self.cursors.selections();
+        self.highlights.sync(&model);
         let frame = self.view.layout(&model, selections, &self.highlights);
         let ctx = &self.ctx;
         let (w, h) = (self.view.width as f64, self.view.height as f64);
@@ -1621,10 +1799,15 @@ impl Editor {
             });
             fill(&chrome.scrollbar, &m.slider);
         }
-        let marks = self
-            .view
-            .overview_marks(&model, h as f32, |k| k == FIND_MATCH || type_of(k).is_some_and(|t| t.overview.is_some()));
-        for (y, height, kind) in marks {
+        // The marks are recomputed when asked (refreshOverview), not on every keystroke: with
+        // thousands of search matches that would cost milliseconds per key.
+        if self.overview.is_none() {
+            let marks = self.view.overview_marks(&model, h as f32, |k| {
+                k == FIND_MATCH || type_of(k).is_some_and(|t| t.overview.is_some())
+            });
+            self.overview = Some(marks);
+        }
+        for &(y, height, kind) in self.overview.as_deref().unwrap_or_default() {
             let color = if kind == FIND_MATCH {
                 Some(&chrome.find_match)
             } else {
@@ -1851,6 +2034,7 @@ impl Editor {
 
     /// Runs a folding command; None when `command` is not one.
     fn fold_command(&mut self, command: &str) -> Option<bool> {
+        self.overview = None;
         let model = self.model.borrow();
         self.cursors.sync(&model);
         let lines: Vec<usize> = self.cursors.selections().iter().map(|s| model.rope().char_to_line(s.head)).collect();

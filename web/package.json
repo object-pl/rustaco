@@ -14,6 +14,7 @@
   },
   "files": [
     "rustaco.js",
+    "rustaco-worker.js",
     "rustaco.d.ts",
     "pkg/**/*.js",
     "pkg/**/*.wasm",

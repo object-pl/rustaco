@@ -31,9 +31,11 @@
 
 ## Syntax highlighting in the browser
 
-The editor module contains no parser. Each language pack is a separate WASM module with the tree-sitter runtime and its grammars (`web/pkg/syntax-<pack>/`), loaded the first time a model uses one of its languages; a page that edits only Rust never downloads the C++ grammar. Measured gzipped sizes: editor 97 KB, language modules 290 to 690 KB (JSON smallest, C# largest). Twenty grammars in one module would be about 2 MB.
+The editor module contains no parser. Each language pack is a separate WASM module with the tree-sitter runtime and its grammars (`web/pkg/syntax-<pack>/`), loaded the first time a model uses one of its languages; a page that edits only Rust never downloads the C++ grammar. Measured gzipped sizes: editor 230 KB, language modules 290 to 690 KB (JSON smallest, C# largest). Twenty grammars in one module would be about 2 MB.
 
-The language module receives edits as data (`Model.editsSince`: nine numbers per edit plus the inserted text) and returns highlights as data (quads of line, start column, end column, style id). No shared memory and no callbacks, so the module can move into a Web Worker behind `postMessage` without interface changes (roadmap phase 7).
+The language module receives edits as data (`Model.editsSince`: nine numbers per edit plus the inserted text) and returns highlights as data (quads of line, start column, end column, style id). No shared memory and no callbacks.
+
+Where workers are available the language modules run in one Web Worker (`web/rustaco-worker.js`) shared by all models on the page. The page sends each model's edits as they happen; each frame asks for the highlights of its visible lines and the bracket pair at the caret, and the reply carries the model version it was computed for, so a reply that arrives after the next edit is dropped. Meanwhile the editor draws the previous highlights, moved with the edits. Search runs there too, on a text copy kept by the editor module (`TextReplica`), so re-running a search after each typing pause costs the page nothing. Questions that need an answer at once (is the caret inside a string, for auto-closing pairs) are answered from the highlight styles already on screen. Without workers (or with `setWorkersEnabled(false)`) the modules run on the main thread in time slices, as described next. Native frontends get the same protocol on a thread: `rustaco_syntax::BackgroundSyntax`.
 
 tree-sitter's incremental reparse walks the top-level nodes of the file, so its cost grows with their number: about 30 ms for 25,000 Rust functions, 500 ms for 100,000 top-level statements. Parsing therefore runs in slices: each frame gives the module 4 ms, a halted parse resumes on the next frame, and until it finishes the editor highlights from the previous tree shifted by the edits. Measured per keystroke in a 100,000-line Rust file, Chromium: parse 3.8 ms (the budget), highlight 2.3 ms, drawing 2.0 ms, the rest under 0.5 ms; Firefox is about 30% slower.
 
@@ -45,9 +47,10 @@ Measured in Chromium with the release WASM build on a 1,000,000-line file (54 MB
 
 - loading the text: 820 ms;
 - a keystroke including a full frame render: 0.46 ms;
+- with highlighting in the worker, a keystroke in a 10 MB Rust file while a search for a word with 20,000 matches stays active: 0.7 ms in Chromium, 0.8 ms in WebKit, 1.3 ms in Firefox (median of batches; nearly all of it is drawing the frame);
 - a scroll frame: under 0.1 ms.
 
-Budgets (checked by `scripts/check-size.sh`): the editor module under 1 MB gzipped (now 97 KB), each language module under 700 KB gzipped. SQL's tree-sitter grammar compiles to 1.2 MB and is left out of the browser build.
+Budgets (checked by `scripts/check-size.sh`): the editor module under 1 MB gzipped (now 230 KB), each language module under 700 KB gzipped. SQL's tree-sitter grammar compiles to 1.2 MB and is left out of the browser build.
 
 LSP will run outside the input path.
 

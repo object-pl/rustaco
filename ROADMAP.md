@@ -2,7 +2,13 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Done: phases 0 to 6 (all 2026-11-21). Next: phase 7.
+Done: phases 0 to 7 (all 2026-11-21). Next: phase 8.
+
+Phase 7 summary:
+- One Web Worker per page runs every model's language module and search; native frontends get the same protocol on a thread (`BackgroundSyntax`). Edits go over as they are made, replies carry the model version and stale ones are dropped; the editor draws the previous highlights moved with the edits until fresh ones arrive. The main-thread path stays as the fallback (no workers, or `setWorkersEnabled(false)`).
+- Auto-closing inside strings and comments is decided from the highlight styles on screen; expand selection and fold regions ask the worker and apply the answer when it comes.
+- To keep keystrokes cheap with many search matches: decorations map only those near an edit, overview ruler marks are cached and merged and recomputed once typing pauses, search returns at most 19,999 matches (as Monaco does), indentation guides no longer rescan blank regions.
+- Check: a keystroke in a 10 MB file, with parsing and an active search in the worker, costs the main thread 0.7 ms in Chromium and 0.8 ms in WebKit. Firefox needs 1.3 ms, nearly all of it drawing the frame on the canvas; caching each line's image was tried and made every engine slower, so the Firefox bound in the test is 2 ms. The diff computation named in this phase moves to phase 10 with the diff editor.
 
 Phase 6 summary:
 - Input through `beforeinput` (typing, virtual keyboard deletes, undo and redo from the OS), with a textarea diff where it cannot be cancelled; IME composition replaces itself step by step in the model, underlined, and undoes as one step. Dead keys reach the editor either as a composition or as one composed char, and both paths are handled; no test drives real dead keys.

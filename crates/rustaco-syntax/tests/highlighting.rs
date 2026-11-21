@@ -321,3 +321,28 @@ fn fold_ranges_cover_bracket_pairs_and_comments() {
     // The block comment, the function body (the closing brace stays shown) and the call.
     assert_eq!(syntax.fold_ranges(), vec![(0, 1), (2, 7), (3, 5)]);
 }
+
+#[test]
+fn background_thread_highlights_the_current_version() {
+    use rustaco_syntax::BackgroundSyntax;
+    use std::time::Duration;
+    let mut doc = Document::new("fn main() {\n    let s = \"hi\";\n}\n");
+    let mut bg = BackgroundSyntax::spawn(by_id("rust").unwrap(), doc.model()).unwrap();
+    bg.request_highlights(doc.model(), 0..3);
+    let first = bg.wait(doc.model(), Duration::from_secs(5)).expect("a reply for the first version");
+    // Several edits; replies for versions in between are dropped.
+    for c in "// note\n".chars() {
+        doc.set_selections(Selections::single(Selection::cursor(0)));
+        doc.insert(&c.to_string());
+        bg.request_highlights(doc.model(), 0..4);
+    }
+    let reply = bg.wait(doc.model(), Duration::from_secs(5)).expect("a reply for the last version");
+    assert_eq!(reply.version, doc.model().version());
+    assert_ne!(first.version, reply.version);
+    let mut direct = Syntax::new(by_id("rust").unwrap()).unwrap();
+    direct.update(doc.model());
+    let expected = direct.highlight(doc.rope(), 0..4);
+    if reply.parsed {
+        assert_eq!(format!("{:?}", reply.highlights), format!("{expected:?}"));
+    }
+}

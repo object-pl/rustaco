@@ -143,6 +143,10 @@ pub struct MinimapBlock {
 const MINIMAP_ROW: f32 = 2.0;
 const MINIMAP_CELL: f32 = 1.0;
 
+/// Overview ruler marks with what they were computed for: decoration generation, view
+/// geometry and track height.
+type OverviewCache = ((u64, u64, u32), Vec<(f32, f32, u32)>);
+
 /// Width of the fold marker column at the right of the gutter, in cells.
 const FOLD_MARKER_CELLS: f32 = 2.0;
 
@@ -172,6 +176,10 @@ pub struct View {
     zones: Vec<Zone>,
     /// Height of the zones above the first line.
     top_padding: f64,
+    /// Bumped whenever line positions may have changed (sync, folds, zones).
+    geometry: u64,
+    /// Overview ruler marks for (decoration generation, geometry, track height).
+    overview_cache: std::cell::RefCell<Option<OverviewCache>>,
     heights: HeightMap,
     /// What `heights` was computed for: model version, line height, wrap width, tab size.
     synced: Option<Synced>,
@@ -204,6 +212,8 @@ impl View {
             sticky_max: 0,
             zones: Vec::new(),
             top_padding: 0.0,
+            geometry: 0,
+            overview_cache: std::cell::RefCell::new(None),
             heights: HeightMap::new(1, metrics.line_height),
             synced: None,
             folds: Vec::new(),
@@ -487,6 +497,7 @@ impl View {
         self.folds.sort_by_key(|f| f.start);
         self.folds.dedup_by_key(|f| rope.char_to_line(f.start.min(len)));
         self.hidden = Hidden::new(ranges, &self.heights);
+        self.geometry += 1;
     }
 
     // ---- folding ----
@@ -1113,9 +1124,19 @@ impl View {
     /// Rectangles covering `range` on the visible lines, one per row; a line break inside
     /// the range adds half a cell at the end of its line, as for selections.
     fn range_rects(&self, rope: &Rope, range: std::ops::Range<usize>, gutter: f32) -> Vec<Rect> {
+        self.range_rects_in(rope, range, gutter, &self.visible_lines(rope))
+    }
+
+    /// [`View::range_rects`] with the visible lines computed once by the caller.
+    fn range_rects_in(
+        &self,
+        rope: &Rope,
+        range: std::ops::Range<usize>,
+        gutter: f32,
+        visible: &Range<usize>,
+    ) -> Vec<Rect> {
         let cw = self.metrics.char_width;
         let lh = self.metrics.line_height;
-        let visible = self.visible_lines(rope);
         let x_at = |cells: usize| gutter + cells as f32 * cw - self.scroll_left;
         let (start, end) = (char_to_position(rope, range.start), char_to_position(rope, range.end));
         let mut out = Vec::new();
@@ -1162,7 +1183,9 @@ impl View {
             .decorations
             .in_range(range)
             .into_iter()
-            .flat_map(|d| self.range_rects(rope, d.range.clone(), gutter).into_iter().map(move |r| (r, d.kind)))
+            .flat_map(|d| {
+                self.range_rects_in(rope, d.range.clone(), gutter, &visible).into_iter().map(move |r| (r, d.kind))
+            })
             .collect()
     }
 
@@ -1212,7 +1235,26 @@ impl View {
     /// Marks for the overview ruler, a strip `track` pixels tall standing for the whole
     /// document: for every decoration of an accepted kind, its top and height on the strip
     /// (at least 2 px) with its kind. Folded lines map to their fold's header.
+    /// Cached until decorations or line positions change, since a search can leave tens of
+    /// thousands of decorations and the marks do not depend on the scroll position.
     pub fn overview_marks(&self, model: &TextModel, track: f32, accept: impl Fn(u32) -> bool) -> Vec<(f32, f32, u32)> {
+        let key = (model.decorations.generation(), self.geometry, track.to_bits());
+        if let Some((k, marks)) = self.overview_cache.borrow().as_ref()
+            && *k == key
+        {
+            return marks.clone();
+        }
+        let marks = self.compute_overview_marks(model, track, accept);
+        *self.overview_cache.borrow_mut() = Some((key, marks.clone()));
+        marks
+    }
+
+    fn compute_overview_marks(
+        &self,
+        model: &TextModel,
+        track: f32,
+        accept: impl Fn(u32) -> bool,
+    ) -> Vec<(f32, f32, u32)> {
         let rope = model.rope();
         let total = (self.content_height(rope) - self.height as f64 + self.metrics.line_height as f64).max(1.0);
         let scale = track as f64 / total;
@@ -1229,8 +1271,18 @@ impl View {
                 (top as f32, ((bottom - top) as f32).max(2.0), d.kind)
             })
             .collect();
-        out.sort_by(|x, y| x.0.total_cmp(&y.0));
-        out
+        out.sort_by(|x, y| x.2.cmp(&y.2).then(x.0.total_cmp(&y.0)));
+        // Marks of one kind that touch merge, so thousands of matches draw as a few bars.
+        let mut merged: Vec<(f32, f32, u32)> = Vec::with_capacity(out.len().min(4096));
+        for m in out {
+            match merged.last_mut() {
+                Some(last) if last.2 == m.2 && m.0 <= last.0 + last.1 + 0.5 => {
+                    last.1 = last.1.max(m.0 + m.1 - last.0);
+                }
+                _ => merged.push(m),
+            }
+        }
+        merged
     }
 
     /// Indentation guides for the visible lines: one vertical segment per indentation level
@@ -1244,9 +1296,30 @@ impl View {
         let visible = self.visible_lines(rope);
         let total = rope.len_lines();
         let lines = self.shown(visible.start..visible.end.min(total));
-        let level_at = |line: usize| guide_level(rope, line, tab);
-        let levels: Vec<usize> = lines.iter().map(|&l| level_at(l)).collect();
-        let active_level = level_at(cursor_line).max(1);
+        // Blank lines take the smaller level of the nearest non-blank lines around them; one
+        // pass each way over the screen, plus a bounded look past its edges.
+        let raw: Vec<Option<usize>> = lines.iter().map(|&l| indent_level(rope, l, tab)).collect();
+        let first = lines.first().copied().unwrap_or(0);
+        let last = lines.last().copied().unwrap_or(0);
+        let above =
+            (first.saturating_sub(GUIDE_REACH)..first).rev().find_map(|l| indent_level(rope, l, tab)).unwrap_or(0);
+        let below = (last + 1..(last + GUIDE_REACH).min(total)).find_map(|l| indent_level(rope, l, tab)).unwrap_or(0);
+        let mut levels = vec![0; raw.len()];
+        let mut prev = above;
+        for (i, r) in raw.iter().enumerate() {
+            if let Some(l) = r {
+                prev = *l;
+            }
+            levels[i] = prev;
+        }
+        let mut next = below;
+        for (i, r) in raw.iter().enumerate().rev() {
+            match r {
+                Some(l) => next = *l,
+                None => levels[i] = levels[i].min(next),
+            }
+        }
+        let active_level = guide_level(rope, cursor_line, tab).max(1);
 
         let cw = self.metrics.char_width;
         let gutter = self.gutter_width(rope);

@@ -45,6 +45,154 @@ function loadPack(pack) {
 }
 
 const editors = new Set();
+/** Editors by id, for routing worker replies. */
+const editorsById = new Map();
+let nextEditorId = 1;
+
+let worker = null;
+let workerFailed = false;
+/** Worker-side models by id. */
+const workerModels = new Map();
+/** Replies awaited: request id -> resolve. */
+const pending = new Map();
+let nextRequest = 1;
+let nextWorkerModel = 1;
+
+/** The shared language worker, started on first use; null where workers are unavailable. */
+function syntaxWorker() {
+  if (worker || workerFailed) return worker;
+  try {
+    worker = new Worker(new URL('./rustaco-worker.js', import.meta.url), { type: 'module' });
+  } catch {
+    workerFailed = true;
+    return null;
+  }
+  worker.onmessage = (e) => {
+    const m = e.data;
+    if (m.type === 'reply') {
+      pending.get(m.req)?.(m);
+      pending.delete(m.req);
+    } else {
+      workerModels.get(m.id)?.receive(m);
+    }
+  };
+  worker.onerror = () => {
+    // A worker that cannot start (blocked by CSP, missing file) fails every request; models
+    // fall back to parsing on the main thread.
+    workerFailed = true;
+    worker = null;
+    for (const resolve of pending.values()) resolve({ ok: false });
+    pending.clear();
+    for (const s of workerModels.values()) s.model.workerFailed();
+  };
+  return worker;
+}
+
+function ask(message) {
+  const w = syntaxWorker();
+  if (!w) return Promise.resolve({ ok: false });
+  return new Promise((resolve) => {
+    const req = nextRequest++;
+    pending.set(req, resolve);
+    w.postMessage({ ...message, req });
+  });
+}
+
+/**
+ * A model's side in the worker: its language module and, once searched, a copy of its text.
+ * Edits go over as they are made; replies come back tagged with the model version.
+ */
+class WorkerLink {
+  constructor(model) {
+    this.model = model;
+    this.id = nextWorkerModel++;
+    this.sent = model.core.version();
+    this.syntax = false;
+    this.text = false;
+    this.hasTree = false;
+    workerModels.set(this.id, this);
+  }
+
+  /** Opens the language module for `language` (in `pack`); resolves to whether it loaded. */
+  async openSyntax(language, pack) {
+    this.sync();
+    this.syntax = true;
+    const r = await ask({ type: 'open', id: this.id, pack, language, text: this.model.getValue(), version: this.sent });
+    this.hasTree = !!r.hasTree;
+    if (!r.ok) this.closeSyntax();
+    return !!r.ok;
+  }
+
+  closeSyntax() {
+    if (this.syntax) worker?.postMessage({ type: 'closeSyntax', id: this.id });
+    this.syntax = false;
+    this.hasTree = false;
+  }
+
+  /** Sends the edits made since the last call. */
+  sync() {
+    const v = this.model.core.version();
+    if (v === this.sent || !worker) return;
+    if (this.syntax || this.text) {
+      const batch = this.model.core.editsSince(this.sent);
+      if (batch.stale()) worker.postMessage({ type: 'edit', id: this.id, version: v, reset: this.model.getValue() });
+      else worker.postMessage({ type: 'edit', id: this.id, version: v, numbers: batch.numbers(), text: batch.text() });
+      batch.free();
+    }
+    this.sent = v;
+  }
+
+  frame(editor, runs, colorize, caret) {
+    this.sync();
+    worker?.postMessage({ type: 'frame', id: this.id, editor: editor.id, runs, colorize, caret });
+  }
+
+  async enclosing(start, end) {
+    this.sync();
+    return (await ask({ type: 'enclosing', id: this.id, start, end })).result ?? [];
+  }
+
+  async folding() {
+    this.sync();
+    const r = await ask({ type: 'folding', id: this.id });
+    return { ranges: r.result ?? [], version: r.version };
+  }
+
+  /** Every match, as pairs of char offsets (null for an invalid pattern), with the version. */
+  async find(pattern, { regex = false, caseSensitive = false, wholeWord = false } = {}) {
+    this.sync();
+    if (!this.text && worker) {
+      worker.postMessage({ type: 'openText', id: this.id, text: this.model.getValue(), version: this.sent });
+      this.text = true;
+    }
+    const r = await ask({ type: 'find', id: this.id, pattern, regex, caseSensitive, wholeWord });
+    return { matches: r.result, version: r.version };
+  }
+
+  receive(m) {
+    if (m.type === 'frame') {
+      editorsById.get(m.editor)?.applyFrame(m);
+    } else if (m.type === 'parsed') {
+      // The background parse caught up: frames get their final colours.
+      for (const e of this.model.editors) { e.frameKey = null; e.schedule(); }
+    } else if (m.type === 'resync') {
+      worker?.postMessage({ type: 'edit', id: this.id, version: this.model.core.version(), reset: this.model.getValue() });
+      this.sent = this.model.core.version();
+    }
+  }
+
+  close() {
+    worker?.postMessage({ type: 'close', id: this.id });
+    workerModels.delete(this.id);
+  }
+}
+
+/**
+ * Whether new models parse in a worker (the default where workers are available) or on
+ * the main thread in time slices.
+ */
+let workersByDefault = true;
+export function setWorkersEnabled(on) { workersByDefault = !!on; }
 
 
 /** Clipboard type of the per-cursor pieces of a multi-cursor copy. */
@@ -163,6 +311,30 @@ export class RustacoModel {
     this.language = '';
     this.highlighter = null;
     this.highlighterVersion = 0;
+    /** The model's side in the worker, when one runs (see `workerLink`). */
+    this.link = null;
+    /** `link` while the language module runs in the worker. */
+    this.syntax = null;
+    this.useWorker = workersByDefault;
+  }
+
+  /** The model's side in the worker, created on first use; null without workers. */
+  workerLink() {
+    if (!this.useWorker || !syntaxWorker()) return null;
+    this.link ??= new WorkerLink(this);
+    return this.link;
+  }
+
+  /** Moves the language module into the worker or back to the main thread. */
+  async setWorkerEnabled(on) {
+    this.useWorker = !!on;
+    return this.setLanguage(this.language);
+  }
+
+  /** Called when the worker failed: parse on the main thread instead. */
+  workerFailed() {
+    this.link = null;
+    if (this.syntax) this.setLanguage(this.language);
   }
 
   getValue() { return this.core.getValue(); }
@@ -176,9 +348,20 @@ export class RustacoModel {
     this.core.setLanguageConfig(id);
     this.highlighter?.free();
     this.highlighter = null;
+    this.syntax?.closeSyntax();
+    this.syntax = null;
     let ok = id === '';
     const pack = id ? Model.languagePack(id) : '';
-    const module = pack ? await loadPack(pack) : null;
+    const link = pack ? this.workerLink() : null;
+    if (link) {
+      if (await link.openSyntax(id, pack) && this.language === id) {
+        this.syntax = link;
+        ok = true;
+      } else {
+        link.closeSyntax();
+      }
+    }
+    const module = pack && !this.syntax ? await loadPack(pack) : null;
     if (module && this.language === id) {
       this.highlighter = new module.Highlighter(id, this.getValue());
       this.highlighterVersion = this.core.version();
@@ -238,7 +421,7 @@ export class RustacoModel {
     const collection = {
       set(list) {
         model.core.setDecorations(owner, Uint32Array.from(list.flatMap((d) => [d.start, d.end, d.type])));
-        for (const e of model.editors) e.schedule();
+        for (const e of model.editors) { e.core.refreshOverview(); e.schedule(); }
       },
       clear() { collection.set([]); },
     };
@@ -314,6 +497,8 @@ export class RustacoEditor {
     this.model = model ?? new RustacoModel(value);
     this.ready = language ? this.model.setLanguage(language) : Promise.resolve(true);
     editors.add(this);
+    this.id = nextEditorId++;
+    editorsById.set(this.id, this);
     this.core = new Editor(this.canvas, this.model.core, fontFamily, fontSize);
     this.setKeymap(keymap);
     this.options = {};
@@ -324,6 +509,7 @@ export class RustacoEditor {
     this.focused = false;
     this.composing = false;
     this.frame = 0;
+    this.findRequest = 0;
 
     this.#wire();
     new ResizeObserver(() => this.#resize()).observe(container);
@@ -340,6 +526,7 @@ export class RustacoEditor {
    */
   setOptions(options) {
     Object.assign(this.options, options);
+    this.core.refreshOverview();
     const o = this.options;
     this.core.setViewOptions(Uint32Array.from(o.rulers ?? []), o.renderWhitespace === 'all', !!o.guides, !!o.occurrencesHighlight);
     this.core.setWordWrap(o.wordWrap === 'on');
@@ -373,6 +560,7 @@ export class RustacoEditor {
    * date while the text changes, until `clearFind()`.
    */
   find(pattern, { regex = false, caseSensitive = false, wholeWord = false } = {}) {
+    this.findQuery = { pattern, options: { regex, caseSensitive, wholeWord } };
     const count = this.core.find(pattern, regex, caseSensitive, wholeWord);
     this.findActive = count >= 0 && pattern !== '';
     this.schedule();
@@ -412,16 +600,55 @@ export class RustacoEditor {
     if (!this.findActive) return;
     clearTimeout(this.findTimer);
     this.findTimer = setTimeout(() => {
+      const link = this.model.workerLink();
+      if (link && this.findQuery) {
+        // On a large file the search takes long; the worker runs it while typing goes on.
+        this.findAsync(this.findQuery.pattern, this.findQuery.options);
+        return;
+      }
       this.core.refreshFind();
       this.findWidget?.updateCount();
       this.schedule();
     }, 100);
   }
 
+  /**
+   * Like `find`, but the search runs in the worker where there is one, so the page stays
+   * responsive on large files. Resolves to the match count, or -1 for an invalid pattern.
+   */
+  async findAsync(pattern, options = {}) {
+    const link = this.model.workerLink();
+    if (!link) return this.find(pattern, options);
+    const { regex = false, caseSensitive = false, wholeWord = false } = options;
+    if (this.core.setFindQuery(pattern, regex, caseSensitive, wholeWord) < 0) {
+      this.findActive = false;
+      this.schedule();
+      return -1;
+    }
+    this.findActive = pattern !== '';
+    this.findQuery = { pattern, options };
+    const asked = ++this.findRequest;
+    const { matches, version } = await link.find(pattern, options);
+    if (asked !== this.findRequest || !this.findActive) return -1;
+    if (version !== this.model.core.version()) {
+      // The text changed while the worker searched: search again.
+      this.refreshFindSoon();
+      return matches?.length ? matches.length / 2 : 0;
+    }
+    const n = this.core.setFindMatches(Uint32Array.from(matches ?? []));
+    this.findWidget?.updateCount();
+    this.schedule();
+    return n;
+  }
+
   /** Recomputes foldable regions once typing pauses; the scan reads the whole file. */
   refreshFoldingSoon() {
     clearTimeout(this.foldTimer);
-    this.foldTimer = setTimeout(() => { this.refreshFolding(); this.schedule(); }, 300);
+    this.foldTimer = setTimeout(() => {
+      this.refreshFolding();
+      this.core.refreshOverview();
+      this.schedule();
+    }, 300);
   }
 
   /**
@@ -430,6 +657,16 @@ export class RustacoEditor {
    * indentation get both.
    */
   refreshFolding() {
+    const s = this.model.syntax;
+    if (s) {
+      if (!s.hasTree) { this.core.refreshFoldingRanges(); return; }
+      s.folding().then(({ ranges, version }) => {
+        if (version !== this.model.core.version()) { this.refreshFoldingSoon(); return; }
+        this.core.setFoldingRanges(Uint32Array.from(ranges), INDENTATION_BLOCKS.has(this.model.language));
+        this.schedule();
+      });
+      return;
+    }
     const h = this.model.highlighter;
     if (h && h.hasTree()) {
       this.model.updateHighlighter(20);
@@ -563,6 +800,7 @@ export class RustacoEditor {
   dispose() {
     this.model.editors.delete(this);
     editors.delete(this);
+    editorsById.delete(this.id);
     clearInterval(this.blink);
     this.canvas.remove();
     this.input.remove();
@@ -749,6 +987,19 @@ export class RustacoEditor {
       this.findWidget.open(command !== 'actions.find');
       return;
     }
+    if (command === 'editor.action.jumpToBracket' && this.model.syntax) {
+      // The pair at the caret came with the last frame.
+      this.core.runCommand(command);
+      return;
+    }
+    if (command === 'editor.action.smartSelect.expand' && this.model.syntax) {
+      const [start, end] = this.core.primaryRange();
+      this.model.syntax.enclosing(start, end).then((ranges) => {
+        this.core.expandSelection(Uint32Array.from(ranges));
+        this.#changed();
+      });
+      return;
+    }
     if (command === 'editor.action.jumpToBracket') {
       const h = this.model.highlighter;
       if (h && h.hasTree()) {
@@ -771,6 +1022,7 @@ export class RustacoEditor {
 
   /** True when the primary cursor is inside a string or comment. */
   #inLiteral() {
+    if (this.model.syntax) return this.core.caretInLiteral();
     const h = this.model.highlighter;
     if (!h) return false;
     this.model.updateHighlighter(2);
@@ -832,13 +1084,37 @@ export class RustacoEditor {
     if (pieces.length) data.setData('text/html', html);
   }
 
+  /** Takes a frame's highlights from the worker, unless the text has changed since. */
+  applyFrame(m) {
+    if (m.version !== this.model.core.version()) return;
+    m.segments.forEach(([first, end, quads], i) => {
+      if (i === 0) this.core.setHighlights(first, end, quads);
+      else this.core.addHighlights(first, end, quads);
+    });
+    if (this.model.syntax?.hasTree) this.core.setTreeBrackets(m.bracket);
+    else this.core.clearTreeBrackets();
+    this.schedule();
+  }
+
   schedule() {
     if (this.frame) return;
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
       const { model, core } = this;
       const h = model.highlighter;
-      if (h) {
+      const s = model.syntax;
+      if (s) {
+        // Ask the worker for this frame's highlights once per change of text, view or caret;
+        // until they arrive the last ones (moved with the edits) are drawn.
+        const runs = Array.from(core.visibleLines());
+        const caret = core.primaryRange()[0];
+        const colorize = !!this.options.bracketPairColorization;
+        const key = `${model.core.version()}|${runs.join(',')}|${caret}|${colorize}`;
+        if (key !== this.frameKey) {
+          this.frameKey = key;
+          s.frame(this, runs, colorize, caret);
+        }
+      } else if (h) {
         const parsed = model.updateHighlighter();
         // One run of lines per stretch between folds, so folded lines are never highlighted.
         const runs = core.visibleLines();
@@ -981,9 +1257,11 @@ class FindWidget {
   }
 
   /** Runs the query; `move` selects the first match at or after the selection's start. */
-  search(move) {
+  async search(move) {
     const e = this.editor;
-    const n = e.find(this.findInput.value, this.options);
+    const query = this.findInput.value;
+    const n = await e.findAsync(query, this.options);
+    if (query !== this.findInput.value) return;
     if (n > 0 && move) {
       const [start] = e.core.primaryRange();
       e.setSelections([{ anchor: start, head: start }]);

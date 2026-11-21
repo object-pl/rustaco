@@ -44,11 +44,18 @@ pub struct Decorations {
     short: Vec<Decoration>,
     long: Vec<Decoration>,
     next_id: u64,
+    /// Bumped by every change, so views can cache what they derive from decorations.
+    generation: u64,
 }
 
 impl Decorations {
     pub fn len(&self) -> usize {
         self.short.len() + self.long.len()
+    }
+
+    /// Changes whenever any decoration is added, removed or moved.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn is_empty(&self) -> bool {
@@ -74,6 +81,7 @@ impl Decorations {
         items: impl IntoIterator<Item = (Range<usize>, u32)>,
     ) -> Vec<DecorationId> {
         self.clear(owner);
+        self.generation += 1;
         let mut ids = Vec::new();
         for (range, kind) in items {
             self.next_id += 1;
@@ -86,8 +94,12 @@ impl Decorations {
     }
 
     pub fn clear(&mut self, owner: u32) {
+        let before = self.len();
         self.short.retain(|d| d.owner != owner);
         self.long.retain(|d| d.owner != owner);
+        if self.len() != before {
+            self.generation += 1;
+        }
     }
 
     pub fn get(&self, id: DecorationId) -> Option<&Decoration> {
@@ -125,6 +137,11 @@ impl Decorations {
         if self.is_empty() || changes.is_empty() {
             return;
         }
+        self.generation += 1;
+        let edits = changes.edits();
+        let first = edits[0].start;
+        let last = edits[edits.len() - 1].end;
+        let delta: isize = edits.iter().map(|e| e.text.chars().count() as isize - (e.end - e.start) as isize).sum();
         let map = |d: &mut Decoration| {
             let (start_assoc, end_assoc) = match d.stickiness {
                 Stickiness::AlwaysGrows => (Assoc::Before, Assoc::After),
@@ -136,18 +153,30 @@ impl Decorations {
             let end = changes.map(d.range.end, end_assoc).max(start);
             d.range = start..end;
         };
-        self.short.iter_mut().for_each(map);
+        // Short decorations ending before the first edit stay; those starting after the last
+        // one only shift. Only the ones in between go through the change set, so an edit
+        // costs the decorations near it, not all of them.
+        let lo = self.short.partition_point(|d| d.range.start + LONG < first);
+        let hi = self.short.partition_point(|d| d.range.start <= last);
+        for d in &mut self.short[hi..] {
+            d.range = d.range.start.wrapping_add_signed(delta)..d.range.end.wrapping_add_signed(delta);
+        }
+        self.short[lo..hi].iter_mut().for_each(map);
         self.long.iter_mut().for_each(map);
         // Ranges that changed length may belong to the other list now.
-        let (now_long, short): (Vec<_>, Vec<_>) =
-            std::mem::take(&mut self.short).into_iter().partition(|d| d.range.len() > LONG);
-        let (now_short, long): (Vec<_>, Vec<_>) =
-            std::mem::take(&mut self.long).into_iter().partition(|d| d.range.len() <= LONG);
-        self.short = short;
-        self.short.extend(now_short);
-        self.long = long;
-        self.long.extend(now_long);
-        self.short.sort_by_key(|d| (d.range.start, d.id));
+        if self.short[lo..hi].iter().any(|d| d.range.len() > LONG) || self.long.iter().any(|d| d.range.len() <= LONG) {
+            let (now_long, short): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut self.short).into_iter().partition(|d| d.range.len() > LONG);
+            let (now_short, long): (Vec<_>, Vec<_>) =
+                std::mem::take(&mut self.long).into_iter().partition(|d| d.range.len() <= LONG);
+            self.short = short;
+            self.short.extend(now_short);
+            self.long = long;
+            self.long.extend(now_long);
+        }
+        if !self.short.is_sorted_by_key(|d| (d.range.start, d.id)) {
+            self.short.sort_by_key(|d| (d.range.start, d.id));
+        }
     }
 }
 
@@ -159,6 +188,54 @@ fn overlaps(a: &Range<usize>, b: &Range<usize>) -> bool {
 mod tests {
     use super::*;
     use crate::change::Edit;
+
+    #[test]
+    fn mapping_only_nearby_decorations_matches_mapping_all() {
+        let mut seed = 0x1234_5678_u64;
+        let mut rand = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n.max(1) as u64) as usize
+        };
+        let mut len = 50_000;
+        let mut fast = Decorations::default();
+        let ranges: Vec<Range<usize>> = (0..2000)
+            .map(|_| {
+                let a = rand(len);
+                a..(a + if rand(10) == 0 { rand(10_000) } else { rand(30) }).min(len)
+            })
+            .collect();
+        fast.set(1, 0, Stickiness::NeverGrows, ranges.clone());
+        let mut naive: Vec<(DecorationId, Range<usize>)> = fast.iter().map(|d| (d.id, d.range.clone())).collect();
+        for _ in 0..200 {
+            let mut edits = Vec::new();
+            let mut at = 0;
+            for _ in 0..1 + rand(3) {
+                let start = (at + rand(len / 3)).min(len);
+                let end = (start + rand(20)).min(len);
+                edits.push(Edit::new(start, end, "x".repeat(rand(5))));
+                at = end + 1;
+                if at >= len {
+                    break;
+                }
+            }
+            let changes = ChangeSet::new(edits);
+            len = (len as isize
+                + changes.edits().iter().map(|e| e.text.len() as isize - (e.end - e.start) as isize).sum::<isize>())
+                as usize;
+            fast.apply(&changes);
+            for (_, r) in &mut naive {
+                let start = changes.map(r.start, Assoc::After);
+                *r = start..changes.map(r.end, Assoc::Before).max(start);
+            }
+            let mut got: Vec<(DecorationId, Range<usize>)> = fast.iter().map(|d| (d.id, d.range.clone())).collect();
+            got.sort_by_key(|x| x.0);
+            naive.sort_by_key(|x| x.0);
+            assert_eq!(got, naive);
+            assert!(fast.short.is_sorted_by_key(|d| (d.range.start, d.id)));
+        }
+    }
 
     #[test]
     fn decorations_follow_edits_by_stickiness() {

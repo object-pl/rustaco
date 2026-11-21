@@ -26,6 +26,12 @@ export function detectLanguage(path: string, firstLine?: string): Promise<string
 /** Ids of every language the editor knows. */
 export function knownLanguages(): Promise<string[]>;
 
+/**
+ * Whether models created from now on parse and search in a Web Worker (the default where
+ * workers are available) or on the main thread in time slices.
+ */
+export function setWorkersEnabled(on: boolean): void;
+
 export interface DecorationTypeOptions {
   /** CSS colour behind the decorated text, or behind whole lines with `wholeLine`. */
   background?: string;
@@ -59,6 +65,8 @@ export class RustacoModel {
   /** Sets the language by id (`""` turns highlighting off); loads its module on first use. */
   setLanguage(id: string): Promise<boolean>;
   getLanguage(): string;
+  /** Moves this model's language module into the worker or back to the main thread. */
+  setWorkerEnabled(on: boolean): Promise<boolean>;
   createDecorationsCollection(decorations?: Decoration[]): DecorationsCollection;
   /** Calls `fn` after every text change; returns a function that removes the listener. */
   onDidChangeContent(fn: () => void): () => void;
@@ -147,6 +155,8 @@ export class RustacoEditor {
 
   /** Highlights every match; returns the count, or -1 for an invalid regular expression. */
   find(pattern: string, options?: FindOptions): number;
+  /** Like `find`, with the search in the worker; resolves to the count (-1: invalid pattern). */
+  findAsync(pattern: string, options?: FindOptions): Promise<number>;
   findNext(): boolean;
   findPrevious(): boolean;
   /** Replaces the selected match and selects the next. `$1` refers to regex groups. */

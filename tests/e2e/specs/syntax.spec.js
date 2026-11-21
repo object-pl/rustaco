@@ -8,6 +8,9 @@ async function open(page, value, language) {
   await page.evaluate(async ([v, l]) => {
     const e = window.editor;
     e.setValue(v);
+    // These tests talk to the language module directly, so it runs on the main thread;
+    // worker.spec.js covers the worker.
+    e.getModel().useWorker = false;
     await e.getModel().setLanguage(l);
     e.focus();
   }, [value, language]);

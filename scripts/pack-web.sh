@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 stage=target/npm/package
 rm -rf "$stage"
 mkdir -p "$stage"
-cp web/package.json web/rustaco.js web/rustaco.d.ts LICENSE "$stage/"
+cp web/package.json web/rustaco.js web/rustaco-worker.js web/rustaco.d.ts LICENSE "$stage/"
 cp README.md "$stage/README.md"
 cp -r web/pkg "$stage/pkg"
 (cd target/npm && npm pack ./package --pack-destination . >/dev/null)

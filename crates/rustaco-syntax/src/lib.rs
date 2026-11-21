@@ -5,6 +5,8 @@
 //! Highlights carry style ids; a [`Theme`] built from VS Code theme rules turns the ids
 //! into colours.
 
+#[cfg(all(feature = "engine", not(target_arch = "wasm32")))]
+mod background;
 mod catalog;
 mod default_theme;
 #[cfg(feature = "engine")]
@@ -20,6 +22,8 @@ mod spans;
 mod textmate;
 mod theme;
 
+#[cfg(all(feature = "engine", not(target_arch = "wasm32")))]
+pub use background::{BackgroundSyntax, HighlightReply};
 pub use catalog::{LanguageConfig, LanguageInfo, catalog, detect, info};
 #[cfg(feature = "engine")]
 pub use highlight::Syntax;
