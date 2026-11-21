@@ -1,5 +1,5 @@
 // DOM glue for the Rustaco editor. Rust draws and edits; this file forwards browser events.
-import init, { Editor, Model, setBuiltinTheme, setThemeRules } from './pkg/rustaco_web.js';
+import init, { Editor, Model, defineDecorationType as defineType, setBuiltinTheme, setThemeRules } from './pkg/rustaco_web.js';
 
 const BLINK_MS = 530;
 /** Parsing time per frame; the rest of a long parse continues on later frames. */
@@ -123,6 +123,23 @@ function parseColor(c) {
 }
 
 /**
+ * Defines how a kind of decoration draws and returns its type for
+ * `model.createDecorationsCollection`. Every part is optional: `background` (CSS colour),
+ * `underline` (`"solid"`, `"wavy"` or `"dotted"`) with `underlineColor`, `wholeLine` (the
+ * background covers whole lines), `gutter` (a bar beside the line numbers) and
+ * `overviewRuler` (a mark on the scrollbar). Types are shared by all editors.
+ */
+export async function defineDecorationType({
+  background = '', underline = '', underlineColor = '#ff0000', wholeLine = false, gutter = '', overviewRuler = '',
+} = {}) {
+  await load();
+  return defineType(background, underline, underlineColor, wholeLine, gutter, overviewRuler);
+}
+
+/** Decoration owners from here up belong to collections; lower ids are editors' own. */
+let nextDecorationOwner = 1 << 20;
+
+/**
  * Creates an editor in `container`. Pass `model` to show an existing model
  * (for example in a split view), or `value` to start a new one.
  */
@@ -202,6 +219,25 @@ export class RustacoModel {
     this.core.setValue(text);
     for (const e of this.editors) e.core.scroll_to_top();
     this.changed();
+  }
+
+  /**
+   * A set of decorations replaced together, like Monaco's decorations collection. Each
+   * decoration is `{ start, end, type }`: char offsets and a type from
+   * `defineDecorationType`. Decorations move with edits and show in every editor of the model.
+   */
+  createDecorationsCollection(decorations = []) {
+    const owner = nextDecorationOwner++;
+    const model = this;
+    const collection = {
+      set(list) {
+        model.core.setDecorations(owner, Uint32Array.from(list.flatMap((d) => [d.start, d.end, d.type])));
+        for (const e of model.editors) e.schedule();
+      },
+      clear() { collection.set([]); },
+    };
+    if (decorations.length) collection.set(decorations);
+    return collection;
   }
 
   /** Calls `fn` after every text change. Returns a function that removes the listener. */

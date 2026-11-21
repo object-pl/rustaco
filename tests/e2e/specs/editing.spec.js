@@ -282,3 +282,47 @@ test('word wrap shows a long line as rows and moves by rows', async ({ page }) =
   await page.keyboard.press('ArrowDown');
   expect((await selections(page))[0].head).toBe(line.length + 1);
 });
+
+test('decorations draw backgrounds, gutter bars and overview marks, and move with edits', async ({ page }) => {
+  await open(page, 'alpha beta gamma\nsecond line');
+  const px = (x, y) => page.evaluate(([x, y]) => {
+    const e = window.editor;
+    e.core.render(false);
+    const dpr = window.devicePixelRatio || 1;
+    const d = e.canvas.getContext('2d').getImageData(Math.round(x * dpr), Math.round(y * dpr), 1, 1).data;
+    return [d[0], d[1], d[2]];
+  }, [x, y]);
+  const { start, lh } = await page.evaluate(async () => {
+    const { defineDecorationType } = await import('/rustaco.js');
+    const type = await defineDecorationType({ background: '#ff0000', gutter: '#00ff00', overviewRuler: '#0000ff', underline: 'wavy' });
+    const model = window.editor.getModel();
+    window.decorationType = type;
+    window.decorations = model.createDecorationsCollection([{ start: 6, end: 10, type }]);
+    return { start: 6, lh: window.editor.core.line_height() };
+  });
+  const beta = await caretPoint(page, start + 1);
+  expect(await px(beta.x, beta.y - lh / 2 + 3)).toEqual([255, 0, 0]);
+  expect(await px(3, lh / 2)).toEqual([0, 255, 0]);
+  // The mark sits under the scrollbar thumb at the top; look for it down the strip below.
+  const blueRows = await page.evaluate(() => {
+    const e = window.editor;
+    e.setValue(e.getValue() + '\n'.repeat(300) + 'end');
+    window.decorations.set([{ start: e.getValue().length - 3, end: e.getValue().length, type: window.decorationType }]);
+    e.core.render(false);
+    const dpr = window.devicePixelRatio || 1;
+    const x = Math.round((e.canvas.clientWidth - 5) * dpr);
+    const d = e.canvas.getContext('2d').getImageData(x, 0, 1, e.canvas.height).data;
+    let n = 0;
+    for (let i = 0; i < d.length; i += 4) if (d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 255) n++;
+    window.decorations.set([{ start: 6, end: 10, type: window.decorationType }]);
+    return n;
+  });
+  expect(blueRows).toBeGreaterThan(0);
+  // Typing before the decoration moves it along.
+  await setCursor(page, 0);
+  await page.keyboard.type('xx');
+  const moved = await caretPoint(page, start + 3);
+  expect(await px(moved.x, moved.y - lh / 2 + 3)).toEqual([255, 0, 0]);
+  await page.evaluate(() => window.decorations.clear());
+  expect(await px(3, lh / 2)).not.toEqual([0, 255, 0]);
+});

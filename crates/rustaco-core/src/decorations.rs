@@ -63,9 +63,19 @@ impl Decorations {
         stickiness: Stickiness,
         ranges: impl IntoIterator<Item = Range<usize>>,
     ) -> Vec<DecorationId> {
+        self.set_each(owner, stickiness, ranges.into_iter().map(|r| (r, kind)))
+    }
+
+    /// Replaces all decorations of `owner` with `items`, each a range with its own kind.
+    pub fn set_each(
+        &mut self,
+        owner: u32,
+        stickiness: Stickiness,
+        items: impl IntoIterator<Item = (Range<usize>, u32)>,
+    ) -> Vec<DecorationId> {
         self.clear(owner);
         let mut ids = Vec::new();
-        for range in ranges {
+        for (range, kind) in items {
             self.next_id += 1;
             let d = Decoration { id: DecorationId(self.next_id), range, kind, stickiness, owner };
             ids.push(d.id);
@@ -96,6 +106,11 @@ impl Decorations {
             .collect();
         out.sort_by_key(|d| (d.range.start, d.id));
         out
+    }
+
+    /// Every decoration, in no particular order.
+    pub fn iter(&self) -> impl Iterator<Item = &Decoration> {
+        self.short.iter().chain(&self.long)
     }
 
     /// All decorations of `owner`, in order of start.

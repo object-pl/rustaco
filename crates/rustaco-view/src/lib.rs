@@ -801,6 +801,73 @@ impl View {
             .collect()
     }
 
+    /// Bands across the text area for whole-line decorations (kinds `whole_line` accepts) on
+    /// the visible lines: one band per shown line the decoration touches.
+    pub fn line_bands(&self, model: &TextModel, whole_line: impl Fn(u32) -> bool) -> Vec<(Rect, u32)> {
+        let gutter = self.gutter_width(model.rope());
+        self.decorated_lines(model, whole_line)
+            .into_iter()
+            .map(|(line, kind)| {
+                let r =
+                    Rect { x: gutter, y: self.y_of(line), width: self.width - gutter, height: self.line_height(line) };
+                (r, kind)
+            })
+            .collect()
+    }
+
+    /// Marks for the gutter: for each visible shown line a decoration (of a kind `accept`
+    /// takes) touches, the line's y and height with the kind.
+    pub fn gutter_marks(&self, model: &TextModel, accept: impl Fn(u32) -> bool) -> Vec<(f32, f32, u32)> {
+        self.decorated_lines(model, accept)
+            .into_iter()
+            .map(|(line, kind)| (self.y_of(line), self.line_height(line), kind))
+            .collect()
+    }
+
+    /// Visible shown lines touched by decorations of accepted kinds, once per (line, kind).
+    fn decorated_lines(&self, model: &TextModel, accept: impl Fn(u32) -> bool) -> Vec<(usize, u32)> {
+        let rope = model.rope();
+        let visible = self.visible_lines(rope);
+        let range = rope.line_to_char(visible.start)..rope.line_to_char(visible.end.min(rope.len_lines()));
+        let mut out = Vec::new();
+        for d in model.decorations.in_range(range).into_iter().filter(|d| accept(d.kind)) {
+            let first = rope.char_to_line(d.range.start).max(visible.start);
+            // A range ending at a line start does not touch that line.
+            let end_pos = if d.range.end > d.range.start { d.range.end - 1 } else { d.range.end };
+            let last = rope.char_to_line(end_pos.min(rope.len_chars())).min(visible.end - 1);
+            for line in self.shown(first..last + 1) {
+                out.push((line, d.kind));
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
+    /// Marks for the overview ruler, a strip `track` pixels tall standing for the whole
+    /// document: for every decoration of an accepted kind, its top and height on the strip
+    /// (at least 2 px) with its kind. Folded lines map to their fold's header.
+    pub fn overview_marks(&self, model: &TextModel, track: f32, accept: impl Fn(u32) -> bool) -> Vec<(f32, f32, u32)> {
+        let rope = model.rope();
+        let total = (self.content_height(rope) - self.height as f64 + self.metrics.line_height as f64).max(1.0);
+        let scale = track as f64 / total;
+        let len = rope.len_chars();
+        let mut out: Vec<(f32, f32, u32)> = model
+            .decorations
+            .iter()
+            .filter(|d| accept(d.kind))
+            .map(|d| {
+                let a = self.prev_shown(rope.char_to_line(d.range.start.min(len)));
+                let b = self.prev_shown(rope.char_to_line(d.range.end.min(len)));
+                let top = self.line_top(a) * scale;
+                let bottom = (self.line_top(b) + self.line_height(b) as f64) * scale;
+                (top as f32, ((bottom - top) as f32).max(2.0), d.kind)
+            })
+            .collect();
+        out.sort_by(|x, y| x.0.total_cmp(&y.0));
+        out
+    }
+
     /// Indentation guides for the visible lines: one vertical segment per indentation level
     /// and run of lines. A blank line takes the smaller level of the nearest non-blank lines
     /// around it, so guides continue through blank lines inside a block but not past its end.

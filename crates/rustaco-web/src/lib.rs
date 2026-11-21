@@ -45,6 +45,58 @@ struct Chrome {
 /// Decoration kind of find matches.
 const FIND_MATCH: u32 = 1;
 
+/// Decoration kinds from here on are types defined through [`define_decoration_type`].
+const FIRST_DECORATION_TYPE: u32 = 100;
+
+/// How a decoration type draws.
+#[derive(Clone, Default)]
+struct DecorationType {
+    /// Fill behind the text (or the whole line).
+    background: Option<String>,
+    /// 0 none, 1 solid line, 2 wavy line (diagnostics), 3 dotted.
+    underline: u8,
+    underline_color: String,
+    /// Covers whole lines instead of the range's chars.
+    whole_line: bool,
+    /// Bar in the gutter beside the line numbers.
+    gutter: Option<String>,
+    /// Mark in the overview ruler on the scrollbar.
+    overview: Option<String>,
+}
+
+/// Defines how decorations of a new kind draw and returns the kind. Empty strings leave a
+/// part out. `underline` is `"solid"`, `"wavy"`, `"dotted"` or empty. Types are shared by
+/// every editor.
+#[wasm_bindgen(js_name = defineDecorationType)]
+pub fn define_decoration_type(
+    background: &str,
+    underline: &str,
+    underline_color: &str,
+    whole_line: bool,
+    gutter: &str,
+    overview: &str,
+) -> u32 {
+    let some = |s: &str| (!s.is_empty()).then(|| s.to_owned());
+    let t = DecorationType {
+        background: some(background),
+        underline: match underline {
+            "solid" => 1,
+            "wavy" => 2,
+            "dotted" => 3,
+            _ => 0,
+        },
+        underline_color: underline_color.to_owned(),
+        whole_line,
+        gutter: some(gutter),
+        overview: some(overview),
+    };
+    DECORATION_TYPES.with(|types| {
+        let mut types = types.borrow_mut();
+        types.push(t);
+        FIRST_DECORATION_TYPE + types.len() as u32 - 1
+    })
+}
+
 fn css(rgba: u32) -> String {
     format!("#{rgba:08x}")
 }
@@ -98,6 +150,7 @@ thread_local! {
     /// by all editors, like the surface colours.
     static STYLES: RefCell<Vec<CssStyle>> = RefCell::new(css_styles(&themes::dark()));
     static CHROME: RefCell<Chrome> = RefCell::new(Chrome::from(&Colors::DARK));
+    static DECORATION_TYPES: RefCell<Vec<DecorationType>> = const { RefCell::new(Vec::new()) };
 }
 
 #[derive(Clone)]
@@ -203,6 +256,21 @@ impl Model {
     #[wasm_bindgen(constructor)]
     pub fn new(text: &str) -> Model {
         Model { inner: Rc::new(RefCell::new(TextModel::new(text))) }
+    }
+
+    /// Replaces the decorations of `owner` (an id the caller picks, at or above 2^20 so it
+    /// stays clear of editors' own) with triples of start, end (char offsets) and kind from
+    /// [`define_decoration_type`]. Every editor showing the model draws them; they move with
+    /// edits.
+    #[wasm_bindgen(js_name = setDecorations)]
+    pub fn set_decorations(&self, owner: u32, triples: &[u32]) {
+        let mut model = self.inner.borrow_mut();
+        let len = model.len_chars();
+        let items = triples.chunks_exact(3).map(|t| {
+            let end = (t[1] as usize).min(len);
+            ((t[0] as usize).min(end)..end, t[2])
+        });
+        model.decorations.set_each(owner, Stickiness::NeverGrows, items);
     }
 
     #[wasm_bindgen(js_name = getValue)]
@@ -979,6 +1047,15 @@ impl Editor {
         if let Some(band) = &frame.current_line {
             fill(&chrome.current_line, band);
         }
+        let types: Vec<DecorationType> = DECORATION_TYPES.with(|t| t.borrow().clone());
+        let type_of = |kind: u32| kind.checked_sub(FIRST_DECORATION_TYPE).and_then(|i| types.get(i as usize));
+        for (r, kind) in
+            self.view.line_bands(&model, |k| type_of(k).is_some_and(|t| t.whole_line && t.background.is_some()))
+        {
+            if let Some(bg) = type_of(kind).and_then(|t| t.background.as_ref()) {
+                fill(bg, &r);
+            }
+        }
 
         ctx.save();
         ctx.begin_path();
@@ -1000,9 +1077,12 @@ impl Editor {
         for x in self.view.ruler_positions(&model, &self.options.rulers) {
             ctx.fill_rect(snap(x), 0.0, one_pixel, h);
         }
-        for (r, kind) in self.view.decoration_rects(&model) {
-            if kind == FIND_MATCH {
-                fill(&chrome.find_match, &r);
+        let decorations = self.view.decoration_rects(&model);
+        for (r, kind) in &decorations {
+            if *kind == FIND_MATCH {
+                fill(&chrome.find_match, r);
+            } else if let Some(bg) = type_of(*kind).filter(|t| !t.whole_line).and_then(|t| t.background.as_ref()) {
+                fill(bg, r);
             }
         }
         if self.options.occurrences {
@@ -1079,6 +1159,10 @@ impl Editor {
                 ctx.fill_text(mark, x as f64, y as f64 + lh / 2.0)?;
             }
         }
+        for (r, kind) in &decorations {
+            let Some(t) = type_of(*kind).filter(|t| t.underline != 0 && !t.whole_line) else { continue };
+            draw_underline(ctx, r, t.underline, &t.underline_color);
+        }
         if let Some((open, close)) = bracket_pair {
             ctx.set_stroke_style_str(&chrome.bracket_match);
             ctx.set_line_width(1.0);
@@ -1097,6 +1181,12 @@ impl Editor {
 
         ctx.set_fill_style_str(&chrome.gutter);
         ctx.fill_rect(0.0, 0.0, gutter, h);
+        for (y, height, kind) in self.view.gutter_marks(&model, |k| type_of(k).is_some_and(|t| t.gutter.is_some())) {
+            if let Some(color) = type_of(kind).and_then(|t| t.gutter.as_ref()) {
+                ctx.set_fill_style_str(color);
+                ctx.fill_rect(2.0, y as f64, 3.0, height as f64);
+            }
+        }
         ctx.set_text_align("right");
         let rope = model.rope();
         let primary_line = rope.char_to_line(selections.primary().head);
@@ -1126,6 +1216,20 @@ impl Editor {
         }
 
         let content = self.view.content_height(rope);
+        let marks = self
+            .view
+            .overview_marks(&model, h as f32, |k| k == FIND_MATCH || type_of(k).is_some_and(|t| t.overview.is_some()));
+        for (y, height, kind) in marks {
+            let color = if kind == FIND_MATCH {
+                Some(&chrome.find_match)
+            } else {
+                type_of(kind).and_then(|t| t.overview.as_ref())
+            };
+            if let Some(color) = color {
+                ctx.set_fill_style_str(color);
+                ctx.fill_rect(w - 10.0, y as f64, 10.0, height as f64);
+            }
+        }
         if content > h {
             let thumb = (h * h / content).max(20.0);
             let top = self.view.scroll_top() / (content - h) * (h - thumb);
@@ -1145,6 +1249,38 @@ impl Editor {
             self.caret = *c;
         }
         Ok(())
+    }
+}
+
+/// Draws an underline along the bottom of `r`: 1 solid, 2 wavy, 3 dotted.
+fn draw_underline(ctx: &CanvasRenderingContext2d, r: &Rect, style: u8, color: &str) {
+    let (x0, x1) = (r.x as f64, (r.x + r.width) as f64);
+    let y = (r.y + r.height) as f64 - 2.0;
+    ctx.set_stroke_style_str(color);
+    ctx.set_fill_style_str(color);
+    ctx.set_line_width(1.0);
+    match style {
+        2 => {
+            // A zigzag with a 4 px period, the usual squiggle under diagnostics.
+            ctx.begin_path();
+            ctx.move_to(x0, y);
+            let mut x = x0;
+            let mut up = true;
+            while x < x1 {
+                x = (x + 2.0).min(x1);
+                ctx.line_to(x, if up { y - 2.0 } else { y });
+                up = !up;
+            }
+            ctx.stroke();
+        }
+        3 => {
+            let mut x = x0;
+            while x < x1 {
+                ctx.fill_rect(x, y - 0.5, 1.0, 1.0);
+                x += 3.0;
+            }
+        }
+        _ => ctx.fill_rect(x0, y - 0.5, x1 - x0, 1.0),
     }
 }
 
