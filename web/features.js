@@ -25,15 +25,40 @@ async function ask(kind, model, method, ...args) {
 /** A range from a provider result: `{ start, end }` itself or a `{ range }` wrapper. */
 const rangeOf = (r) => (r && 'range' in r ? r.range : r);
 
-/** Text with blank lines between paragraphs and ``` fences as code blocks, as DOM. */
+/**
+ * The markdown hover and completion documentation use, as DOM: ``` fences as code blocks,
+ * and in text `code`, **bold** and *italic*. Other markdown shows as written.
+ */
 function renderMarkdown(parent, text, monoFont) {
   const parts = String(text).split(/```[a-zA-Z]*\n?/);
   parts.forEach((part, i) => {
     if (!part) return;
-    const el = document.createElement(i % 2 ? 'pre' : 'div');
-    el.textContent = part.replace(/\n$/, '');
-    el.style.cssText = i % 2 ? `margin:4px 0;font:12px ${monoFont}` : 'white-space:pre-wrap;margin:2px 0';
-    parent.append(el);
+    if (i % 2) {
+      const pre = document.createElement('pre');
+      pre.textContent = part.replace(/\n$/, '');
+      pre.style.cssText = `margin:4px 0;font:12px ${monoFont}`;
+      parent.append(pre);
+      return;
+    }
+    const div = document.createElement('div');
+    div.style.cssText = 'white-space:pre-wrap;margin:2px 0';
+    for (const piece of part.replace(/^\n+|\n+$/g, '').split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*\s][^*]*\*)/)) {
+      if (!piece) continue;
+      let el = null;
+      if (piece.startsWith('`')) {
+        el = document.createElement('code');
+        el.style.font = `12px ${monoFont}`;
+        el.textContent = piece.slice(1, -1);
+      } else if (piece.startsWith('**')) {
+        el = document.createElement('b');
+        el.textContent = piece.slice(2, -2);
+      } else if (piece.startsWith('*') && piece.length > 2) {
+        el = document.createElement('i');
+        el.textContent = piece.slice(1, -1);
+      }
+      div.append(el ?? piece);
+    }
+    parent.append(div);
   });
 }
 
@@ -186,13 +211,13 @@ export class Features {
   async goToDefinition(offset) {
     const result = await ask('definition', this.model, 'provideDefinition', offset);
     const first = Array.isArray(result) ? result[0] : result;
-    const range = rangeOf(first);
-    if (!range) return false;
-    if (first.model && first.model !== this.model) {
+    if (first && 'uri' in first && first.model !== this.model) {
       // Another document: the host opens it.
       this.editor.onOpenLocation?.(first);
       return true;
     }
+    const range = rangeOf(first);
+    if (!range) return false;
     this.editor.setSelections([{ anchor: range.start, head: range.end }]);
     this.editor.focus();
     return true;

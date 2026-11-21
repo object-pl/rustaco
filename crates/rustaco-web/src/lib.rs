@@ -433,7 +433,8 @@ impl Model {
     #[wasm_bindgen(js_name = editsSince)]
     pub fn edits_since(&self, version: f64) -> EditBatch {
         let model = self.inner.borrow();
-        let mut batch = EditBatch { numbers: Vec::new(), text: String::new(), stale: false };
+        let mut batch =
+            EditBatch { numbers: Vec::new(), text: String::new(), stale: false, utf16: Vec::new(), texts: Vec::new() };
         match model.events_since(version as u64) {
             Ok(events) => {
                 for ev in events {
@@ -452,6 +453,16 @@ impl Model {
                         .map(|n| n as u32),
                     );
                     batch.text.push_str(&ev.text);
+                    batch.utf16.extend(
+                        [
+                            ev.start_utf16.line,
+                            ev.start_utf16.character,
+                            ev.old_end_utf16.line,
+                            ev.old_end_utf16.character,
+                        ]
+                        .map(|n| n as u32),
+                    );
+                    batch.texts.push(ev.text.clone());
                 }
             }
             Err(_) => batch.stale = true,
@@ -487,6 +498,11 @@ pub struct EditBatch {
     numbers: Vec<u32>,
     text: String,
     stale: bool,
+    /// Per edit: start line and UTF-16 character, old end line and UTF-16 character, as
+    /// LSP's incremental `didChange` takes them.
+    utf16: Vec<u32>,
+    /// The inserted text of each edit.
+    texts: Vec<String>,
 }
 
 #[wasm_bindgen]
@@ -501,6 +517,17 @@ impl EditBatch {
 
     pub fn stale(&self) -> bool {
         self.stale
+    }
+
+    /// Four numbers per edit: start line, start UTF-16 character, old end line, old end
+    /// UTF-16 character; each relative to the text after the edits before it.
+    pub fn utf16(&self) -> Vec<u32> {
+        self.utf16.clone()
+    }
+
+    /// The inserted text of each edit.
+    pub fn texts(&self) -> Vec<String> {
+        self.texts.clone()
     }
 }
 

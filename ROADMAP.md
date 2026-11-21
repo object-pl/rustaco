@@ -2,7 +2,13 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Done: phases 0 to 8 (all 2026-11-21). Next: phase 9.
+Done: phases 0 to 9 (all 2026-11-21). Next: phase 10.
+
+Phase 9 summary:
+- `rustaco-lsp`: JSON-RPC with LSP framing over any byte streams (a server's stdio on the desktop), the initialize handshake with the position encoding negotiated (UTF-8 when the server offers it, UTF-16 otherwise), incremental `didChange` from the model's edit events, and every phase 8 request mapped to char offsets. Locations and edits in other documents keep their LSP coordinates for the host.
+- `web/lsp.js`: the same client for the browser over a WebSocket (or any transport with `send` and `onMessage`). It registers the editor's providers for the server's capabilities, shows diagnostics as squiggles with their messages in the hover, layers semantic tokens over tree-sitter highlights, and hands `workspace/applyEdit` for documents it does not hold to the host (`onApplyEdit`).
+- Hover and completion documentation render code blocks and inline `code`, bold and italic; code blocks are not highlighted yet.
+- Check: rust-analyzer answers every request through the probe example (`cargo run -p rustaco-lsp --example probe -- rust-analyzer <file> <line:column>`), negotiating UTF-8. In the browser a test server behind a WebSocket (`tests/e2e/lsp-server.mjs`) drives sync, diagnostics, hover, completion, definition and rename in three browsers. Not checked: typescript-language-server and pyright (not installed on the development machine), and a real-world server over WebSocket, which needs a stdio-to-WebSocket bridge the project does not ship.
 
 Phase 8 summary:
 - Providers are registered from JS per language id with Monaco's function names (`web/languages.js`): completion, hover, signature help, definition, references, rename, formatting, code actions, document highlights, folding and selection ranges, document symbols, code lens, semantic tokens, inlay hints.

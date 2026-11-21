@@ -10,6 +10,10 @@
     ".": {
       "types": "./rustaco.d.ts",
       "default": "./rustaco.js"
+    },
+    "./lsp": {
+      "types": "./lsp.d.ts",
+      "default": "./lsp.js"
     }
   },
   "files": [
@@ -18,7 +22,9 @@
     "languages.js",
     "suggest.js",
     "features.js",
+    "lsp.js",
     "rustaco.d.ts",
+    "lsp.d.ts",
     "pkg/**/*.js",
     "pkg/**/*.wasm",
     "pkg/THIRD_PARTY.md",
