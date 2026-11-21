@@ -413,11 +413,11 @@ test('the textarea mirrors the caret line for screen readers', async ({ page }) 
   await open(page, 'first line\nsecond line');
   await setCursor(page, 14);
   await page.keyboard.press('Shift+ArrowRight');
-  const mirror = await page.evaluate(() => {
+  // The mirror follows a moment after the caret moves.
+  await expect.poll(() => page.evaluate(() => {
     const t = document.querySelector('textarea');
     return [t.value, t.selectionStart, t.selectionEnd, t.getAttribute('aria-label')];
-  });
-  expect(mirror).toEqual(['second line', 3, 4, 'Editor content']);
+  })).toEqual(['second line', 3, 4, 'Editor content']);
   // beforeinput from a virtual keyboard deletes through the editor.
   await page.evaluate(() => document.querySelector('textarea').dispatchEvent(
     new InputEvent('beforeinput', { inputType: 'deleteContentBackward', cancelable: true, bubbles: true })));

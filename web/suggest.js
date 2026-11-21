@@ -14,9 +14,11 @@ const KIND_ICON = {
 };
 
 const VISIBLE_ROWS = 12;
+/** Rows built for the list at most. */
+const MAX_ROWS = 200;
 const ROW_HEIGHT = 22;
-/** Words collected for word completion: from this many lines around the caret. */
-const WORD_LINES = 5000;
+/** Words collected for word completion: from this many lines on each side of the caret. */
+const WORD_LINES = 2000;
 
 const isWordChar = (c) => /[\p{L}\p{N}_]/u.test(c);
 
@@ -129,7 +131,8 @@ export class SuggestController {
 
   #render() {
     const [, foreground, , , match] = this.colors();
-    this.list.replaceChildren(...this.filtered.map(({ item, matches }, i) => {
+    // The best matches only: building thousands of rows would cost more than the typing.
+    this.list.replaceChildren(...this.filtered.slice(0, MAX_ROWS).map(({ item, matches }, i) => {
       const row = document.createElement('div');
       row.dataset.index = String(i);
       row.setAttribute('role', 'option');
@@ -176,7 +179,7 @@ export class SuggestController {
   }
 
   move(delta) {
-    const n = this.filtered.length;
+    const n = Math.min(this.filtered.length, MAX_ROWS);
     this.selected = Math.max(0, Math.min(n - 1, this.selected + delta));
     this.#highlight();
   }
@@ -250,13 +253,23 @@ function normalize(item, wordStart, head) {
 /** Words of the text around the caret, for languages without a completion provider. */
 function wordItems(model, wordStart, head) {
   const [line] = model.core.positionAt(head);
-  const from = model.core.offsetAt(Math.max(0, line - WORD_LINES), 0);
-  const to = model.core.offsetAt(line + WORD_LINES, 1 << 30);
-  const text = model.getTextRange(from, to);
+  // The words change little between keystrokes; collecting them reads thousands of lines,
+  // so they are kept for a few seconds while the caret stays nearby.
+  const cached = wordCache.get(model);
+  let words;
+  if (cached && Math.abs(cached.line - line) < WORD_LINES / 4 && performance.now() - cached.at < 5000) {
+    words = cached.words;
+  } else {
+    const from = model.core.offsetAt(Math.max(0, line - WORD_LINES), 0);
+    const to = model.core.offsetAt(line + WORD_LINES, 1 << 30);
+    words = [...new Set(model.getTextRange(from, to).match(/[\p{L}_][\p{L}\p{N}_]*/gu) ?? [])].slice(0, 5000);
+    wordCache.set(model, { line, at: performance.now(), words });
+  }
   const current = model.getTextRange(wordStart, head);
-  const words = new Set(text.match(/[\p{L}_][\p{L}\p{N}_]*/gu) ?? []);
-  words.delete(current);
-  return [...words].slice(0, 5000).map((w) => ({
+  return words.filter((w) => w !== current).map((w) => ({
     label: w, kind: CompletionItemKind.Text, insertText: w, range: { start: wordStart, end: head },
   }));
 }
+
+/** Words collected per model: `{ line, at, words }`. */
+const wordCache = new WeakMap();

@@ -2,3 +2,6 @@
 **/*.rs.bk
 /web/pkg
 /.playwright-mcp
+/tests/bench-monaco/node_modules
+/tests/bench-monaco/rustaco
+/tests/bench-monaco/package*.json

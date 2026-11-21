@@ -35,4 +35,15 @@ Nearly all of the browser keystroke cost with the worker is drawing the frame on
 
 ## Against Monaco
 
-Not measured yet. A fair comparison runs both editors on the same files in the same browser with the same keystroke script (Monaco from its npm package, served locally), and reports keystroke-to-frame time, load time for a 10 MB file, and memory. The harness is the next piece of work for the release.
+Measured on a second machine (DESKTOP-MZ1, Windows) with `tests/bench-monaco/run.mjs`: Monaco 0.x from npm and Rustaco, each in its own page in the same headless Chromium 159, on the same synthetic Rust files, with the caret in the middle and 60 keystrokes 40 ms apart. Rustaco parses in its worker; Monaco tokenizes with its Monarch grammar on the main thread. Two runs:
+
+| File | Editor | Load (text in, two frames) | Main-thread work per keystroke |
+|---|---|---|---|
+| 5,000 lines (280 KB) | Rustaco | 34 to 65 ms | 9.5 to 10.5 ms |
+| | Monaco | 36 to 39 ms | 5.6 to 8.7 ms |
+| 100,000 lines (6 MB) | Rustaco | 103 to 136 ms | 9.8 to 13.6 ms |
+| | Monaco | 121 to 153 ms | 6.0 to 9.6 ms |
+
+"Main-thread work per keystroke" is Chromium's own task time (scripts, style, layout, painting, input handling) over the 60 keys with idle time subtracted, so it includes the browser's work around each key, not only the editor's. Scrolling takes one frame (16.5 ms at 60 Hz) in both.
+
+Rustaco loads as fast as Monaco and does not slow down with file size, but it spends about one and a half times Monaco's main-thread time per keystroke. A CPU profile (`tests/bench-monaco/profile.mjs`) puts the difference in the frame drawing (canvas `fillText`, about 1.5 ms per key, plus decoding the frame's text from WASM, about 1 ms, since a keystroke draws two or three frames: the edit, the worker's highlights, the caret), garbage collection (1.7 ms) and the word-based completion list opening on every word char (about 1.2 ms). Two fixes came out of this run: the screen reader mirror now updates after a 60 ms pause instead of on every key, and the word list for completion is cached for a few seconds. The next ones would be drawing once per keystroke instead of again when highlights arrive, and passing frame text to JS without a string copy.

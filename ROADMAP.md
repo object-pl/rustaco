@@ -7,7 +7,7 @@ Done: phases 0 to 11 (all 2026-11-21). Phase 12 in progress.
 Phase 12 so far:
 - Done: guides for embedding in a web page and in a native application and for adding a language (`docs/`); a performance report from the repository's benchmarks (`docs/performance.md`); an API review with what to settle before 1.0 (`docs/api-review.md`); provider text is never parsed as HTML (tested), pastes above `maxPasteLength` are refused.
 - Waiting for decisions: the 1.0 version and API freeze, the repository URL for the manifests, and publishing to crates.io and npm, which are not reversible. The browser packs depend on a patched `tree-sitter-language` that crates.io cannot carry.
-- Not done: the comparison with Monaco on the same files (`docs/performance.md`, last section).
+- Done: the comparison with Monaco on the same files (`docs/performance.md`, last section, harness in `tests/bench-monaco/`): Rustaco loads as fast and scales the same, but spends about 1.5 times Monaco's main-thread time per keystroke; the causes are listed there.
 
 Phase 11 summary:
 - `rustaco-desktop`: a `DesktopEditor` that takes winit's keys, text, IME and mouse events, runs the same keymap and commands as the browser, highlights on a background thread (`BackgroundSyntax`, all grammars compiled in), and draws the view's `Frame` into a pixel buffer. Glyphs come from a system monospace font (`fontdb` finds Cascadia, Consolas, SF Mono, Menlo, DejaVu Sans Mono, ...; `fontdue` rasterizes) and are cached; clipboard through `arboard`.

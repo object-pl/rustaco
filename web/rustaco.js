@@ -918,7 +918,7 @@ export class RustacoEditor {
   setSelections(selections) {
     this.core.set_selections(Uint32Array.from(selections.flatMap((s) => [s.anchor, s.head])));
     this.features.caretMoved();
-    this.#mirror();
+    this.#mirrorSoon();
     this.schedule();
   }
 
@@ -964,6 +964,8 @@ export class RustacoEditor {
           core.mouse_up();
         }
         this.#changed();
+        // The browser's menu acts on the textarea's selection: mirror it now, not later.
+        this.#mirror();
         this.#coverInput([x, y]);
         input.focus();
         return;
@@ -1205,7 +1207,7 @@ export class RustacoEditor {
   #changed() {
     if (this.focused) this.#restartBlink();
     this.model.changed();
-    this.#mirror();
+    this.#mirrorSoon();
     this.features?.caretMoved();
   }
 
@@ -1263,6 +1265,15 @@ export class RustacoEditor {
    * Puts the caret's line and selection into the hidden textarea, the way VS Code does, so a
    * screen reader reads the line the caret moves to and the selected text.
    */
+  /**
+   * Mirrors once typing pauses for a moment: writing the textarea and its selection costs
+   * about a millisecond per keystroke, and screen readers announce after the pause anyway.
+   */
+  #mirrorSoon() {
+    clearTimeout(this.mirrorTimer);
+    this.mirrorTimer = setTimeout(() => this.#mirror(), 60);
+  }
+
   #mirror() {
     if (this.composing) return;
     const [text, start, end] = this.core.accessibleLine();

@@ -1,0 +1,28 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>html, body { margin: 0; height: 100%; } #root { position: absolute; inset: 0; }</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="module">
+    import { createEditor, createModel } from './rustaco/rustaco.js';
+    const editor = await createEditor(document.getElementById('root'), { value: '', language: 'rust', fontSize: 14 });
+    window.bench = {
+      name: 'rustaco',
+      async load(text) {
+        const t = performance.now();
+        editor.setValue(text);
+        await editor.getModel().setLanguage('rust');
+        await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+        return performance.now() - t;
+      },
+      setCaret(offset) { editor.setSelections([{ anchor: offset, head: offset }]); editor.focus(); },
+      value() { return editor.getValue(); },
+      scrollBy(dy) { editor.setScrollTop(editor.getScrollTop() + dy); },
+    };
+    window.benchReady = true;
+  </script>
+</body>
+</html>

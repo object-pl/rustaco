@@ -21,11 +21,10 @@ test('works inside Shadow DOM', async ({ page }) => {
   await page.keyboard.type('!');
   expect(await page.evaluate(() => window.editor.getValue())).toBe('one two one!\n');
   // The textarea inside the shadow root mirrors the line for screen readers.
-  const mirror = await page.evaluate(() => {
+  await expect.poll(() => page.evaluate(() => {
     const t = document.getElementById('host').shadowRoot.querySelector('textarea');
     return [t.value, t.selectionStart];
-  });
-  expect(mirror).toEqual(['one two one!', 12]);
+  })).toEqual(['one two one!', 12]);
   await page.keyboard.press('Control+f');
   await page.keyboard.type('one');
   await expect(page.locator('#host [data-count]')).toHaveText(/of 2/);
