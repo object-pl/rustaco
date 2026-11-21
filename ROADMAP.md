@@ -2,7 +2,12 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Done: phase 0, phase 1 and phase 2 (all 2026-11-21). Next: phase 3.
+Done: phase 0, phase 1 and phase 2 (all 2026-11-21). In progress: phase 3.
+
+Phase 3 status (2026-11-21):
+- Done: decorations that follow edits; command registry with VS Code ids; keymaps as data (when clauses, chords, macOS variants, user overrides, default and JetBrains presets, AltGr-safe); grapheme-cluster movement; line operations (move, copy, delete, insert above and below); indent and outdent; line and block comment toggling from the language catalog; auto-closing and surrounding pairs; Ctrl+D and select all occurrences; column selection (Shift+Alt+drag); cursor undo (Ctrl+U); case changes; trim trailing whitespace; find and replace with regex, case and whole-word options, capture groups, replace all as one undo step.
+- Open: expand and shrink selection along the syntax tree, indentation on Enter from indent queries, skipping auto-closing inside strings and comments (these three need syntax data from the language modules), search over the rope without copying it to a string, the Monaco keybinding checklist.
+- Deviation: regex search uses `regex-lite` instead of `regex-cursor` to keep the editor module small (175 KB gzipped); Unicode classes such as `\p{L}` are not supported.
 
 Phase 2 summary:
 - tree-sitter and its C grammars build for `wasm32-unknown-unknown` (several grammars needed a patched `tree-sitter-language`, see vendor/README.md); one language module per pack, loaded on demand; incremental and time-sliced parsing; highlighting of visible lines; language injections.

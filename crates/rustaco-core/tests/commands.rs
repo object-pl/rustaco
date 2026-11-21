@@ -166,6 +166,24 @@ fn case_and_trailing_whitespace() {
 }
 
 #[test]
+fn cursor_undo_steps_back_through_selections() {
+    let mut d = doc("foo bar foo", &[(1, 1)]);
+    d.add_next_occurrence();
+    d.add_next_occurrence();
+    assert_eq!(d.selections().len(), 2);
+    assert!(d.cursor_undo());
+    assert_eq!(sels(&d), [(0, 3)]);
+    assert!(d.cursor_undo());
+    assert_eq!(sels(&d), [(1, 1)]);
+    assert!(d.cursor_undo(), "placing the cursor at 1 was a cursor change too");
+    assert_eq!(sels(&d), [(0, 0)]);
+    assert!(!d.cursor_undo());
+    d.add_next_occurrence();
+    d.insert("x");
+    assert!(!d.cursor_undo(), "an edit clears cursor history");
+}
+
+#[test]
 fn every_bound_command_runs() {
     use rustaco_core::{Platform, default_keymap, jetbrains_keymap};
     // Page movement needs the view's height; frontends run these.

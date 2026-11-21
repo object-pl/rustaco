@@ -142,6 +142,7 @@ impl Document {
         select_all_occurrences();
         transform_case(upper: bool);
         trim_trailing_whitespace();
+        cursor_undo() -> bool;
     }
 
     pub fn set_language_editing(&mut self, editing: crate::model::LanguageEditing) {

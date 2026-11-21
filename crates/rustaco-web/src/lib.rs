@@ -323,6 +323,8 @@ struct Drag {
     unit: DragUnit,
     /// Alt-drag edits only the newly added selection.
     add: bool,
+    /// Shift+Alt-drag selects a rectangle: the anchor's line and visual column.
+    column: Option<(usize, f32)>,
 }
 
 #[wasm_bindgen]
@@ -684,21 +686,27 @@ impl Editor {
             let pos = self.view.hit_test(model.rope(), x as f32, y as f32);
             (pos, unit_range(model.rope(), unit, pos))
         };
+        if shift && alt && clicks <= 1 {
+            let anchor = self.view.line_and_cells_at(self.model.borrow().rope(), x as f32, y as f32);
+            self.drag = Some(Drag { start: pos, end: pos, unit, add: false, column: Some(anchor) });
+            self.edit(|ed| ed.set_selections(Selections::single(Selection::cursor(pos))));
+            return;
+        }
         self.drag = Some(self.edit(|ed| {
             let sels = ed.selections();
             if shift && clicks <= 1 {
                 let anchor = sels.primary().anchor;
                 ed.set_selections(Selections::single(Selection::new(anchor, pos)));
-                Drag { start: anchor, end: anchor, unit, add: false }
+                Drag { start: anchor, end: anchor, unit, add: false, column: None }
             } else if alt {
                 let mut ranges = sels.as_slice().to_vec();
                 ranges.push(Selection::new(start, end));
                 let primary = ranges.len() - 1;
                 ed.set_selections(Selections::new(ranges, primary));
-                Drag { start, end, unit, add: true }
+                Drag { start, end, unit, add: true, column: None }
             } else {
                 ed.set_selections(Selections::single(Selection::new(start, end)));
-                Drag { start, end, unit, add: false }
+                Drag { start, end, unit, add: false, column: None }
             }
         }));
     }
@@ -706,6 +714,32 @@ impl Editor {
     /// Extends the selection while a button is held. Returns false when no drag is active.
     pub fn mouse_move(&mut self, x: f64, y: f64) -> bool {
         let Some(drag) = self.drag else { return false };
+        if let Some((anchor_line, anchor_cells)) = drag.column {
+            let selections = {
+                let model = self.model.borrow();
+                let rope = model.rope();
+                let (head_line, head_cells) = self.view.line_and_cells_at(rope, x as f32, y as f32);
+                let lines: Vec<usize> = if head_line >= anchor_line {
+                    (anchor_line..=head_line).collect()
+                } else {
+                    (head_line..=anchor_line).rev().collect()
+                };
+                let ranges: Vec<Selection> = lines
+                    .iter()
+                    .map(|&l| {
+                        Selection::new(
+                            self.view.offset_at_cells(rope, l, anchor_cells),
+                            self.view.offset_at_cells(rope, l, head_cells),
+                        )
+                    })
+                    .collect();
+                let primary = ranges.len() - 1;
+                Selections::new(ranges, primary)
+            };
+            self.edit(|ed| ed.set_selections(selections));
+            self.reveal_primary();
+            return true;
+        }
         let (start, end) = {
             let model = self.model.borrow();
             let pos = self.view.hit_test(model.rope(), x as f32, y as f32);

@@ -191,8 +191,21 @@ impl View {
 
     /// Char offset nearest to a point in viewport coordinates.
     pub fn hit_test(&self, rope: &Rope, x: f32, y: f32) -> usize {
+        let (line, cells) = self.line_and_cells_at(rope, x, y);
+        rope.line_to_char(line) + column_at_cells(rope, line, cells, self.tab_size)
+    }
+
+    /// The line and visual column (fractional cells, may lie past the line's end) at a point
+    /// in viewport coordinates. Column selection uses cells, so it stays rectangular across
+    /// lines with tabs.
+    pub fn line_and_cells_at(&self, rope: &Rope, x: f32, y: f32) -> (usize, f32) {
         let line = self.line_at_y(rope, y + self.scroll_top);
-        let cells = (x - self.gutter_width(rope) + self.scroll_left) / self.metrics.char_width;
+        let cells = ((x - self.gutter_width(rope) + self.scroll_left) / self.metrics.char_width).max(0.0);
+        (line, cells)
+    }
+
+    /// Char offset of the column nearest to `cells` on `line`.
+    pub fn offset_at_cells(&self, rope: &Rope, line: usize, cells: f32) -> usize {
         rope.line_to_char(line) + column_at_cells(rope, line, cells, self.tab_size)
     }
 

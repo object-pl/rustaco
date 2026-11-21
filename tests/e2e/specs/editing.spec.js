@@ -206,3 +206,29 @@ test('find highlights matches, F3 moves between them, replace works with regex g
   expect(await page.evaluate(() => { window.editor.find('let'); return window.editor.selectAllMatches(); })).toBe(2);
   expect((await selections(page)).length).toBe(2);
 });
+
+test('shift+alt drag selects a column, ctrl+u undoes cursor changes', async ({ page }) => {
+  await open(page, 'abcdef\nab\nabcdef');
+  const box = await page.locator('canvas').boundingBox();
+  const from = await caretPoint(page, 1);
+  const to = await caretPoint(page, 14); // third line, column 4
+  await page.keyboard.down('Shift');
+  await page.keyboard.down('Alt');
+  await page.mouse.move(box.x + from.x, box.y + from.y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + to.x, box.y + to.y, { steps: 5 });
+  await page.mouse.up();
+  await page.keyboard.up('Alt');
+  await page.keyboard.up('Shift');
+  const sels = await selections(page);
+  expect(sels.length).toBe(3);
+  expect(sels[0]).toEqual({ anchor: 11, head: 14 }, 'the primary selection is on the head line');
+  expect(sels).toContainEqual({ anchor: 8, head: 9 }, 'the short line is clipped at its end');
+  await page.keyboard.type('X');
+  expect(await value(page)).toBe('aXef\naX\naXef');
+
+  await setCursor(page, 0);
+  await page.keyboard.press(`${mod}+d`);
+  await page.keyboard.press(`${mod}+u`);
+  expect(await selections(page)).toEqual([{ anchor: 0, head: 0 }]);
+});

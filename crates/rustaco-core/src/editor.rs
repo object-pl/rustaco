@@ -19,11 +19,21 @@ pub struct Cursors {
     id: EditorId,
     pub(crate) selections: Selections,
     synced: u64,
+    /// Earlier selections, for cursor undo (Ctrl+U); valid only until the text changes.
+    cursor_history: Vec<Selections>,
 }
+
+/// Cursor states kept for cursor undo.
+const CURSOR_HISTORY: usize = 50;
 
 impl Cursors {
     pub fn new(id: EditorId, model: &TextModel) -> Self {
-        Self { id, selections: Selections::single(Selection::cursor(0)), synced: model.version() }
+        Self {
+            id,
+            selections: Selections::single(Selection::cursor(0)),
+            synced: model.version(),
+            cursor_history: Vec::new(),
+        }
     }
 
     pub fn id(&self) -> EditorId {
@@ -73,8 +83,34 @@ impl<'a> Editor<'a> {
     }
 
     pub fn set_selections(&mut self, selections: Selections) {
-        self.cursors.selections = snap_selections(&self.model.rope, &selections);
+        let next = snap_selections(&self.model.rope, &selections);
+        self.record_cursor_state(&next);
+        self.cursors.selections = next;
         self.model.history.break_group();
+    }
+
+    /// Remembers the current selections before a cursor change, for [`Editor::cursor_undo`].
+    fn record_cursor_state(&mut self, next: &Selections) {
+        if *next != self.cursors.selections {
+            let h = &mut self.cursors.cursor_history;
+            h.push(self.cursors.selections.clone());
+            if h.len() > CURSOR_HISTORY {
+                h.remove(0);
+            }
+        }
+    }
+
+    /// Ctrl+U: goes back to the selections before the last cursor change. Text edits clear
+    /// the history, since older positions would point into changed text.
+    pub fn cursor_undo(&mut self) -> bool {
+        match self.cursors.cursor_history.pop() {
+            Some(prev) => {
+                self.cursors.selections = snap_selections(&self.model.rope, &prev);
+                self.model.history.break_group();
+                true
+            }
+            None => false,
+        }
     }
 
     // ---- core plumbing ----
@@ -85,6 +121,7 @@ impl<'a> Editor<'a> {
             return;
         }
         let before = self.cursors.selections.clone();
+        self.cursors.cursor_history.clear();
         let inverse = self.model.apply(&changes);
         self.cursors.selections = snap_selections(&self.model.rope, &after);
         self.cursors.synced = self.model.version();
@@ -130,12 +167,17 @@ impl<'a> Editor<'a> {
     }
 
     fn move_each(&mut self, extend: bool, mut f: impl FnMut(&Rope, &Selection) -> (usize, Option<usize>)) {
-        self.cursors.selections = self.cursors.selections.map(|s| {
+        let moved = self.cursors.selections.map(|s| {
             let (head, goal_column) = f(&self.model.rope, s);
             let anchor = if extend { s.anchor } else { head };
             Selection { anchor, head, goal_column }
         });
-        self.cursors.selections = snap_selections(&self.model.rope, &self.cursors.selections);
+        let next = snap_selections(&self.model.rope, &moved);
+        // Plain caret movement is not worth undoing step by step; selections are.
+        if extend || self.cursors.selections.iter().any(|s| !s.is_empty()) {
+            self.record_cursor_state(&next);
+        }
+        self.cursors.selections = next;
         self.model.history.break_group();
     }
 

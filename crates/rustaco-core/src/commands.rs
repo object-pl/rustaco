@@ -700,6 +700,9 @@ impl Editor<'_> {
                 let primary = self.cursors.selections.primary();
                 self.set_selections(Selections::single(Selection::cursor(primary.head)));
             }
+            "cursorUndo" => {
+                self.cursor_undo();
+            }
             "editor.action.insertCursorAbove" => self.add_cursor_vertical(false),
             "editor.action.insertCursorBelow" => self.add_cursor_vertical(true),
             "editor.action.moveLinesUpAction" => self.move_lines(true),
