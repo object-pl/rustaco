@@ -1,0 +1,11 @@
+[package]
+name = "rustaco-view"
+description = "Renderer-agnostic layout for the Rustaco editor: viewport, visual columns, hit testing, display list"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rustaco-core.workspace = true
+unicode-width = "0.2"

@@ -1,0 +1,10 @@
+[package]
+name = "rustaco-core"
+description = "Text model for the Rustaco editor: rope buffer, multi-cursor selections, change sets, undo history"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ropey.workspace = true

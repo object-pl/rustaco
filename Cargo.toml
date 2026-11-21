@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.85"
+
+[workspace.dependencies]
+rustaco-core = { path = "crates/rustaco-core", version = "0.1.0" }
+rustaco-view = { path = "crates/rustaco-view", version = "0.1.0" }
+ropey = { version = "1.6", default-features = false, features = ["cr_lines", "simd"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"

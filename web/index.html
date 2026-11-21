@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Rustaco</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #1e1e1e; }
+    #editor { position: absolute; inset: 0; }
+  </style>
+</head>
+<body>
+  <div id="editor"></div>
+  <script type="module">
+    import { createEditor } from './rustaco.js';
+
+    const sample = `// Rustaco demo
+use std::collections::HashMap;
+
+fn main() {
+\tlet mut counts: HashMap<&str, usize> = HashMap::new();
+\tfor word in "the quick brown fox jumps over the lazy dog".split_whitespace() {
+\t\t*counts.entry(word).or_default() += 1;
+\t}
+\tprintln!("{counts:?} 😀 中文");
+}
+` + Array.from({ length: 5000 }, (_, i) => `// filler line ${i + 1}`).join('\n');
+
+    const editor = await createEditor(document.getElementById('editor'), { value: sample });
+    editor.focus();
+    window.editor = editor;
+  </script>
+</body>
+</html>
