@@ -45,10 +45,6 @@ impl Selection {
         let backward = if self.is_empty() { other.is_backward() } else { self.is_backward() };
         if backward { Selection::new(end, start) } else { Selection::new(start, end) }
     }
-
-    fn clamp(self, max: usize) -> Selection {
-        Selection { anchor: self.anchor.min(max), head: self.head.min(max), ..self }
-    }
 }
 
 /// A non-empty set of selections, sorted by position, never overlapping.
@@ -103,10 +99,6 @@ impl Selections {
     /// Applies `f` to every selection, keeping the primary index, and renormalizes.
     pub fn map(&self, f: impl FnMut(&Selection) -> Selection) -> Self {
         Self::new(self.ranges.iter().map(f).collect(), self.primary)
-    }
-
-    pub(crate) fn clamp(&self, max: usize) -> Self {
-        self.map(|s| s.clamp(max))
     }
 
     fn normalize(&mut self) {

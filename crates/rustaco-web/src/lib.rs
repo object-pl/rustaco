@@ -67,10 +67,8 @@ pub struct Editor {
 impl Editor {
     #[wasm_bindgen(constructor)]
     pub fn new(canvas: HtmlCanvasElement, text: &str, font_family: &str, font_size: f64) -> Result<Editor, JsValue> {
-        let ctx: CanvasRenderingContext2d = canvas
-            .get_context("2d")?
-            .ok_or_else(|| JsValue::from_str("canvas has no 2d context"))?
-            .dyn_into()?;
+        let ctx: CanvasRenderingContext2d =
+            canvas.get_context("2d")?.ok_or_else(|| JsValue::from_str("canvas has no 2d context"))?.dyn_into()?;
         let font = format!("{font_size}px {font_family}");
         ctx.set_font(&font);
         let sample = "M".repeat(64);
@@ -108,6 +106,26 @@ impl Editor {
         self.doc = Document::new(text);
         self.doc.options = options;
         self.view.scroll_to(self.doc.rope(), 0.0, 0.0);
+    }
+
+    /// Selections as a flat list of char offsets: anchor, head, anchor, head, ...
+    /// The primary selection comes first.
+    pub fn selections(&self) -> Vec<u32> {
+        let sels = self.doc.selections();
+        let primary = sels.primary_index();
+        let order = std::iter::once(primary).chain((0..sels.len()).filter(|&i| i != primary));
+        order.flat_map(|i| [sels.as_slice()[i].anchor as u32, sels.as_slice()[i].head as u32]).collect()
+    }
+
+    /// Replaces the selections; takes the same flat layout [`Editor::selections`] returns.
+    pub fn set_selections(&mut self, flat: &[u32]) {
+        let ranges: Vec<Selection> =
+            flat.chunks_exact(2).map(|p| Selection::new(p[0] as usize, p[1] as usize)).collect();
+        if ranges.is_empty() {
+            return;
+        }
+        self.doc.set_selections(Selections::new(ranges, 0));
+        self.reveal_primary();
     }
 
     /// Increases with every text change; the JS side uses it to fire change events.
@@ -246,8 +264,7 @@ impl Editor {
         let Some(drag) = self.drag else { return false };
         let pos = self.view.hit_test(self.doc.rope(), x as f32, y as f32);
         let (start, end) = unit_range(&self.doc, drag.unit, pos);
-        let sel =
-            if start < drag.start { Selection::new(drag.end, start) } else { Selection::new(drag.start, end) };
+        let sel = if start < drag.start { Selection::new(drag.end, start) } else { Selection::new(drag.start, end) };
         let sels = self.doc.selections();
         let next = if drag.add {
             let mut ranges = sels.as_slice().to_vec();

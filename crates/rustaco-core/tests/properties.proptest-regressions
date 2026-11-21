@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 81b2f807c1b6f831c8ad47a88f5b8d1b839fc0b4e115412431b7e364e379dd8f # shrinks to initial = "aaa", raw = [(59, 12, "a")]
+cc 787ab7e4e65edc4d472fcedfdd09f96032e353905a0da1f18c4d6b96ccf2808e # shrinks to initial = "aa\n\r\naaaaaaa", ops = [WordDelete, WordDelete, Insert("aaaaaaaaaaaaa\r\naaaaaaaaaaaaa"), WordLeft(false), Backspace, Cursors([(63, 0)]), Insert("")]
+cc 77b3ddc4fd1ae942575ba2a2a97c5cea669bca0ea5c1d354a9a98d2dc22142bb # shrinks to initial = "", ops = [Insert("a"), Undo]
+cc 5048cd46c5a247c164d466f606bd7850299b760569dacebb990af8d7fd9cd33d # shrinks to initial = "\n\n\raa\r\na", ops = [WordDelete, Down(false), Backspace, External([(64, 1, "\n")])]

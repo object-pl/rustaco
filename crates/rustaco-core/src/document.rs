@@ -2,7 +2,7 @@
 
 use ropey::Rope;
 
-use crate::change::{Assoc, ChangeSet, Edit, EditEvent};
+use crate::change::{Assoc, ChangeSet, Edit, EditEvent, inside_crlf};
 use crate::history::{EditKind, History, Transaction};
 use crate::position::{Position, char_to_position, line_end, line_len, position_to_char};
 use crate::selection::{Selection, Selections};
@@ -101,7 +101,7 @@ impl Document {
     }
 
     pub fn set_selections(&mut self, selections: Selections) {
-        self.selections = selections.clamp(self.rope.len_chars());
+        self.selections = snap_selections(&self.rope, &selections);
         self.history.break_group();
     }
 
@@ -125,7 +125,13 @@ impl Document {
 
     // ---- core plumbing ----
 
+    /// The only place the rope changes. Undo inverses can land inside a CRLF pair that a
+    /// deletion created, so every change set is snapped here, not only new edits.
     fn apply_raw(&mut self, changes: &ChangeSet) -> ChangeSet {
+        if changes.needs_crlf_snap(&self.rope) {
+            let snapped = changes.clone().snap_crlf(&self.rope);
+            return self.apply_raw(&snapped);
+        }
         self.events.extend(changes.describe(&self.rope));
         self.version += 1;
         changes.apply(&mut self.rope)
@@ -133,12 +139,12 @@ impl Document {
 
     fn commit(&mut self, changes: ChangeSet, after: Selections, kind: EditKind) {
         if changes.is_empty() {
-            self.selections = after;
+            self.selections = snap_selections(&self.rope, &after);
             return;
         }
         let before = self.selections.clone();
         let inverse = self.apply_raw(&changes);
-        self.selections = after.clamp(self.rope.len_chars());
+        self.selections = snap_selections(&self.rope, &after);
         let tx = Transaction { changes, inverse, before, after: self.selections.clone() };
         self.history.push(tx, kind);
     }
@@ -156,7 +162,7 @@ impl Document {
             edits.push(Edit::new(sel.start(), sel.end(), text));
         }
         let after = Selections::new(carets, self.selections.primary_index());
-        self.commit(ChangeSet::new(edits), after, kind);
+        self.commit(ChangeSet::new(edits).snap_crlf(&self.rope), after, kind);
     }
 
     /// Deletes the range `f` returns for each selection; carets collapse to the range start.
@@ -169,7 +175,7 @@ impl Document {
                 Edit::delete(start, end)
             })
             .collect();
-        let changes = ChangeSet::new(edits);
+        let changes = ChangeSet::new(edits).snap_crlf(&self.rope);
         let after = self.selections.map(|s| Selection::cursor(changes.map(s.start(), Assoc::Before)));
         self.commit(changes, after, kind);
     }
@@ -180,6 +186,7 @@ impl Document {
             let anchor = if extend { s.anchor } else { head };
             Selection { anchor, head, goal_column }
         });
+        self.selections = snap_selections(&self.rope, &self.selections);
         self.history.break_group();
     }
 
@@ -199,11 +206,8 @@ impl Document {
         self.replace_each(EditKind::Other, |rope, _, sel| {
             let line = rope.char_to_line(sel.start());
             let line_start = rope.line_to_char(line);
-            let indent: String = rope
-                .slice(line_start..sel.start())
-                .chars()
-                .take_while(|c| *c == ' ' || *c == '\t')
-                .collect();
+            let indent: String =
+                rope.slice(line_start..sel.start()).chars().take_while(|c| *c == ' ' || *c == '\t').collect();
             format!("{eol}{indent}")
         });
     }
@@ -253,7 +257,7 @@ impl Document {
     pub fn apply_edits(&mut self, edits: Vec<Edit>) {
         let len = self.rope.len_chars();
         let edits = edits.into_iter().map(|e| Edit::new(e.start.min(len), e.end.min(len), e.text)).collect();
-        let changes = ChangeSet::new(edits);
+        let changes = ChangeSet::new(edits).snap_crlf(&self.rope);
         let after = self.selections.map(|s| Selection {
             anchor: changes.map(s.anchor, Assoc::After),
             head: changes.map(s.head, Assoc::After),
@@ -380,7 +384,8 @@ impl Document {
     pub fn add_cursor_vertical(&mut self, below: bool) {
         let sels = self.selections.as_slice();
         let source = if below { sels[sels.len() - 1] } else { sels[0] };
-        let (head, goal_column) = vertical_target(&self.rope, &Selection::cursor(source.head), if below { 1 } else { -1 });
+        let (head, goal_column) =
+            vertical_target(&self.rope, &Selection::cursor(source.head), if below { 1 } else { -1 });
         let line = self.rope.char_to_line(source.head);
         let at_edge = if below { line + 1 >= self.rope.len_lines() } else { line == 0 };
         if at_edge {
@@ -415,23 +420,25 @@ impl Document {
     }
 }
 
+/// Clamps selections into the document and moves endpoints out of CRLF pairs.
+fn snap_selections(rope: &Rope, selections: &Selections) -> Selections {
+    let len = rope.len_chars();
+    let snap = |p: usize| {
+        let p = p.min(len);
+        if inside_crlf(rope, p) { p - 1 } else { p }
+    };
+    selections.map(|s| Selection { anchor: snap(s.anchor), head: snap(s.head), goal_column: s.goal_column })
+}
+
 /// Char offset one step left, treating `\r\n` as a single step.
 fn prev_boundary(rope: &Rope, pos: usize) -> usize {
-    if pos >= 2 && rope.char(pos - 1) == '\n' && rope.char(pos - 2) == '\r' {
-        pos - 2
-    } else {
-        pos.saturating_sub(1)
-    }
+    if pos >= 2 && rope.char(pos - 1) == '\n' && rope.char(pos - 2) == '\r' { pos - 2 } else { pos.saturating_sub(1) }
 }
 
 /// Char offset one step right, treating `\r\n` as a single step.
 fn next_boundary(rope: &Rope, pos: usize) -> usize {
     let len = rope.len_chars();
-    if pos + 1 < len && rope.char(pos) == '\r' && rope.char(pos + 1) == '\n' {
-        pos + 2
-    } else {
-        (pos + 1).min(len)
-    }
+    if pos + 1 < len && rope.char(pos) == '\r' && rope.char(pos + 1) == '\n' { pos + 2 } else { (pos + 1).min(len) }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]

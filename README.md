@@ -16,3 +16,14 @@ Browser demo (requires `wasm-bindgen-cli` 0.2.130 and the `wasm32-unknown-unknow
 ./scripts/build-web.sh
 cd web && python -m http.server 8765
 ```
+
+Checks (the same script CI runs; `--e2e` adds the Playwright tests in Chromium, Firefox and WebKit):
+
+```
+./scripts/ci.sh
+./scripts/ci.sh --e2e
+cargo bench -p rustaco-view
+cd fuzz && cargo +nightly fuzz run document_ops
+```
+
+On Windows the fuzzer needs `clang_rt.asan_dynamic-x86_64.dll` from Visual Studio (`VC/Tools/MSVC/<version>/bin/Hostx64/x64`) on `PATH`.

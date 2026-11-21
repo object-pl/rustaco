@@ -24,7 +24,7 @@ export class RustacoEditor {
     this.input.setAttribute('spellcheck', 'false');
     this.input.style.cssText =
       'position:absolute;left:0;top:0;width:1px;height:1em;padding:0;border:0;margin:0;' +
-      'opacity:0;resize:none;overflow:hidden;white-space:pre;outline:none';
+      'opacity:0;resize:none;overflow:hidden;white-space:pre;outline:none;pointer-events:none';
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
     container.append(this.canvas, this.input);
 
@@ -44,6 +44,20 @@ export class RustacoEditor {
   getValue() { return this.core.getValue(); }
   setValue(text) { this.core.setValue(text); this.#changed(); }
   focus() { this.input.focus(); }
+
+  /** Selections as `{ anchor, head }` char offsets, the primary selection first. */
+  getSelections() {
+    const flat = this.core.selections();
+    const out = [];
+    for (let i = 0; i < flat.length; i += 2) out.push({ anchor: flat[i], head: flat[i + 1] });
+    return out;
+  }
+
+  /** Replaces the selections; the first one becomes primary. */
+  setSelections(selections) {
+    this.core.set_selections(Uint32Array.from(selections.flatMap((s) => [s.anchor, s.head])));
+    this.#schedule();
+  }
 
   /** Calls `fn` after every text change. Returns a function that removes the listener. */
   onDidChangeContent(fn) {

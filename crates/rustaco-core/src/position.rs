@@ -73,10 +73,7 @@ pub fn char_to_utf16(rope: &Rope, idx: usize) -> Utf16Position {
     let idx = idx.min(rope.len_chars());
     let line = rope.char_to_line(idx);
     let line_start = rope.line_to_char(line);
-    Utf16Position {
-        line,
-        character: rope.char_to_utf16_cu(idx) - rope.char_to_utf16_cu(line_start),
-    }
+    Utf16Position { line, character: rope.char_to_utf16_cu(idx) - rope.char_to_utf16_cu(line_start) }
 }
 
 /// Converts a UTF-16 position to a char offset, clamping into the document.
@@ -92,10 +89,7 @@ pub fn utf16_to_char(rope: &Rope, pos: Utf16Position) -> usize {
 pub fn char_to_point(rope: &Rope, idx: usize) -> Point {
     let idx = idx.min(rope.len_chars());
     let line = rope.char_to_line(idx);
-    Point {
-        row: line,
-        column: rope.char_to_byte(idx) - rope.line_to_byte(line),
-    }
+    Point { row: line, column: rope.char_to_byte(idx) - rope.line_to_byte(line) }
 }
 
 #[cfg(test)]

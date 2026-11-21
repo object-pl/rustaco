@@ -9,3 +9,10 @@ rust-version.workspace = true
 [dependencies]
 rustaco-core.workspace = true
 unicode-width = "0.2"
+
+[dev-dependencies]
+criterion = { version = "0.7", default-features = false }
+
+[[bench]]
+name = "editor"
+harness = false

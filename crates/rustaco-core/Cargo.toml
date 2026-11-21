@@ -8,3 +8,6 @@ rust-version.workspace = true
 
 [dependencies]
 ropey.workspace = true
+
+[dev-dependencies]
+proptest = "1"

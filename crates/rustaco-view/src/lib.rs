@@ -219,12 +219,8 @@ impl View {
         let primary = doc.selections().primary();
         let primary_line = rope.char_to_line(primary.head);
         if visible.contains(&primary_line) && primary.is_empty() {
-            frame.current_line = Some(Rect {
-                x: 0.0,
-                y: y_of(primary_line),
-                width: self.width,
-                height: self.line_height(primary_line),
-            });
+            frame.current_line =
+                Some(Rect { x: 0.0, y: y_of(primary_line), width: self.width, height: self.line_height(primary_line) });
         }
 
         for sel in doc.selections().iter() {

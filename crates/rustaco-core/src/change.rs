@@ -64,6 +64,36 @@ impl ChangeSet {
         Self { edits: merged }
     }
 
+    /// Moves edit boundaries that fall between `\r` and `\n` outside the pair, adjusting the
+    /// text so the result is unchanged. Such a position has no line/column form, so an edit
+    /// there could not be reported to LSP servers.
+    pub(crate) fn snap_crlf(self, rope: &Rope) -> ChangeSet {
+        if !self.needs_crlf_snap(rope) {
+            return self;
+        }
+        let edits = self
+            .edits
+            .into_iter()
+            .map(|mut e| {
+                if inside_crlf(rope, e.start) {
+                    e.start -= 1;
+                    e.text.insert(0, '\r');
+                }
+                if inside_crlf(rope, e.end) {
+                    e.end += 1;
+                    e.text.push('\n');
+                }
+                e
+            })
+            .collect();
+        // Snapping can make edits touch but never overlap; touching edits merge correctly.
+        ChangeSet::new(edits)
+    }
+
+    pub(crate) fn needs_crlf_snap(&self, rope: &Rope) -> bool {
+        self.edits.iter().any(|e| inside_crlf(rope, e.start) || inside_crlf(rope, e.end))
+    }
+
     pub fn edits(&self) -> &[Edit] {
         &self.edits
     }
@@ -163,6 +193,11 @@ pub struct EditEvent {
     pub start_utf16: Utf16Position,
     pub old_end_utf16: Utf16Position,
     pub text: String,
+}
+
+/// True when `pos` sits between the `\r` and `\n` of a CRLF pair.
+pub(crate) fn inside_crlf(rope: &Rope, pos: usize) -> bool {
+    pos > 0 && pos < rope.len_chars() && rope.char(pos - 1) == '\r' && rope.char(pos) == '\n'
 }
 
 struct TextExtent {

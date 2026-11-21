@@ -1,0 +1,152 @@
+import { test, expect } from '@playwright/test';
+
+const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+
+async function open(page, value) {
+  await page.goto('/');
+  await page.waitForFunction(() => window.editor);
+  await page.evaluate((v) => { window.editor.setValue(v); window.editor.focus(); }, value);
+}
+
+const value = (page) => page.evaluate(() => window.editor.getValue());
+const selections = (page) => page.evaluate(() => window.editor.getSelections());
+const setCursor = (page, ...offsets) =>
+  page.evaluate((o) => window.editor.setSelections(o.map((p) => ({ anchor: p, head: p }))), offsets);
+
+/** Canvas-relative point of the caret at `offset`, taken from the editor's own layout. */
+async function caretPoint(page, offset) {
+  return page.evaluate((o) => {
+    const e = window.editor;
+    e.setSelections([{ anchor: o, head: o }]);
+    e.core.render(true);
+    return { x: e.core.caret_x() + 1, y: e.core.caret_y() + e.core.line_height() / 2 };
+  }, offset);
+}
+
+test('typing, then undo removes the typed word in one step', async ({ page }) => {
+  await open(page, '');
+  await page.keyboard.type('hello');
+  await page.keyboard.press('Enter');
+  await page.keyboard.type('world');
+  expect(await value(page)).toBe('hello\nworld');
+  await page.keyboard.press(`${mod}+z`);
+  expect(await value(page)).toBe('hello\n');
+  await page.keyboard.press(`${mod}+z`);
+  await page.keyboard.press(`${mod}+z`);
+  expect(await value(page)).toBe('');
+  await page.keyboard.press(`${mod}+Shift+z`);
+  expect(await value(page)).toBe('hello');
+});
+
+test('Enter keeps the indentation of the current line', async ({ page }) => {
+  await open(page, '    let x = 1;');
+  await page.keyboard.press('End');
+  await page.keyboard.press('Enter');
+  await page.keyboard.type('y');
+  expect(await value(page)).toBe('    let x = 1;\n    y');
+});
+
+test('typing with several cursors', async ({ page }) => {
+  await open(page, 'a\nb\nc');
+  await setCursor(page, 1, 3, 5);
+  await page.keyboard.type('!');
+  expect(await value(page)).toBe('a!\nb!\nc!');
+  expect((await selections(page)).length).toBe(3);
+});
+
+test('keyboard adds a cursor below', async ({ page }) => {
+  await open(page, 'abc\nabc');
+  await setCursor(page, 1);
+  await page.keyboard.press(`${mod}+Alt+ArrowDown`);
+  await page.keyboard.type('X');
+  expect(await value(page)).toBe('aXbc\naXbc');
+});
+
+test('word navigation and deletion', async ({ page }) => {
+  await open(page, 'let value = compute();');
+  await setCursor(page, 0);
+  await page.keyboard.press(`${process.platform === 'darwin' ? 'Alt' : 'Control'}+ArrowRight`);
+  await page.keyboard.press(`${process.platform === 'darwin' ? 'Alt' : 'Control'}+ArrowRight`);
+  expect((await selections(page))[0].head).toBe(9);
+  await page.keyboard.press(`${process.platform === 'darwin' ? 'Alt' : 'Control'}+Backspace`);
+  expect(await value(page)).toBe('let  = compute();');
+});
+
+test('click places the caret, double-click selects a word, shift-click extends', async ({ page }) => {
+  await open(page, 'alpha beta gamma\nsecond line');
+  const canvas = page.locator('canvas');
+  const at7 = await caretPoint(page, 7);
+  const at2 = await caretPoint(page, 2);
+  const at20 = await caretPoint(page, 20);
+
+  await canvas.click({ position: at7 });
+  expect(await selections(page)).toEqual([{ anchor: 7, head: 7 }]);
+
+  await canvas.dblclick({ position: at7 });
+  expect(await selections(page)).toEqual([{ anchor: 6, head: 10 }]);
+
+  await canvas.click({ position: at2 });
+  await canvas.click({ position: at20, modifiers: ['Shift'] });
+  expect(await selections(page)).toEqual([{ anchor: 2, head: 20 }]);
+});
+
+test('drag selects text', async ({ page }) => {
+  await open(page, 'alpha beta gamma');
+  const box = await page.locator('canvas').boundingBox();
+  const from = await caretPoint(page, 1);
+  const to = await caretPoint(page, 9);
+  await page.mouse.move(box.x + from.x, box.y + from.y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + to.x, box.y + to.y, { steps: 5 });
+  await page.mouse.up();
+  expect(await selections(page)).toEqual([{ anchor: 1, head: 9 }]);
+});
+
+test('clipboard events copy, cut and paste through the editor', async ({ page, browserName }) => {
+  // Firefox keeps the DataTransfer of an untrusted ClipboardEvent read-only, and real Ctrl+C/V
+  // there would touch the system clipboard of the machine running the tests.
+  test.skip(browserName === 'firefox', 'synthetic clipboard events are read-only in Firefox');
+  await open(page, 'one two');
+  await page.evaluate(() => window.editor.setSelections([{ anchor: 0, head: 3 }]));
+  const copied = await page.evaluate(() => {
+    const dt = new DataTransfer();
+    window.editor.input.dispatchEvent(new ClipboardEvent('copy', { clipboardData: dt, bubbles: true, cancelable: true }));
+    return dt.getData('text/plain');
+  });
+  expect(copied).toBe('one');
+
+  await page.evaluate(() => {
+    const dt = new DataTransfer();
+    window.editor.input.dispatchEvent(new ClipboardEvent('cut', { clipboardData: dt, bubbles: true, cancelable: true }));
+  });
+  expect(await value(page)).toBe(' two');
+
+  await setCursor(page, 4);
+  await page.evaluate(() => {
+    const dt = new DataTransfer();
+    dt.setData('text/plain', '!');
+    window.editor.input.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }));
+  });
+  expect(await value(page)).toBe(' two!');
+});
+
+test('change listener fires once per edit', async ({ page }) => {
+  await open(page, '');
+  await page.evaluate(() => { window.changes = 0; window.editor.onDidChangeContent(() => window.changes++); });
+  await page.keyboard.type('abc');
+  await page.keyboard.press('ArrowLeft');
+  expect(await page.evaluate(() => window.changes)).toBe(3);
+});
+
+test('a keystroke in a 200k-line file stays fast', async ({ page }) => {
+  await open(page, '');
+  const ms = await page.evaluate(() => {
+    const e = window.editor;
+    e.setValue(Array.from({ length: 200_000 }, (_, i) => `line ${i} with some text`).join('\n'));
+    e.setSelections([{ anchor: 2_000_000, head: 2_000_000 }]);
+    const t = performance.now();
+    for (let i = 0; i < 100; i++) { e.core.insert_text('x'); e.core.render(true); }
+    return (performance.now() - t) / 100;
+  });
+  expect(ms).toBeLessThan(5);
+});
