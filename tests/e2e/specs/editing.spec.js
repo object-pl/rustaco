@@ -344,3 +344,21 @@ test('the minimap shows the document and scrolls it on click and drag', async ({
   expect(await page.evaluate(() => window.editor.getScrollTop())).toBeLessThan(before);
   await page.evaluate(() => window.editor.setOptions({ minimap: { enabled: false } }));
 });
+
+test('sticky scroll pins the enclosing headers; a click on one goes there', async ({ page }) => {
+  const body = Array.from({ length: 80 }, (_, i) => `        step${i}();`).join('\n');
+  await open(page, `impl Thing {\n    fn run() {\n${body}\n    }\n}`);
+  await page.evaluate(() => {
+    const e = window.editor;
+    e.refreshFolding();
+    e.setOptions({ stickyScroll: { enabled: true } });
+    e.setScrollTop(40 * e.core.line_height());
+    e.core.render(false);
+  });
+  const box = await page.locator('canvas').first().boundingBox();
+  const lh = await page.evaluate(() => window.editor.core.line_height());
+  // The second pinned row is `fn run() {` on line 1.
+  await page.mouse.click(box.x + 200, box.y + lh * 1.5);
+  expect((await selections(page))[0].head).toBe('impl Thing {\n    '.length);
+  expect(await page.evaluate(() => window.editor.getScrollTop())).toBe(0);
+});

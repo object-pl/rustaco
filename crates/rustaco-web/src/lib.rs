@@ -17,7 +17,7 @@ use rustaco_core::{
     Searcher, Selection, Selections, Stickiness, TextModel, default_keymap, jetbrains_keymap, next_match, word_at,
 };
 use rustaco_syntax::{Colors, Style, Theme, ThemeRule, themes};
-use rustaco_view::{Metrics, Rect, StyleSpan, Styler, View, indent_fold_ranges};
+use rustaco_view::{FrameLine, Metrics, Rect, StyleSpan, Styler, View, indent_fold_ranges};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
@@ -452,6 +452,8 @@ pub struct Editor {
     tree_brackets: Option<Option<(usize, usize)>>,
     /// Minimap slider drag in progress: pointer y and scroll top when it started.
     minimap_drag: Option<(f64, f64)>,
+    /// Sticky scroll lines of the last frame: y, height and line.
+    sticky: Vec<(f32, f32, usize)>,
 }
 
 /// Display options (Monaco's names in the JS API).
@@ -497,6 +499,7 @@ impl Editor {
             options: ViewOptions { guides: true, occurrences: true, ..ViewOptions::default() },
             tree_brackets: None,
             minimap_drag: None,
+            sticky: Vec::new(),
         })
     }
 
@@ -774,6 +777,12 @@ impl Editor {
         };
     }
 
+    /// Pins up to `max` headers of the enclosing scopes at the top; 0 turns it off.
+    #[wasm_bindgen(js_name = setStickyScroll)]
+    pub fn set_sticky_scroll(&mut self, max: u32) {
+        self.view.set_sticky_scroll(max as usize);
+    }
+
     /// Shows or hides the minimap.
     #[wasm_bindgen(js_name = setMinimap)]
     pub fn set_minimap(&mut self, on: bool) {
@@ -970,6 +979,23 @@ impl Editor {
             2 => DragUnit::Word,
             _ => DragUnit::Line,
         };
+        if let Some(index) =
+            self.sticky.iter().position(|&(top, height, _)| (top as f64..(top + height) as f64).contains(&y))
+        {
+            let line = self.sticky[index].2;
+            let (pos, top) = {
+                let model = self.model.borrow();
+                let rope = model.rope();
+                let indent = rope.line(line).chars().take_while(|c| *c == ' ' || *c == '\t').count();
+                let lh = self.view.metrics.line_height as f64;
+                (rope.line_to_char(line) + indent, self.view.line_top(line) - index as f64 * lh)
+            };
+            self.edit(|ed| ed.set_selections(Selections::single(Selection::cursor(pos))));
+            let model = self.model.borrow();
+            let left = self.view.scroll_left();
+            self.view.scroll_to(model.rope(), top, left);
+            return;
+        }
         if self.view.in_minimap(x as f32) {
             let model = self.model.borrow();
             self.view.sync(&model);
@@ -1164,52 +1190,7 @@ impl Editor {
         }
         ctx.set_text_baseline("middle");
         ctx.set_text_align("left");
-        // All text goes to JS in one call: one string, one number array, one font change per
-        // font. Crossing into JS per run costs more than the drawing itself.
-        STYLES.with(|styles| {
-            let styles = styles.borrow();
-            let style_of = |id: u32| styles.get(id as usize).unwrap_or(&styles[0]);
-            let mut runs: Vec<(&str, u32, f64, f64)> = frame
-                .lines
-                .iter()
-                .flat_map(|line| {
-                    let y = (line.y + line.height / 2.0) as f64;
-                    line.runs.iter().map(move |r| (r.text.as_str(), r.style, r.x as f64, y))
-                })
-                .collect();
-            runs.sort_by_key(|&(_, style, _, _)| (style_of(style).font_prefix, style));
-
-            let mut text = String::new();
-            let mut ops: Vec<f64> = Vec::with_capacity(runs.len() * 7);
-            let (mut colors, mut fonts): (Vec<&str>, Vec<String>) = (Vec::new(), Vec::new());
-            let mut utf16 = 0usize;
-            for (run_text, style, x, y) in runs {
-                let s = style_of(style);
-                let font = format!("{}{}", s.font_prefix, self.font);
-                let font_index = fonts.iter().position(|f| *f == font).unwrap_or_else(|| {
-                    fonts.push(font);
-                    fonts.len() - 1
-                });
-                let color_index = colors.iter().position(|c| *c == s.color).unwrap_or_else(|| {
-                    colors.push(&s.color);
-                    colors.len() - 1
-                });
-                let len: usize = run_text.chars().map(char::len_utf16).sum();
-                text.push_str(run_text);
-                let underline = if s.underline { (self.view.metrics.line_height * 0.35) as f64 } else { 0.0 };
-                ops.extend([
-                    x,
-                    y,
-                    utf16 as f64,
-                    (utf16 + len) as f64,
-                    color_index as f64,
-                    font_index as f64,
-                    underline,
-                ]);
-                utf16 += len;
-            }
-            draw_runs(ctx, &text, &ops, &colors.join("\n"), &fonts.join("\n"));
-        });
+        draw_text(ctx, &frame.lines, &self.font, self.view.metrics.line_height);
         ctx.set_font(&self.font);
         if self.options.render_whitespace {
             ctx.set_fill_style_str(&chrome.whitespace);
@@ -1239,6 +1220,7 @@ impl Editor {
             }
         }
         ctx.restore();
+        self.sticky = frame.sticky.iter().map(|l| (l.y, l.height, l.line)).collect();
 
         ctx.set_fill_style_str(&chrome.gutter);
         ctx.fill_rect(0.0, 0.0, gutter, h);
@@ -1277,6 +1259,28 @@ impl Editor {
         }
 
         let content = self.view.content_height(rope);
+        if !frame.sticky.is_empty() {
+            let text_right = w - self.view.minimap_width() as f64;
+            let bottom = frame.sticky.iter().map(|l| l.y + l.height).fold(0.0f32, f32::max) as f64;
+            ctx.set_fill_style_str(&chrome.background);
+            ctx.fill_rect(0.0, 0.0, text_right, bottom);
+            ctx.save();
+            ctx.begin_path();
+            ctx.rect(gutter, 0.0, text_right - gutter, bottom);
+            ctx.clip();
+            ctx.set_text_baseline("middle");
+            ctx.set_text_align("left");
+            draw_text(ctx, &frame.sticky, &self.font, self.view.metrics.line_height);
+            ctx.restore();
+            ctx.set_font(&self.font);
+            ctx.set_text_align("right");
+            ctx.set_fill_style_str(&chrome.line_number);
+            for l in &frame.sticky {
+                ctx.fill_text(&(l.line + 1).to_string(), gutter - 3.5 * cw, (l.y + l.height / 2.0) as f64)?;
+            }
+            ctx.set_fill_style_str(&chrome.indent_guide);
+            ctx.fill_rect(0.0, bottom - 1.0, text_right, 1.0);
+        }
         if let Some(m) = &frame.minimap {
             ctx.set_fill_style_str(&chrome.background);
             ctx.fill_rect(m.x as f64, 0.0, m.width as f64, h);
@@ -1333,6 +1337,46 @@ impl Editor {
         }
         Ok(())
     }
+}
+
+/// Draws the text runs of `lines`. All text goes to JS in one call: one string, one number
+/// array, one font change per font. Crossing into JS per run costs more than the drawing.
+fn draw_text(ctx: &CanvasRenderingContext2d, lines: &[FrameLine], font: &str, line_height: f32) {
+    STYLES.with(|styles| {
+        let styles = styles.borrow();
+        let style_of = |id: u32| styles.get(id as usize).unwrap_or(&styles[0]);
+        let mut runs: Vec<(&str, u32, f64, f64)> = lines
+            .iter()
+            .flat_map(|line| {
+                let y = (line.y + line.height / 2.0) as f64;
+                line.runs.iter().map(move |r| (r.text.as_str(), r.style, r.x as f64, y))
+            })
+            .collect();
+        runs.sort_by_key(|&(_, style, _, _)| (style_of(style).font_prefix, style));
+
+        let mut text = String::new();
+        let mut ops: Vec<f64> = Vec::with_capacity(runs.len() * 7);
+        let (mut colors, mut fonts): (Vec<&str>, Vec<String>) = (Vec::new(), Vec::new());
+        let mut utf16 = 0usize;
+        for (run_text, style, x, y) in runs {
+            let s = style_of(style);
+            let font = format!("{}{}", s.font_prefix, font);
+            let font_index = fonts.iter().position(|f| *f == font).unwrap_or_else(|| {
+                fonts.push(font);
+                fonts.len() - 1
+            });
+            let color_index = colors.iter().position(|c| *c == s.color).unwrap_or_else(|| {
+                colors.push(&s.color);
+                colors.len() - 1
+            });
+            let len: usize = run_text.chars().map(char::len_utf16).sum();
+            text.push_str(run_text);
+            let underline = if s.underline { (line_height * 0.35) as f64 } else { 0.0 };
+            ops.extend([x, y, utf16 as f64, (utf16 + len) as f64, color_index as f64, font_index as f64, underline]);
+            utf16 += len;
+        }
+        draw_runs(ctx, &text, &ops, &colors.join("\n"), &fonts.join("\n"));
+    });
 }
 
 /// Width of the minimap column in CSS pixels.

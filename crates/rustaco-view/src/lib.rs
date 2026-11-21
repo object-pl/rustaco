@@ -98,6 +98,9 @@ pub struct Frame {
     pub fold_ellipses: Vec<Rect>,
     /// The minimap, when it is on.
     pub minimap: Option<MinimapFrame>,
+    /// Headers of the scopes the top of the viewport is inside, pinned over the text, the
+    /// outermost first. Drawn last, over everything else in the text area.
+    pub sticky: Vec<FrameLine>,
 }
 
 /// The minimap: the document at a small scale beside the text, each char a block of
@@ -150,6 +153,8 @@ pub struct View {
     wrap: bool,
     /// Width of the minimap column at the right; 0 when it is off.
     minimap_width: f32,
+    /// Most scope headers sticky scroll pins; 0 turns it off.
+    sticky_max: usize,
     heights: HeightMap,
     /// What `heights` was computed for: model version, line height, wrap width, tab size.
     synced: Option<Synced>,
@@ -179,6 +184,7 @@ impl View {
             tab_size: 4,
             wrap: false,
             minimap_width: 0.0,
+            sticky_max: 0,
             heights: HeightMap::new(1, metrics.line_height),
             synced: None,
             folds: Vec::new(),
@@ -220,6 +226,46 @@ impl View {
 
     pub fn minimap_width(&self) -> f32 {
         self.minimap_width
+    }
+
+    /// Pins up to `max` headers of the scopes (foldable regions) the viewport's top is
+    /// inside; 0 turns sticky scroll off.
+    pub fn set_sticky_scroll(&mut self, max: usize) {
+        self.sticky_max = max;
+    }
+
+    /// The scope headers to pin, outermost first, each with its viewport y. The innermost
+    /// one slides up as the end of its scope scrolls past, so the next line can take its
+    /// place.
+    pub fn sticky_lines(&self, rope: &Rope) -> Vec<(usize, f32)> {
+        if self.sticky_max == 0 || self.foldable.is_empty() {
+            return Vec::new();
+        }
+        let lh = self.metrics.line_height;
+        let mut stack: Vec<(usize, usize)> = Vec::new();
+        loop {
+            // The line just under the pinned headers.
+            let probe = self.line_at_y(rope, self.scroll_top + (stack.len() as f32 * lh) as f64);
+            let next = self
+                .foldable
+                .iter()
+                .take_while(|&&(h, _)| h < probe)
+                .filter(|&&(h, e)| e >= probe && !self.is_hidden(h) && stack.last().is_none_or(|&(sh, _)| h > sh))
+                .min_by_key(|&&(h, _)| h)
+                .copied();
+            match next {
+                Some(region) if stack.len() < self.sticky_max => stack.push(region),
+                _ => break,
+            }
+        }
+        let mut out = Vec::with_capacity(stack.len());
+        for (i, &(header, end)) in stack.iter().enumerate() {
+            let natural = i as f32 * lh;
+            // The scope's last line must stay above its header's pinned row.
+            let end_bottom = (self.line_top(end) - self.scroll_top) as f32 + self.line_height(end);
+            out.push((header, natural.min(end_bottom - lh)));
+        }
+        out
     }
 
     /// Width of the text area: the viewport less the gutter and the minimap.
@@ -772,6 +818,13 @@ impl View {
         }
         self.widest_cells = widest;
         frame.minimap = self.minimap(rope, styler);
+        for (line, y) in self.sticky_lines(rope) {
+            let spans = styler.spans(line);
+            let x_of = |cells: usize| gutter + cells as f32 * cw - self.scroll_left;
+            let len = line_len(rope, line);
+            let (runs, _) = layout_line(rope, line, 0..len, &spans, first_cell..last_cell, tab, &x_of);
+            frame.sticky.push(FrameLine { line, row: 0, y, height: lh, runs });
+        }
         frame
     }
 
@@ -1555,5 +1608,39 @@ mod minimap_tests {
         v.scroll_to(doc.rope(), 1e9, 0.0);
         let m = v.layout(doc.model(), doc.selections(), &Plain).minimap.unwrap();
         assert!((m.slider.y + m.slider.height - 200.0).abs() < 1.0, "slider at {:?}", m.slider);
+    }
+}
+
+#[cfg(test)]
+mod sticky_tests {
+    use super::*;
+    use rustaco_core::Document;
+
+    #[test]
+    fn headers_of_enclosing_scopes_stay_pinned() {
+        // impl at 0, fn at 1, body lines 2..=31, closing braces at 32 and 33.
+        let mut text = String::from("impl A {\n    fn f() {\n");
+        for i in 0..30 {
+            text.push_str(&format!("        line{i};\n"));
+        }
+        text.push_str("    }\n}\nafter\n");
+        let doc = Document::new(&text);
+        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 200.0);
+        v.sync(doc.model());
+        v.set_foldable(indent_fold_ranges(doc.rope(), 4));
+        v.set_sticky_scroll(5);
+        v.scroll_to(doc.rope(), 10.0 * 20.0, 0.0);
+        let frame = v.layout(doc.model(), doc.selections(), &Plain);
+        let pinned: Vec<(usize, f32)> = frame.sticky.iter().map(|l| (l.line, l.y)).collect();
+        assert_eq!(pinned, vec![(0, 0.0), (1, 20.0)]);
+        assert_eq!(frame.sticky[1].runs[0].text.trim(), "fn f() {");
+        // Near the end of the fn the fn header slides up under the impl header.
+        v.scroll_to(doc.rope(), 31.0 * 20.0 - 15.0, 0.0);
+        let pinned = v.sticky_lines(doc.rope());
+        assert_eq!(pinned.len(), 2);
+        assert!(pinned[1].1 < 20.0, "pushed up: {pinned:?}");
+        // At the top nothing is pinned.
+        v.scroll_to(doc.rope(), 0.0, 0.0);
+        assert!(v.sticky_lines(doc.rope()).is_empty());
     }
 }

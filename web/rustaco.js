@@ -277,6 +277,7 @@ export class RustacoEditor {
     bracketPairColorization = true,
     wordWrap = 'off',
     minimap = { enabled: false },
+    stickyScroll = { enabled: false },
     fontFamily = '"Cascadia Code", Consolas, "Courier New", monospace',
     fontSize = 14,
   } = {}) {
@@ -299,7 +300,7 @@ export class RustacoEditor {
     this.core = new Editor(this.canvas, this.model.core, fontFamily, fontSize);
     this.setKeymap(keymap);
     this.options = {};
-    this.setOptions({ rulers, renderWhitespace, guides, occurrencesHighlight, bracketPairColorization, wordWrap, minimap });
+    this.setOptions({ rulers, renderWhitespace, guides, occurrencesHighlight, bracketPairColorization, wordWrap, minimap, stickyScroll });
     this.refreshFolding();
     this.model.editors.add(this);
     this.caretOn = true;
@@ -317,7 +318,8 @@ export class RustacoEditor {
   /**
    * Display options, Monaco's names: `rulers` (columns), `renderWhitespace` (`"none"` or
    * `"all"`), `guides` (indentation guides), `occurrencesHighlight`, `bracketPairColorization`,
-   * `wordWrap` (`"off"` or `"on"`, wrapping at the editor's width), `minimap` (`{ enabled }`).
+   * `wordWrap` (`"off"` or `"on"`, wrapping at the editor's width), `minimap` (`{ enabled }`),
+   * `stickyScroll` (`{ enabled, maxLineCount }`).
    */
   setOptions(options) {
     Object.assign(this.options, options);
@@ -325,6 +327,8 @@ export class RustacoEditor {
     this.core.setViewOptions(Uint32Array.from(o.rulers ?? []), o.renderWhitespace === 'all', !!o.guides, !!o.occurrencesHighlight);
     this.core.setWordWrap(o.wordWrap === 'on');
     this.core.setMinimap(!!(typeof o.minimap === 'object' ? o.minimap?.enabled : o.minimap));
+    const sticky = o.stickyScroll ?? {};
+    this.core.setStickyScroll(sticky.enabled ? (sticky.maxLineCount ?? 5) : 0);
     this.schedule();
   }
 
