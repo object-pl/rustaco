@@ -56,6 +56,61 @@ fn benches(c: &mut Criterion) {
         b.iter(|| v.layout(black_box(base.model()), base.selections(), &Plain))
     });
 
+    // Every third line is long enough to wrap at the view's width (about 140 cells).
+    let wrapping: String = (0..LINES)
+        .map(|i| {
+            if i % 3 == 0 {
+                format!(
+                    "{}{i}
+",
+                    "let wrapped = compute(value, other, \"text\"); ".repeat(5)
+                )
+            } else {
+                format!(
+                    "short {i}
+"
+                )
+            }
+        })
+        .collect();
+    let wrapped_doc = Document::new(&wrapping);
+
+    c.bench_function("turn on word wrap for 1M lines", |b| {
+        b.iter(|| {
+            let mut v = view();
+            v.set_wrap(true);
+            v.sync(black_box(wrapped_doc.model()));
+            v
+        })
+    });
+
+    c.bench_function("layout a wrapped frame at the middle of 1M lines", |b| {
+        let mut v = view();
+        v.set_wrap(true);
+        v.sync(wrapped_doc.model());
+        v.scroll_to(wrapped_doc.rope(), v.line_top(LINES / 2), 0.0);
+        b.iter(|| v.layout(black_box(wrapped_doc.model()), wrapped_doc.selections(), &Plain))
+    });
+
+    c.bench_function("keystroke and sync with word wrap on 1M lines", |b| {
+        let at = wrapped_doc.rope().line_to_char(LINES / 2);
+        let mut v = view();
+        v.set_wrap(true);
+        v.sync(wrapped_doc.model());
+        b.iter_batched_ref(
+            || {
+                let mut doc = wrapped_doc.clone();
+                doc.set_selections(Selections::single(Selection::cursor(at)));
+                (doc, v.clone())
+            },
+            |(doc, v)| {
+                doc.insert("x");
+                v.sync(doc.model());
+            },
+            BatchSize::LargeInput,
+        )
+    });
+
     c.bench_function("hit test", |b| {
         let mut v = view();
         v.scroll_to(base.rope(), v.line_top(LINES / 2), 0.0);

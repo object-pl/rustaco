@@ -30,6 +30,6 @@ pub use position::{
     Point, Position, Utf16Position, char_to_point, char_to_position, char_to_utf16, line_end, line_len,
     position_to_char, utf16_to_char,
 };
-pub use ropey::Rope;
+pub use ropey::{Rope, RopeSlice};
 pub use search::{SearchQuery, Searcher, next_match};
 pub use selection::{Selection, Selections};

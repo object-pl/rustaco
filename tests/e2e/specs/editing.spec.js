@@ -259,3 +259,21 @@ test('folding hides lines, carets step over folds, the gutter marker unfolds', a
   await page.mouse.click(box.x + marker.x, box.y + marker.y);
   expect(await page.evaluate(() => Array.from(window.editor.core.visibleLines()))).toEqual([0, 5]);
 });
+
+test('word wrap shows a long line as rows and moves by rows', async ({ page }) => {
+  const line = Array.from({ length: 60 }, (_, i) => `w${i}`).join(' ');
+  await open(page, `${line}\nnext`);
+  await page.evaluate(() => window.editor.setOptions({ wordWrap: 'on' }));
+  await setCursor(page, 0);
+  await page.keyboard.press('ArrowDown');
+  const head = (await selections(page))[0].head;
+  expect(head).toBeGreaterThan(0);
+  expect(head).toBeLessThan(line.length);
+  const y0 = (await caretPoint(page, 0)).y;
+  const y1 = (await caretPoint(page, head)).y;
+  expect(y1).toBeGreaterThan(y0);
+  await page.evaluate(() => window.editor.setOptions({ wordWrap: 'off' }));
+  await setCursor(page, 0);
+  await page.keyboard.press('ArrowDown');
+  expect((await selections(page))[0].head).toBe(line.length + 1);
+});

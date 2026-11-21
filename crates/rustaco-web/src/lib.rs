@@ -572,7 +572,7 @@ impl Editor {
     /// Runs a command by id (see the keymap). Returns false for unknown ids.
     #[wasm_bindgen(js_name = runCommand)]
     pub fn run_command(&mut self, command: &str) -> bool {
-        let page = ((self.view.height / self.view.metrics.line_height) as isize - 1).max(1);
+        let page = self.view.page_rows() as isize;
         let page_move = match command {
             "cursorPageUp" => Some((-page, false)),
             "cursorPageUpSelect" => Some((-page, true)),
@@ -670,6 +670,16 @@ impl Editor {
             guides,
             occurrences,
         };
+    }
+
+    /// Turns word wrap at the editor's width on or off.
+    #[wasm_bindgen(js_name = setWordWrap)]
+    pub fn set_word_wrap(&mut self, on: bool) {
+        self.view.set_wrap(on);
+        let model = self.model.borrow();
+        self.view.sync(&model);
+        let (top, left) = (self.view.scroll_top(), self.view.scroll_left());
+        self.view.scroll_to(model.rope(), top, left);
     }
 
     /// The bracket pair at the cursor from the language module's tree ([open, close], or empty
@@ -1090,7 +1100,7 @@ impl Editor {
         ctx.set_text_align("right");
         let rope = model.rope();
         let primary_line = rope.char_to_line(selections.primary().head);
-        for line in &frame.lines {
+        for line in frame.lines.iter().filter(|l| l.row == 0) {
             let color = if line.line == primary_line { &chrome.line_number_active } else { &chrome.line_number };
             ctx.set_fill_style_str(color);
             let y = (line.y + line.height / 2.0) as f64;
@@ -1231,11 +1241,7 @@ impl Editor {
                     if !self.view.is_hidden(line) {
                         return s.head;
                     }
-                    let mut header = line;
-                    while header > 0 && self.view.is_hidden(header) {
-                        header -= 1;
-                    }
-                    rustaco_core::line_end(rope, header)
+                    rustaco_core::line_end(rope, self.view.shown_line_for(line))
                 })
                 .collect()
         };

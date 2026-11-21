@@ -1,23 +1,29 @@
 //! Renderer-agnostic layout for the Rustaco editor.
 //!
-//! [`View`] turns a [`TextModel`], one editor's selections and a viewport into a [`Frame`]: positioned text
-//! runs, selection rectangles, carets and line numbers. A frontend only draws the
-//! frame; it never measures text or walks the rope itself. Only visible lines and
+//! [`View`] turns a [`TextModel`], one editor's selections and a viewport into a [`Frame`]:
+//! positioned text runs, selection rectangles, carets and line numbers. A frontend only
+//! draws the frame; it never measures text or walks the rope itself. Only visible lines and
 //! visible columns are laid out, so frame cost does not grow with file size.
 //!
-//! All coordinates are CSS pixels relative to the viewport's top-left corner,
-//! gutter included.
+//! All coordinates are CSS pixels relative to the viewport's top-left corner, gutter
+//! included.
 //!
-//! Vertical geometry goes through [`View::line_top`] and [`View::line_at_y`], backed by a
-//! [`HeightMap`]: folded lines have height 0, and wrapped lines and blocks between lines
-//! will take more than one line height.
+//! A model line shows as one or more rows (word wrap) or not at all (inside a fold).
+//! Vertical geometry goes through [`View::line_top`] and [`View::line_at_y`]: a
+//! [`HeightMap`] holds every line's own height, rows times the line height, and folds are
+//! taken out on top of it.
 
+mod folding;
 mod heights;
+mod wrap;
 
+pub use folding::{FoldMarker, indent_fold_ranges};
 pub use heights::HeightMap;
+pub use wrap::{LineRows, wrap_line, wrap_slice};
 
 use std::ops::Range;
 
+use folding::{Fold, Hidden, shift_foldable, shift_lines};
 use rustaco_core::{Assoc, Rope, Selections, TextModel, char_to_position, line_end, line_len};
 use unicode_width::UnicodeWidthChar;
 
@@ -67,9 +73,12 @@ pub struct TextRun {
     pub style: u32,
 }
 
+/// One row on screen: a whole line, or one row of a wrapped line.
 #[derive(Clone, Debug, PartialEq)]
 pub struct FrameLine {
     pub line: usize,
+    /// Row within the line; 0 for its first row, which carries the line number.
+    pub row: usize,
     pub y: f32,
     pub height: f32,
     pub runs: Vec<TextRun>,
@@ -89,14 +98,14 @@ pub struct Frame {
     pub fold_ellipses: Vec<Rect>,
 }
 
-/// A collapsed region: the lines after the header line down to the line holding `end` are
-/// hidden. Both ends are char offsets (the end of the header line and the end of the last
-/// hidden line), so the fold follows edits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Fold {
-    start: usize,
-    end: usize,
-}
+/// Width of the fold marker column at the right of the gutter, in cells.
+const FOLD_MARKER_CELLS: f32 = 2.0;
+
+/// Space kept free for the vertical scrollbar when wrapping to the viewport.
+const SCROLLBAR_WIDTH: f32 = 14.0;
+
+/// Narrowest wrapping width, in cells.
+const MIN_WRAP_CELLS: usize = 10;
 
 #[derive(Clone, Debug)]
 pub struct View {
@@ -107,18 +116,25 @@ pub struct View {
     scroll_left: f32,
     /// Widest line laid out so far, in cells. Grows as the user scrolls; full scans are avoided.
     widest_cells: usize,
-    /// Tab size of the model at the last layout; used by hit testing and reveal.
+    /// Tab size of the model at the last sync; used by hit testing and reveal.
     tab_size: usize,
+    /// Word wrap at the viewport's width.
+    wrap: bool,
     heights: HeightMap,
-    /// Model version `heights`, `folds` and `foldable` describe.
-    synced: Option<u64>,
-    /// Line height `heights` was built with.
-    synced_line_height: f32,
+    /// What `heights` was computed for: model version, line height, wrap width, tab size.
+    synced: Option<Synced>,
     folds: Vec<Fold>,
-    /// Union of the lines hidden by `folds`, sorted and disjoint.
-    hidden: Vec<Range<usize>>,
+    hidden: Hidden,
     /// Regions that can be folded, as (header line, last line), sorted by header.
     foldable: Vec<(usize, usize)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Synced {
+    version: u64,
+    line_height: f32,
+    wrap_cells: Option<usize>,
+    tab_size: usize,
 }
 
 impl View {
@@ -131,11 +147,11 @@ impl View {
             scroll_left: 0.0,
             widest_cells: 0,
             tab_size: 4,
+            wrap: false,
             heights: HeightMap::new(1, metrics.line_height),
             synced: None,
-            synced_line_height: metrics.line_height,
             folds: Vec::new(),
-            hidden: Vec::new(),
+            hidden: Hidden::default(),
             foldable: Vec::new(),
         }
     }
@@ -153,9 +169,37 @@ impl View {
         self.height = height;
     }
 
+    /// Turns word wrap at the viewport's width on or off. Takes effect at the next sync.
+    pub fn set_wrap(&mut self, wrap: bool) {
+        self.wrap = wrap;
+        if wrap {
+            self.scroll_left = 0.0;
+        }
+    }
+
+    pub fn wraps(&self) -> bool {
+        self.wrap
+    }
+
     pub fn gutter_width(&self, rope: &Rope) -> f32 {
         let digits = rope.len_lines().to_string().len().max(2);
-        (digits + 3) as f32 * self.metrics.char_width + FOLD_MARKER_CELLS * self.metrics.char_width
+        (digits as f32 + 3.0 + FOLD_MARKER_CELLS) * self.metrics.char_width
+    }
+
+    /// Wrapping width in cells, when wrapping.
+    fn wrap_cells(&self, rope: &Rope) -> Option<usize> {
+        self.wrap.then(|| {
+            let text = self.width - self.gutter_width(rope) - SCROLLBAR_WIDTH;
+            ((text / self.metrics.char_width).floor().max(0.0) as usize).max(MIN_WRAP_CELLS)
+        })
+    }
+
+    /// The rows `line` shows as.
+    pub fn line_rows(&self, rope: &Rope, line: usize) -> LineRows {
+        match self.synced.and_then(|s| s.wrap_cells) {
+            Some(w) => wrap_line(rope, line, self.tab_size, w),
+            None => LineRows::single(),
+        }
     }
 
     // ---- model sync ----
@@ -164,18 +208,24 @@ impl View {
     /// before hit testing or revealing right after an edit.
     pub fn sync(&mut self, model: &TextModel) {
         let rope = model.rope();
-        let lh = self.metrics.line_height;
-        let version = model.version();
-        if self.synced == Some(version) && self.synced_line_height == lh && self.heights.len() == rope.len_lines() {
+        let target = Synced {
+            version: model.version(),
+            line_height: self.metrics.line_height,
+            wrap_cells: self.wrap_cells(rope),
+            tab_size: model.options.tab_size.max(1),
+        };
+        if self.synced == Some(target) && self.heights.len() == rope.len_lines() {
             return;
         }
+        self.tab_size = target.tab_size;
+        let lh = target.line_height;
+        let layout_same = self.synced.is_some_and(|s| Synced { version: target.version, ..s } == target);
         let mut incremental = false;
-        if let Some(v) = self.synced.filter(|_| self.synced_line_height == lh)
-            && let (Ok(events), Ok(changes)) = (model.events_since(v), model.changes_since(v))
+        if let Some(s) = self.synced.filter(|_| layout_same)
+            && let (Ok(events), Ok(changes)) = (model.events_since(s.version), model.changes_since(s.version))
         {
-            for r in std::mem::take(&mut self.hidden) {
-                self.heights.fill(r, lh);
-            }
+            // Lines whose rows must be measured again, in final coordinates.
+            let mut touched: Vec<Range<usize>> = Vec::new();
             for e in events {
                 let a = e.start_point.row;
                 let old = e.old_end_point.row - a;
@@ -183,7 +233,11 @@ impl View {
                 if old != 0 || new != 0 {
                     self.heights.splice(a + 1, old, std::iter::repeat_n(lh, new));
                     shift_foldable(&mut self.foldable, a, old, new);
+                    for r in &mut touched {
+                        shift_lines(r, a, old, new);
+                    }
                 }
+                touched.push(a..a + new + 1);
             }
             for c in changes {
                 for f in &mut self.folds {
@@ -192,27 +246,42 @@ impl View {
                 }
             }
             incremental = self.heights.len() == rope.len_lines();
+            if incremental && target.wrap_cells.is_some() {
+                self.synced = Some(target);
+                for r in touched {
+                    for line in r.start..r.end.min(rope.len_lines()) {
+                        let rows = self.line_rows(rope, line).count();
+                        self.heights.set(line, rows as f32 * lh);
+                    }
+                }
+            }
         }
         if !incremental {
-            self.heights = HeightMap::new(rope.len_lines(), lh);
-            self.hidden.clear();
-            if self.synced.is_some() && self.synced_line_height == lh {
+            let stale = self.synced.is_some() && layout_same;
+            self.synced = Some(target);
+            self.heights = match target.wrap_cells {
+                None => HeightMap::new(rope.len_lines(), lh),
+                Some(width) => {
+                    let mut map = HeightMap::new(0, lh);
+                    let tab = self.tab_size;
+                    // Sequential line access; looking each line up costs more than wrapping it.
+                    let rows = rope.lines().map(|line| wrap_slice(line, tab, width).count() as f32 * lh);
+                    map.splice(0, 0, rows);
+                    map
+                }
+            };
+            if stale {
                 // The change log no longer reaches back; positions are unknown.
                 self.folds.clear();
                 self.foldable.clear();
             }
         }
-        self.synced = Some(version);
-        self.synced_line_height = lh;
+        self.synced = Some(target);
         self.apply_folds(rope);
     }
 
-    /// Recomputes `hidden` from `folds` and zeroes those lines' heights.
+    /// Recomputes the hidden lines from `folds`.
     fn apply_folds(&mut self, rope: &Rope) {
-        let lh = self.metrics.line_height;
-        for r in std::mem::take(&mut self.hidden) {
-            self.heights.fill(r, lh);
-        }
         let len = rope.len_chars();
         let mut ranges: Vec<Range<usize>> = Vec::new();
         self.folds.retain(|f| {
@@ -225,16 +294,7 @@ impl View {
         });
         self.folds.sort_by_key(|f| f.start);
         self.folds.dedup_by_key(|f| rope.char_to_line(f.start.min(len)));
-        ranges.sort_by_key(|r| r.start);
-        for r in ranges {
-            match self.hidden.last_mut() {
-                Some(last) if r.start <= last.end => last.end = last.end.max(r.end),
-                _ => self.hidden.push(r),
-            }
-        }
-        for r in self.hidden.clone() {
-            self.heights.fill(r, 0.0);
-        }
+        self.hidden = Hidden::new(ranges, &self.heights);
     }
 
     // ---- folding ----
@@ -249,22 +309,17 @@ impl View {
     }
 
     pub fn is_hidden(&self, line: usize) -> bool {
-        self.hidden_range(line).is_some()
-    }
-
-    fn hidden_range(&self, line: usize) -> Option<Range<usize>> {
-        let i = self.hidden.partition_point(|r| r.end <= line);
-        self.hidden.get(i).filter(|r| r.start <= line).cloned()
+        self.hidden.run_of(line).is_some()
     }
 
     /// `line`, or the first shown line after the hidden run holding it.
     fn next_shown(&self, line: usize) -> usize {
-        self.hidden_range(line).map_or(line, |r| r.end)
+        self.hidden.run_of(line).map_or(line, |i| self.hidden.ranges[i].end)
     }
 
     /// `line`, or the header above the hidden run holding it.
     fn prev_shown(&self, line: usize) -> usize {
-        self.hidden_range(line).map_or(line, |r| r.start.saturating_sub(1))
+        self.hidden.run_of(line).map_or(line, |i| self.hidden.ranges[i].start.saturating_sub(1))
     }
 
     /// Shown lines in `lines`, skipping folded ones without walking them.
@@ -372,32 +427,52 @@ impl View {
         true
     }
 
+    /// The header line of the fold hiding `line`, or `line` when it is shown.
+    pub fn shown_line_for(&self, line: usize) -> usize {
+        self.prev_shown(line)
+    }
+
     // ---- vertical geometry ----
 
     /// Document y of the top of `line`. A hidden line sits at the top of the next shown line.
     pub fn line_top(&self, line: usize) -> f64 {
         if line < self.heights.len() {
-            self.heights.top(line)
+            self.hidden.top(&self.heights, line)
         } else {
             // Not synced yet: extrapolate past the known lines.
-            self.heights.total() + (line - self.heights.len()) as f64 * self.metrics.line_height as f64
+            self.hidden.total(&self.heights) + (line - self.heights.len()) as f64 * self.metrics.line_height as f64
         }
     }
 
+    /// Height of `line`: all its rows, or 0 when it is folded away.
     pub fn line_height(&self, line: usize) -> f32 {
-        if line < self.heights.len() { self.heights.height(line) } else { self.metrics.line_height }
+        if line >= self.heights.len() {
+            self.metrics.line_height
+        } else if self.is_hidden(line) {
+            0.0
+        } else {
+            self.heights.height(line)
+        }
     }
 
     /// The shown line at document y, clamped into the document.
     pub fn line_at_y(&self, rope: &Rope, y: f64) -> usize {
-        let total = self.heights.total();
+        let total = self.hidden.total(&self.heights);
         let line = if y >= total && self.heights.len() < rope.len_lines() {
             // Not synced yet: extrapolate past the known lines.
             self.heights.len() + ((y - total) / self.metrics.line_height as f64) as usize
         } else {
-            self.heights.line_at(y)
+            self.hidden.line_at(&self.heights, y)
         };
         line.min(rope.len_lines() - 1)
+    }
+
+    /// The line and row at document y.
+    fn row_at_y(&self, rope: &Rope, y: f64) -> (usize, usize) {
+        let line = self.line_at_y(rope, y);
+        let row = ((y - self.line_top(line)) / self.metrics.line_height as f64).max(0.0) as usize;
+        let rows = (self.line_height(line) / self.metrics.line_height).round().max(1.0) as usize;
+        (line, row.min(rows - 1))
     }
 
     /// Height of the scrollable content. The last line can scroll up to the top of the viewport.
@@ -407,6 +482,9 @@ impl View {
     }
 
     pub fn content_width(&self, rope: &Rope) -> f32 {
+        if self.wrap {
+            return self.width;
+        }
         self.gutter_width(rope) + (self.widest_cells + 2) as f32 * self.metrics.char_width
     }
 
@@ -423,8 +501,31 @@ impl View {
         (self.line_top(line) - self.scroll_top) as f32
     }
 
-    /// The caret target `lines` shown lines above (negative) or below `head`, keeping
-    /// `goal` (a char column) when given: (offset, goal column).
+    /// Row and x (cells from the text area's left edge, before scrolling) of char `column`
+    /// on `line`.
+    fn locate(&self, rope: &Rope, rows: &LineRows, line: usize, column: usize) -> (usize, usize) {
+        let row = rows.row_of(column);
+        let tab = self.tab_size;
+        let start_cells = if row == 0 { 0 } else { visual_column(rope, line, rows.starts[row], tab) };
+        (row, rows.indent_of(row) + visual_column(rope, line, column, tab) - start_cells)
+    }
+
+    /// Char column on `row` of `line` nearest to x `cells` (as [`View::locate`] measures).
+    /// Past the end of a row that wraps, the column stays before the row's last char.
+    fn column_in_row(&self, rope: &Rope, rows: &LineRows, line: usize, row: usize, cells: f32) -> usize {
+        let tab = self.tab_size;
+        let start = rows.starts[row];
+        let start_cells = if row == 0 { 0 } else { visual_column(rope, line, start, tab) };
+        let target = (cells - rows.indent_of(row) as f32).max(0.0) + start_cells as f32;
+        let column = column_at_cells(rope, line, target, tab).max(start);
+        match rows.starts.get(row + 1) {
+            Some(&next) => column.min(next - 1),
+            None => column,
+        }
+    }
+
+    /// The caret target `lines` rows above (negative) or below `head`, skipping folded
+    /// lines and keeping `goal` (x in cells within the row) when given: (offset, goal).
     pub fn vertical_target(
         &self,
         rope: &Rope,
@@ -433,23 +534,43 @@ impl View {
         lines: isize,
     ) -> (usize, Option<usize>) {
         let p = char_to_position(rope, head);
-        let goal = goal.unwrap_or(p.column);
-        let mut line = p.line;
+        let mut line = self.prev_shown(p.line);
+        let mut rows = self.line_rows(rope, line);
+        let (mut row, x) = self.locate(rope, &rows, line, p.column.min(line_len(rope, line)));
+        let goal = goal.unwrap_or(x);
         for _ in 0..lines.unsigned_abs() {
             if lines < 0 {
+                if row > 0 {
+                    row -= 1;
+                    continue;
+                }
                 if line == 0 {
                     return (0, None);
                 }
                 line = self.prev_shown(line - 1);
+                rows = self.line_rows(rope, line);
+                row = rows.count() - 1;
             } else {
+                if row + 1 < rows.count() {
+                    row += 1;
+                    continue;
+                }
                 let next = self.next_shown(line + 1);
                 if next >= rope.len_lines() {
                     return (rope.len_chars(), None);
                 }
                 line = next;
+                rows = self.line_rows(rope, line);
+                row = 0;
             }
         }
-        (rope.line_to_char(line) + goal.min(line_len(rope, line)), Some(goal))
+        let column = self.column_in_row(rope, &rows, line, row, goal as f32);
+        (rope.line_to_char(line) + column, Some(goal))
+    }
+
+    /// Rows a page holds.
+    pub fn page_rows(&self) -> usize {
+        ((self.height / self.metrics.line_height) as usize).saturating_sub(1).max(1)
     }
 
     // ---- scrolling ----
@@ -458,7 +579,7 @@ impl View {
         let max_top = (self.content_height(rope) - self.height as f64).max(0.0);
         let max_left = (self.content_width(rope) - self.width).max(0.0);
         self.scroll_top = top.clamp(0.0, max_top);
-        self.scroll_left = left.clamp(0.0, max_left);
+        self.scroll_left = if self.wrap { 0.0 } else { left.clamp(0.0, max_left) };
     }
 
     pub fn scroll_by(&mut self, rope: &Rope, dx: f32, dy: f64) {
@@ -469,8 +590,11 @@ impl View {
     pub fn reveal(&mut self, rope: &Rope, pos: usize) {
         let p = char_to_position(rope, pos);
         let line = self.prev_shown(p.line);
-        let top = self.line_top(line);
-        let bottom = top + self.line_height(line) as f64;
+        let rows = self.line_rows(rope, line);
+        let (row, x_cells) = if line == p.line { self.locate(rope, &rows, line, p.column) } else { (0, 0) };
+        let lh = self.metrics.line_height as f64;
+        let top = self.line_top(line) + row as f64 * lh;
+        let bottom = top + lh;
         let mut scroll_top = self.scroll_top;
         if top < scroll_top {
             scroll_top = top;
@@ -479,11 +603,10 @@ impl View {
         }
 
         let cw = self.metrics.char_width;
-        let cells = visual_column(rope, p.line, p.column, self.tab_size) as f32;
-        self.widest_cells = self.widest_cells.max(cells as usize + 1);
+        self.widest_cells = self.widest_cells.max(x_cells + 1);
         let text_width = self.width - self.gutter_width(rope);
         let margin = 4.0 * cw;
-        let x = cells * cw;
+        let x = x_cells as f32 * cw;
         let mut scroll_left = self.scroll_left;
         if x - margin < scroll_left {
             scroll_left = (x - margin).max(0.0);
@@ -497,17 +620,25 @@ impl View {
 
     /// Char offset nearest to a point in viewport coordinates.
     pub fn hit_test(&self, rope: &Rope, x: f32, y: f32) -> usize {
-        let (line, cells) = self.line_and_cells_at(rope, x, y);
-        rope.line_to_char(line) + column_at_cells(rope, line, cells, self.tab_size)
+        let (line, row) = self.row_at_y(rope, y as f64 + self.scroll_top);
+        let rows = self.line_rows(rope, line);
+        let cells = ((x - self.gutter_width(rope) + self.scroll_left) / self.metrics.char_width).max(0.0);
+        rope.line_to_char(line) + self.column_in_row(rope, &rows, line, row.min(rows.count() - 1), cells)
     }
 
-    /// The line and visual column (fractional cells, may lie past the line's end) at a point
-    /// in viewport coordinates. Column selection uses cells, so it stays rectangular across
-    /// lines with tabs.
+    /// The line and visual column (fractional cells from the line start, may lie past the
+    /// line's end) at a point in viewport coordinates. Column selection uses cells, so it
+    /// stays rectangular across lines with tabs.
     pub fn line_and_cells_at(&self, rope: &Rope, x: f32, y: f32) -> (usize, f32) {
-        let line = self.line_at_y(rope, y as f64 + self.scroll_top);
+        let (line, row) = self.row_at_y(rope, y as f64 + self.scroll_top);
         let cells = ((x - self.gutter_width(rope) + self.scroll_left) / self.metrics.char_width).max(0.0);
-        (line, cells)
+        if row == 0 {
+            return (line, cells);
+        }
+        let rows = self.line_rows(rope, line);
+        let row = row.min(rows.count() - 1);
+        let start_cells = visual_column(rope, line, rows.starts[row], self.tab_size) as f32;
+        (line, (cells - rows.indent_of(row) as f32).max(0.0) + start_cells)
     }
 
     /// Whether viewport x falls on the fold marker column of the gutter.
@@ -525,40 +656,52 @@ impl View {
 
     pub fn layout(&mut self, model: &TextModel, selections: &Selections, styler: &dyn Styler) -> Frame {
         self.sync(model);
-        self.tab_size = model.options.tab_size.max(1);
         let tab = self.tab_size;
         let rope = model.rope();
-        let Metrics { char_width: cw, .. } = self.metrics;
+        let Metrics { char_width: cw, line_height: lh } = self.metrics;
         let gutter = self.gutter_width(rope);
         let visible = self.visible_lines(rope);
         let first_cell = (self.scroll_left / cw).floor() as usize;
         let last_cell = ((self.scroll_left + self.width - gutter) / cw).ceil() as usize + 1;
-        let x_of = |cells: usize| gutter + cells as f32 * cw - self.scroll_left;
 
         let mut frame = Frame { gutter_width: gutter, ..Frame::default() };
         let mut widest = self.widest_cells;
         let len = rope.len_chars();
         let folded_headers: Vec<usize> = self.folds.iter().map(|f| rope.char_to_line(f.start.min(len))).collect();
         let mut foldable_at = self.foldable.partition_point(|&(s, _)| s < visible.start);
+        let (top, bottom) = (-lh, self.height + lh);
 
         for line in self.shown(visible.clone()) {
             let spans = styler.spans(line);
-            let (runs, cells) = layout_line(rope, line, &spans, first_cell..last_cell, tab, &x_of);
-            widest = widest.max(cells);
+            let rows = self.line_rows(rope, line);
             let y = self.y_of(line);
-            let height = self.line_height(line);
+            let line_len = line_len(rope, line);
+            for row in 0..rows.count() {
+                let row_y = y + row as f32 * lh;
+                if row_y < top || row_y > bottom {
+                    continue;
+                }
+                let cols = rows.starts[row]..rows.starts.get(row + 1).copied().unwrap_or(line_len);
+                let start_cells = if row == 0 { 0 } else { visual_column(rope, line, cols.start, tab) };
+                let shift = rows.indent_of(row) as f32 - start_cells as f32;
+                let x_of = |cells: usize| gutter + (cells as f32 + shift) * cw - self.scroll_left;
+                let window = first_cell + start_cells..last_cell + start_cells;
+                let (runs, cells) = layout_line(rope, line, cols, &spans, window, tab, &x_of);
+                widest = widest.max(cells);
+                frame.lines.push(FrameLine { line, row, y: row_y, height: lh, runs });
+            }
             while foldable_at < self.foldable.len() && self.foldable[foldable_at].0 < line {
                 foldable_at += 1;
             }
             let folded = folded_headers.contains(&line);
             if folded || self.foldable.get(foldable_at).is_some_and(|&(s, _)| s == line) {
-                frame.fold_markers.push(FoldMarker { line, y, height, folded });
+                frame.fold_markers.push(FoldMarker { line, y, height: lh, folded });
             }
             if folded {
-                let end = x_of(visual_column(rope, line, line_len(rope, line), tab));
-                frame.fold_ellipses.push(Rect { x: end + cw, y, width: 3.0 * cw, height });
+                let (row, x) = self.locate(rope, &rows, line, line_len);
+                let end = gutter + x as f32 * cw - self.scroll_left;
+                frame.fold_ellipses.push(Rect { x: end + cw, y: y + row as f32 * lh, width: 3.0 * cw, height: lh });
             }
-            frame.lines.push(FrameLine { line, y, height, runs });
         }
 
         let primary = selections.primary();
@@ -573,14 +716,8 @@ impl View {
         }
 
         for sel in selections.iter() {
-            let head = char_to_position(rope, sel.head);
-            if visible.contains(&head.line) && !self.is_hidden(head.line) {
-                frame.carets.push(Rect {
-                    x: x_of(visual_column(rope, head.line, head.column, tab)),
-                    y: self.y_of(head.line),
-                    width: 2.0,
-                    height: self.line_height(head.line),
-                });
+            if let Some(r) = self.caret_rect(rope, sel.head, gutter) {
+                frame.carets.push(r);
             }
             if sel.is_empty() {
                 continue;
@@ -591,24 +728,62 @@ impl View {
         frame
     }
 
-    /// Rectangles covering `range` on the visible lines; a line break inside the range adds
-    /// half a cell at the end of its line, as for selections.
+    /// The caret at char `pos`, if its line is visible.
+    fn caret_rect(&self, rope: &Rope, pos: usize, gutter: f32) -> Option<Rect> {
+        let p = char_to_position(rope, pos);
+        if !self.visible_lines(rope).contains(&p.line) || self.is_hidden(p.line) {
+            return None;
+        }
+        let rows = self.line_rows(rope, p.line);
+        let (row, x) = self.locate(rope, &rows, p.line, p.column);
+        let lh = self.metrics.line_height;
+        Some(Rect {
+            x: gutter + x as f32 * self.metrics.char_width - self.scroll_left,
+            y: self.y_of(p.line) + row as f32 * lh,
+            width: 2.0,
+            height: lh,
+        })
+    }
+
+    /// Rectangles covering `range` on the visible lines, one per row; a line break inside
+    /// the range adds half a cell at the end of its line, as for selections.
     fn range_rects(&self, rope: &Rope, range: std::ops::Range<usize>, gutter: f32) -> Vec<Rect> {
-        let tab = self.tab_size;
         let cw = self.metrics.char_width;
+        let lh = self.metrics.line_height;
         let visible = self.visible_lines(rope);
-        let x_of = |cells: usize| gutter + cells as f32 * cw - self.scroll_left;
+        let x_at = |cells: usize| gutter + cells as f32 * cw - self.scroll_left;
         let (start, end) = (char_to_position(rope, range.start), char_to_position(rope, range.end));
         let mut out = Vec::new();
         let lines = start.line.max(visible.start)..(end.line + 1).min(visible.end);
         for line in self.shown(lines) {
             let from = if line == start.line { start.column } else { 0 };
             let (to, newline) = if line == end.line { (end.column, false) } else { (line_len(rope, line), true) };
-            let x0 = x_of(visual_column(rope, line, from, tab));
-            let x1 = x_of(visual_column(rope, line, to, tab)) + if newline { cw * 0.5 } else { 0.0 };
-            out.push(Rect { x: x0, y: self.y_of(line), width: x1 - x0, height: self.line_height(line) });
+            let rows = self.line_rows(rope, line);
+            let y = self.y_of(line);
+            let (first_row, x_from) = self.locate(rope, &rows, line, from);
+            let (last_row, x_to) = self.locate(rope, &rows, line, to);
+            for row in first_row..=last_row {
+                let x0 = if row == first_row { x_from } else { rows.indent_of(row) };
+                let (x1, extra) = if row == last_row {
+                    (x_to, if newline { cw * 0.5 } else { 0.0 })
+                } else {
+                    // Up to the end of the row, where the next row's first char starts.
+                    let (_, end_cells) = self.locate_row_end(rope, &rows, line, row);
+                    (end_cells, 0.0)
+                };
+                let (x0, x1) = (x_at(x0), x_at(x1) + extra);
+                out.push(Rect { x: x0, y: y + row as f32 * lh, width: x1 - x0, height: lh });
+            }
         }
         out
+    }
+
+    /// Row and x of the end of `row`, a row that is followed by another.
+    fn locate_row_end(&self, rope: &Rope, rows: &LineRows, line: usize, row: usize) -> (usize, usize) {
+        let tab = self.tab_size;
+        let start_cells = if row == 0 { 0 } else { visual_column(rope, line, rows.starts[row], tab) };
+        let end_cells = visual_column(rope, line, rows.starts[row + 1], tab);
+        (row, rows.indent_of(row) + end_cells - start_cells)
     }
 
     /// Rectangles for decorations on the visible lines, with each decoration's kind. Call
@@ -694,52 +869,35 @@ impl View {
     }
 
     /// Positions of spaces and tabs on the visible lines, for drawing them as `·` and `→`:
-    /// (x of the cell start, y of the line top, width in cells, is a tab).
+    /// (x of the cell start, y of the row top, width in cells, is a tab).
     pub fn whitespace_marks(&self, model: &TextModel) -> Vec<(f32, f32, usize, bool)> {
         let rope = model.rope();
         let tab = self.tab_size.max(1);
         let cw = self.metrics.char_width;
+        let lh = self.metrics.line_height;
         let gutter = self.gutter_width(rope);
         let mut out = Vec::new();
         for line in self.shown(self.visible_lines(rope)) {
             let y = self.y_of(line);
+            let rows = self.line_rows(rope, line);
             let mut cells = 0;
-            for c in rope.line(line).chars().take(line_len(rope, line).min(MAX_MARKED_COLUMNS)) {
+            let mut row = 0;
+            let mut row_shift = 0isize;
+            for (col, c) in rope.line(line).chars().take(line_len(rope, line).min(MAX_MARKED_COLUMNS)).enumerate() {
+                if rows.starts.get(row + 1) == Some(&col) {
+                    row += 1;
+                    row_shift = rows.indent as isize - cells as isize;
+                }
                 let w = cell_width(c, cells, tab);
                 if c == ' ' || c == '\t' {
-                    out.push((gutter + cells as f32 * cw - self.scroll_left, y, w, c == '\t'));
+                    let x = (cells as isize + row_shift) as f32;
+                    out.push((gutter + x * cw - self.scroll_left, y + row as f32 * lh, w, c == '\t'));
                 }
                 cells += w;
             }
         }
         out
     }
-}
-
-/// Width of the fold marker column at the right of the gutter, in cells.
-const FOLD_MARKER_CELLS: f32 = 2.0;
-
-/// A fold marker in the gutter: the line heads a region that can be folded, or is folded.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct FoldMarker {
-    pub line: usize,
-    pub y: f32,
-    pub height: f32,
-    pub folded: bool,
-}
-
-/// Moves foldable regions past an edit that replaced lines `a..=a + old` with `a..=a + new`.
-/// Regions headed inside the edit are dropped until the provider recomputes them.
-fn shift_foldable(foldable: &mut Vec<(usize, usize)>, a: usize, old: usize, new: usize) {
-    let shift = |l: usize| if l > a + old { l + new - old } else { l.min(a + new) };
-    foldable.retain_mut(|(s, e)| {
-        if *s > a && *s <= a + old {
-            return false;
-        }
-        *s = shift(*s);
-        *e = shift(*e);
-        *e > *s
-    });
 }
 
 /// Nearest blank-line lookaround for guide levels.
@@ -771,53 +929,6 @@ fn indent_level(rope: &Rope, line: usize, tab: usize) -> Option<usize> {
     None
 }
 
-/// Foldable regions from indentation: a non-blank line followed by more deeply indented
-/// lines heads a region ending at the last of them (trailing blank lines excluded). Used
-/// when no syntax tree gives better ranges, and for languages like Python where indentation
-/// is the structure.
-pub fn indent_fold_ranges(rope: &Rope, tab: usize) -> Vec<(usize, usize)> {
-    let tab = tab.max(1);
-    let total = rope.len_lines();
-    let mut out = Vec::new();
-    // Open headers as (line, indent cells); closed when a line at or below their indent appears.
-    let mut open: Vec<(usize, usize)> = Vec::new();
-    let mut last_nonblank = 0;
-    for line in 0..total {
-        let Some(cells) = indent_cells(rope, line, tab) else { continue };
-        while let Some(&(h, ind)) = open.last() {
-            if cells > ind {
-                break;
-            }
-            open.pop();
-            if last_nonblank > h {
-                out.push((h, last_nonblank));
-            }
-        }
-        open.push((line, cells));
-        last_nonblank = line;
-    }
-    while let Some((h, _)) = open.pop() {
-        if last_nonblank > h {
-            out.push((h, last_nonblank));
-        }
-    }
-    out.sort_unstable();
-    out
-}
-
-fn indent_cells(rope: &Rope, line: usize, tab: usize) -> Option<usize> {
-    let mut cells = 0;
-    for c in rope.line(line).chars() {
-        match c {
-            ' ' => cells += 1,
-            '\t' => cells += tab - cells % tab,
-            '\n' | '\r' => return None,
-            _ => return Some(cells),
-        }
-    }
-    None
-}
-
 /// Whitespace marks stop after this many chars on a line.
 const MAX_MARKED_COLUMNS: usize = 2000;
 
@@ -832,7 +943,7 @@ pub struct Guide {
     pub active: bool,
 }
 
-fn cell_width(c: char, at_cell: usize, tab: usize) -> usize {
+pub(crate) fn cell_width(c: char, at_cell: usize, tab: usize) -> usize {
     if c == '\t' { tab - at_cell % tab } else { c.width().unwrap_or(1) }
 }
 
@@ -855,28 +966,29 @@ pub fn column_at_cells(rope: &Rope, line: usize, cells: f32, tab: usize) -> usiz
     len
 }
 
-/// Lays out the cells of `line` inside `window`. Returns the runs and the line's width in
-/// cells, measured up to the end of the window.
+/// Lays out the chars in `cols` of `line` that fall inside `window` (cells from the line
+/// start). Returns the runs and the line's width in cells, measured up to the end of the
+/// window.
 fn layout_line(
     rope: &Rope,
     line: usize,
+    cols: Range<usize>,
     spans: &[StyleSpan],
     window: Range<usize>,
     tab: usize,
     x_of: &dyn Fn(usize) -> f32,
 ) -> (Vec<TextRun>, usize) {
-    let len = line_len(rope, line);
     let mut runs: Vec<TextRun> = Vec::new();
     let mut span_idx = 0;
     let mut acc = 0usize;
-    for (col, c) in rope.line(line).chars().take(len).enumerate() {
+    for (col, c) in rope.line(line).chars().take(cols.end).enumerate() {
         let w = cell_width(c, acc, tab);
         if acc >= window.end {
             // Past the visible area: the rest of the line only matters for its width,
             // which is approximated by the char count to keep long lines cheap.
-            return (runs, acc + (len - col));
+            return (runs, acc + (cols.end - col));
         }
-        if acc + w > window.start {
+        if col >= cols.start && acc + w > window.start {
             while span_idx < spans.len() && spans[span_idx].end <= col {
                 span_idx += 1;
             }
@@ -1022,12 +1134,6 @@ mod fold_tests {
     }
 
     #[test]
-    fn indentation_gives_fold_ranges() {
-        let rope = Rope::from_str("a\n  b\n\n  c\n    d\ne\n  f\n");
-        assert_eq!(indent_fold_ranges(&rope, 4), vec![(0, 4), (3, 4), (5, 6)]);
-    }
-
-    #[test]
     fn folded_lines_take_no_space() {
         let (doc, mut v) = setup();
         assert!(v.fold(doc.model(), 2), "line 2 lies in the region headed by line 0");
@@ -1086,12 +1192,105 @@ mod fold_tests {
             v.sync(doc.model());
             let lines = doc.rope().len_lines();
             assert_eq!(v.heights.len(), lines);
-            let mut fresh = HeightMap::new(lines, 20.0);
-            for r in &v.hidden {
-                fresh.fill(r.clone(), 0.0);
-            }
+            // Shown tops are the sum of the heights of the shown lines above.
+            let mut top = 0.0f64;
             for l in 0..lines {
-                assert_eq!(v.heights.height(l), fresh.height(l), "line {l} at step {step}");
+                assert_eq!(v.line_top(l), top, "top of line {l} at step {step}");
+                if !v.is_hidden(l) {
+                    top += 20.0;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod wrap_tests {
+    use super::*;
+    use rustaco_core::{Document, Edit, Selection};
+
+    /// 20 cells of text: the gutter takes 7 cells and the scrollbar 14 px.
+    fn wrapped_view() -> View {
+        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 284.0, 200.0);
+        v.set_wrap(true);
+        v
+    }
+
+    #[test]
+    fn long_lines_take_several_rows() {
+        let doc = Document::new("short\nthe quick brown fox jumps over the lazy dog\nend");
+        let mut v = wrapped_view();
+        let frame = v.layout(doc.model(), doc.selections(), &Plain);
+        let rows: Vec<(usize, usize, f32)> = frame.lines.iter().map(|l| (l.line, l.row, l.y)).collect();
+        assert_eq!(rows, vec![(0, 0, 0.0), (1, 0, 20.0), (1, 1, 40.0), (1, 2, 60.0), (2, 0, 80.0)]);
+        assert_eq!(frame.lines[2].runs[0].text, "jumps over the lazy ");
+        assert_eq!(v.line_top(2), 80.0);
+        assert_eq!(v.line_at_y(doc.rope(), 70.0), 1);
+    }
+
+    #[test]
+    fn carets_hit_tests_and_moves_follow_rows() {
+        let text = "the quick brown fox jumps over the lazy dog";
+        let mut doc = Document::new(text);
+        let mut v = wrapped_view();
+        let jumps = text.find("jumps").unwrap();
+        doc.set_selections(rustaco_core::Selections::single(Selection::cursor(jumps + 2)));
+        let frame = v.layout(doc.model(), doc.selections(), &Plain);
+        let g = frame.gutter_width;
+        assert_eq!((frame.carets[0].x, frame.carets[0].y), (g + 20.0, 20.0));
+        assert_eq!(v.hit_test(doc.rope(), g + 21.0, 25.0), jumps + 2);
+        assert_eq!(
+            v.hit_test(doc.rope(), g + 500.0, 5.0),
+            jumps - 1,
+            "past a wrapping row's end, before its last char"
+        );
+        let (up, goal) = v.vertical_target(doc.rope(), jumps + 2, None, -1);
+        assert_eq!((up, goal), (2, Some(2)));
+        assert_eq!(v.vertical_target(doc.rope(), up, goal, 2).0, text.find("dog").unwrap() + 2);
+        let rects = v.char_range_rects(doc.model(), 4..jumps + 2);
+        assert_eq!(rects.len(), 2, "one rectangle per row");
+    }
+
+    #[test]
+    fn every_column_round_trips_through_rows() {
+        let text =
+            "\tfn wrapped(aaa: u32, bbbbbbbbbbbbbbbbbbbbbbbbbbbbb: \u{4E2D}\u{4E2D}, c: [u8; 4]) -> bool { true }";
+        let doc = Document::new(text);
+        let mut v = wrapped_view();
+        v.sync(doc.model());
+        let rope = doc.rope();
+        let rows = v.line_rows(rope, 0);
+        assert!(rows.count() > 3);
+        for column in 0..line_len(rope, 0) {
+            let (row, x) = v.locate(rope, &rows, 0, column);
+            assert_eq!(v.column_in_row(rope, &rows, 0, row, x as f32), column, "column {column}");
+        }
+    }
+
+    #[test]
+    fn heights_follow_edits_while_wrapping() {
+        let mut seed = 0x51ed_270b_u64;
+        let mut rand = move |n: usize| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed % n.max(1) as u64) as usize
+        };
+        let text: String = (0..200).map(|i| format!("{} {}\n", "word ".repeat(i % 9), i)).collect();
+        let mut doc = Document::new(&text);
+        let mut v = wrapped_view();
+        v.sync(doc.model());
+        for step in 0..200 {
+            let len = doc.rope().len_chars();
+            let a = rand(len + 1);
+            let b = (a + rand(30)).min(len);
+            let insert = ["", "x", "\n", " long words here and there ", "\nnew line\n"][rand(5)];
+            doc.apply_edits(vec![Edit::new(a, b, insert)]);
+            v.sync(doc.model());
+            let mut fresh = wrapped_view();
+            fresh.sync(doc.model());
+            for l in 0..doc.rope().len_lines() {
+                assert_eq!(v.heights.height(l), fresh.heights.height(l), "line {l} at step {step}");
             }
         }
     }

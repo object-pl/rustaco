@@ -239,6 +239,7 @@ export class RustacoEditor {
     guides = true,
     occurrencesHighlight = true,
     bracketPairColorization = true,
+    wordWrap = 'off',
     fontFamily = '"Cascadia Code", Consolas, "Courier New", monospace',
     fontSize = 14,
   } = {}) {
@@ -261,7 +262,7 @@ export class RustacoEditor {
     this.core = new Editor(this.canvas, this.model.core, fontFamily, fontSize);
     this.setKeymap(keymap);
     this.options = {};
-    this.setOptions({ rulers, renderWhitespace, guides, occurrencesHighlight, bracketPairColorization });
+    this.setOptions({ rulers, renderWhitespace, guides, occurrencesHighlight, bracketPairColorization, wordWrap });
     this.refreshFolding();
     this.model.editors.add(this);
     this.caretOn = true;
@@ -278,12 +279,14 @@ export class RustacoEditor {
 
   /**
    * Display options, Monaco's names: `rulers` (columns), `renderWhitespace` (`"none"` or
-   * `"all"`), `guides` (indentation guides), `occurrencesHighlight`, `bracketPairColorization`.
+   * `"all"`), `guides` (indentation guides), `occurrencesHighlight`, `bracketPairColorization`,
+   * `wordWrap` (`"off"` or `"on"`, wrapping at the editor's width).
    */
   setOptions(options) {
     Object.assign(this.options, options);
     const o = this.options;
     this.core.setViewOptions(Uint32Array.from(o.rulers ?? []), o.renderWhitespace === 'all', !!o.guides, !!o.occurrencesHighlight);
+    this.core.setWordWrap(o.wordWrap === 'on');
     this.schedule();
   }
 
