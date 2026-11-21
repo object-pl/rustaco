@@ -4,14 +4,11 @@ use std::cell::RefCell;
 use std::ops::{ControlFlow, Range};
 
 use rustaco_core::{EditEvent, Rope, TextModel};
-use rustaco_view::{StyleSpan, Styler};
 use tree_sitter::{InputEdit, Node, ParseOptions, ParseState, Parser, Point, StreamingIterator, TextProvider, Tree};
 
 use crate::injection::{InjectionCache, find_regions};
 use crate::language::{CompiledQuery, LanguageDef};
-
-/// Lines longer than this are highlighted only up to this column, as in Monaco.
-pub const MAX_HIGHLIGHT_COLUMNS: usize = 20_000;
+use crate::spans::{Highlights, MAX_HIGHLIGHT_COLUMNS};
 
 /// Parse state for one model in one language. Shared by every editor showing the model.
 pub struct Syntax {
@@ -212,42 +209,5 @@ impl<'a> TextProvider<&'a [u8]> for RopeText<'a> {
         let end = node.end_byte().min(self.0.len_bytes());
         let start = node.start_byte().min(end);
         self.0.byte_slice(start..end).chunks().map(str::as_bytes as fn(&'a str) -> &'a [u8])
-    }
-}
-
-/// Style spans for a range of lines, ready to hand to the view as a [`Styler`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Highlights {
-    first_line: usize,
-    lines: Vec<Vec<StyleSpan>>,
-}
-
-impl Highlights {
-    fn from_paint(first_line: usize, paint: Vec<Vec<u32>>) -> Self {
-        let lines = paint
-            .into_iter()
-            .map(|row| {
-                let mut spans: Vec<StyleSpan> = Vec::new();
-                for (col, &style) in row.iter().enumerate() {
-                    match spans.last_mut() {
-                        Some(s) if s.style == style && s.end == col => s.end = col + 1,
-                        _ if style != 0 => spans.push(StyleSpan { start: col, end: col + 1, style }),
-                        _ => {}
-                    }
-                }
-                spans
-            })
-            .collect();
-        Self { first_line, lines }
-    }
-
-    pub fn line(&self, line: usize) -> &[StyleSpan] {
-        line.checked_sub(self.first_line).and_then(|i| self.lines.get(i)).map_or(&[], Vec::as_slice)
-    }
-}
-
-impl Styler for Highlights {
-    fn spans(&self, line: usize) -> Vec<StyleSpan> {
-        self.line(line).to_vec()
     }
 }

@@ -75,7 +75,7 @@ static CATALOG: &[LanguageInfo] = &[
     lang!("cpp", "C++", "cpp", ext: &["cpp", "cc", "cxx", "hpp", "hh", "hxx", "ipp"], files: &[], shebangs: &[], C_STYLE),
     lang!("go", "Go", "go", ext: &["go"], files: &[], shebangs: &[], LanguageConfig { auto_closing: CLOSE_JS, ..C_STYLE }),
     lang!("java", "Java", "java", ext: &["java"], files: &[], shebangs: &[], C_STYLE),
-    lang!("kotlin", "Kotlin", "kotlin", ext: &["kt", "kts"], files: &[], shebangs: &[], C_STYLE),
+    lang!("kotlin", "Kotlin", "textmate", ext: &["kt", "kts"], files: &[], shebangs: &[], C_STYLE),
     lang!("csharp", "C#", "csharp", ext: &["cs", "csx"], files: &[], shebangs: &[], C_STYLE),
     lang!("html", "HTML", "html", ext: &["html", "htm", "xhtml"], files: &[], shebangs: &[],
         LanguageConfig { line_comment: None, block_comment: Some(("<!--", "-->")), brackets: &[("<", ">")], auto_closing: CLOSE_TAGS }),
@@ -85,7 +85,7 @@ static CATALOG: &[LanguageInfo] = &[
         shebangs: &["sh", "bash", "zsh", "dash"], HASH_STYLE),
     lang!("toml", "TOML", "toml", ext: &["toml"], files: &["Cargo.lock"], shebangs: &[], HASH_STYLE),
     lang!("yaml", "YAML", "yaml", ext: &["yaml", "yml"], files: &[], shebangs: &[], HASH_STYLE),
-    lang!("sql", "SQL", "sql", ext: &["sql"], files: &[], shebangs: &[],
+    lang!("sql", "SQL", "textmate", ext: &["sql"], files: &[], shebangs: &[],
         LanguageConfig { line_comment: Some("--"), ..C_STYLE }),
     lang!("markdown", "Markdown", "markdown", ext: &["md", "markdown"], files: &[], shebangs: &[],
         LanguageConfig { line_comment: None, block_comment: Some(("<!--", "-->")), brackets: BRACKETS, auto_closing: CLOSE_C }),
@@ -93,7 +93,7 @@ static CATALOG: &[LanguageInfo] = &[
     // grammar's injections, never detected from a file name.
     lang!("markdown_inline", "Markdown (inline)", "markdown", ext: &[], files: &[], shebangs: &[],
         LanguageConfig { line_comment: None, block_comment: None, brackets: BRACKETS, auto_closing: CLOSE_C }),
-    lang!("dockerfile", "Dockerfile", "dockerfile", ext: &["dockerfile"], files: &["Dockerfile", "Containerfile"],
+    lang!("dockerfile", "Dockerfile", "textmate", ext: &["dockerfile"], files: &["Dockerfile", "Containerfile"],
         shebangs: &[], HASH_STYLE),
 ];
 

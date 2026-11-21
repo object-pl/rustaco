@@ -13,6 +13,7 @@ echo "== clippy (wasm)"
 . ./scripts/wasm-env.sh
 cargo clippy -p rustaco-web --target wasm32-unknown-unknown -- -D warnings
 cargo clippy -p rustaco-syntax-wasm --features rust --target wasm32-unknown-unknown -- -D warnings
+cargo clippy -p rustaco-syntax-wasm --features textmate --target wasm32-unknown-unknown -- -D warnings
 
 echo "== tests"
 cargo test --workspace

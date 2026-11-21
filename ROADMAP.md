@@ -5,9 +5,10 @@ This plan covers the work from the current v0 to a release whose feature set mat
 Done: phase 0 (2026-11-21) and phase 1 (2026-11-21). In progress: phase 2.
 
 Phase 2 status (2026-11-21):
-- Done: the spike (tree-sitter and C grammars build for `wasm32-unknown-unknown`; four grammars needed a patched `tree-sitter-language`, see vendor/README.md), one language module per pack loaded on demand, incremental and time-sliced parsing, highlighting of visible lines, language catalog and detection, themes in the TextMate scope model with VS Code theme import, dark and light themes, license audit (THIRD_PARTY.md, licenses/).
-- 18 of 20 languages have tree-sitter highlighting: Rust, JavaScript, TypeScript, TSX, JSON, Python, C, C++, Go, Java, C#, HTML, CSS, Bash, TOML, YAML, Markdown, and SQL on native builds only.
-- Open: language injections, the TextMate fallback (for SQL in the browser, Kotlin, Dockerfile), the high-contrast theme, screenshot tests per language.
+- Done: the spike (tree-sitter and C grammars build for `wasm32-unknown-unknown`; several grammars needed a patched `tree-sitter-language`, see vendor/README.md), one language module per pack loaded on demand, incremental and time-sliced parsing, highlighting of visible lines, language injections, language catalog and detection, themes in the TextMate scope model with VS Code theme import, dark and light themes, license audit (THIRD_PARTY.md, licenses/).
+- TextMate fallback: an own tokenizer modelled on `vscode-textmate` (not syntect, which reads only Sublime grammars), with VS Code grammars for SQL, Kotlin and Dockerfile in the browser `textmate` module.
+- All 20 languages highlight: 17 through tree-sitter (Rust, JavaScript, TypeScript, TSX, JSON, Python, C, C++, Go, Java, C#, HTML, CSS, Bash, TOML, YAML, Markdown), 3 through TextMate (SQL, Kotlin, Dockerfile). Native builds also have the tree-sitter SQL grammar.
+- Open: the high-contrast theme, screenshot tests per language, underline drawing in the canvas renderer.
 - Not met: "a keystroke in a 10 MB file under 1 ms on the main thread". With parsing time-sliced in the main thread a keystroke costs 7 to 13 ms (4 ms of it parsing) on a 100,000-line file. The language module interface is built for a worker; meeting the target moves to phase 7.
 
 ## Decisions

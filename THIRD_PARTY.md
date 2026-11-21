@@ -26,4 +26,16 @@ Every highlight query used comes from the grammar's own repository and carries t
 | tree-sitter-md | 0.5.4 | MIT | https://github.com/tree-sitter-grammars/tree-sitter-markdown | syntax-markdown |
 | tree-sitter-sequel | 0.3.13 | MIT | https://github.com/derekstride/tree-sitter-sql | no (native builds only) |
 
+## TextMate grammars
+
+Compiled into the browser `syntax-textmate` module and native builds; details and commits in [crates/rustaco-syntax/textmate/README.md](crates/rustaco-syntax/textmate/README.md).
+
+| Grammar | License | Source |
+|---|---|---|
+| SQL | MIT | https://github.com/microsoft/vscode-mssql |
+| Kotlin | Apache-2.0, NOTICE shipped | https://github.com/nishtahir/language-kotlin |
+| Dockerfile | Apache-2.0 (moby), NOTICE shipped | https://github.com/moby/moby via https://github.com/microsoft/vscode |
+
+The TextMate engine itself (`crates/rustaco-syntax/src/textmate.rs`) is written for this project and falls under its MIT license.
+
 The bundled colour themes (`crates/rustaco-syntax/src/default_theme.rs`) are written for this project and fall under its MIT license.

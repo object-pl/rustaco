@@ -14,16 +14,24 @@ mod injection;
 #[cfg(feature = "engine")]
 mod language;
 mod names;
+#[cfg(any(feature = "engine", feature = "textmate"))]
+mod spans;
+#[cfg(feature = "textmate")]
+mod textmate;
 mod theme;
 
 pub use catalog::{LanguageConfig, LanguageInfo, catalog, detect, info};
 #[cfg(feature = "engine")]
-pub use highlight::{Highlights, MAX_HIGHLIGHT_COLUMNS, Syntax};
+pub use highlight::Syntax;
 #[cfg(feature = "engine")]
 pub use injection::{MAX_INJECTION_BYTES, resolve as resolve_injection_language};
 #[cfg(feature = "engine")]
 pub use language::{LanguageDef, by_id, languages};
 pub use names::{HIGHLIGHT_NAMES, name_of_style, style_for_capture};
+#[cfg(any(feature = "engine", feature = "textmate"))]
+pub use spans::{Highlights, MAX_HIGHLIGHT_COLUMNS};
+#[cfg(feature = "textmate")]
+pub use textmate::{Grammar, TextMateSyntax, grammar as textmate_grammar, textmate_languages};
 pub use theme::{Style, Theme, ThemeRule};
 
 /// Themes bundled with the editor.

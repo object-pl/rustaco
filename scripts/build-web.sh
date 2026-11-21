@@ -16,12 +16,13 @@ wasm-bindgen --target web --no-typescript --out-dir web/pkg "$OUT/rustaco_web.wa
 # SQL's tree-sitter grammar compiles to 1.2 MB gzipped; the browser gets SQL colours from
 # the TextMate fallback instead, and the desktop build keeps the grammar.
 SKIP_PACKS=${SKIP_PACKS:-sql}
-ALL_PACKS=$(sed -n 's/^\([a-z-]*\) = \["rustaco-syntax\/.*/\1/p' crates/rustaco-syntax-wasm/Cargo.toml \
-  | grep -vxF "$(printf '%s\n' $SKIP_PACKS)")
+# Packs are the features of rustaco-syntax-wasm, except the internal `tree-sitter` flag.
+ALL_PACKS=$(sed -n '/^\[features\]/,$ s/^\([a-z-]*\) = \[.*/\1/p' crates/rustaco-syntax-wasm/Cargo.toml \
+  | grep -vxF -e tree-sitter $(printf -- '-e %s ' $SKIP_PACKS))
 for pack in ${PACKS:-$ALL_PACKS}; do
   cargo build --profile $PROFILE -p rustaco-syntax-wasm --target wasm32-unknown-unknown --features "$pack"
   wasm-bindgen --target web --no-typescript --out-dir "web/pkg/syntax-$pack" "$OUT/rustaco_syntax_wasm.wasm"
 done
 
-mkdir -p web/pkg/licenses && cp licenses/*.LICENSE LICENSE web/pkg/licenses/ && cp THIRD_PARTY.md web/pkg/
+mkdir -p web/pkg/licenses && cp licenses/*.LICENSE licenses/*.NOTICE LICENSE web/pkg/licenses/ && cp THIRD_PARTY.md web/pkg/
 ls -l web/pkg/rustaco_web_bg.wasm web/pkg/syntax-*/rustaco_syntax_wasm_bg.wasm

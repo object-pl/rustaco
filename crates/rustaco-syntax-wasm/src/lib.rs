@@ -3,53 +3,100 @@
 //! Each build enables one language pack through cargo features and becomes its own WASM
 //! file, loaded the first time a model uses one of its languages. The editor keeps the
 //! text; this module keeps a copy, applies the editor's edits to it, reparses
-//! incrementally and returns highlights for the lines the editor shows.
+//! incrementally and returns highlights for the lines the editor shows. A pack uses either
+//! tree-sitter grammars or, for the `textmate` pack, TextMate grammars; the interface is the
+//! same.
 //!
 //! Parsing runs in slices: [`Highlighter::parse`] stops after a time budget and resumes on
-//! the next call, and [`Highlighter::highlight`] works from the last tree (shifted by the
+//! the next call, and [`Highlighter::highlight`] works from the last result (shifted by the
 //! edits since) until the new one is ready. Every call takes and returns plain data, so the
 //! module can also run in a Web Worker behind `postMessage` without changing this interface.
 
 use rustaco_core::{EditEvent, Point, Rope, Utf16Position};
-use rustaco_syntax::{Syntax, by_id, languages};
+// Used only through cfg-gated paths; keeps a featureless build (the workspace check) warning-free.
+use rustaco_syntax as _;
 use wasm_bindgen::prelude::*;
 
 /// Numbers per edit in [`Highlighter::edit`]: start, old end and new end in bytes, then
 /// row and byte column of the start, old end and new end.
 pub const EDIT_STRIDE: usize = 9;
 
+enum Engine {
+    #[cfg(feature = "tree-sitter")]
+    TreeSitter(rustaco_syntax::Syntax),
+    #[cfg(feature = "textmate")]
+    TextMate(rustaco_syntax::TextMateSyntax),
+    /// Only in builds with no language enabled (the workspace check); never constructed.
+    #[allow(dead_code)]
+    Unavailable,
+}
+
+impl Engine {
+    fn new(language: &str) -> Result<Engine, String> {
+        #[cfg(feature = "tree-sitter")]
+        if let Some(def) = rustaco_syntax::by_id(language) {
+            return rustaco_syntax::Syntax::new(def).map(Engine::TreeSitter);
+        }
+        #[cfg(feature = "textmate")]
+        if let Some(grammar) = rustaco_syntax::textmate_grammar(language) {
+            return Ok(Engine::TextMate(rustaco_syntax::TextMateSyntax::new(grammar)));
+        }
+        Err(format!("language not in this module: {language}"))
+    }
+}
+
 #[wasm_bindgen]
 pub struct Highlighter {
     rope: Rope,
-    syntax: Syntax,
+    engine: Engine,
 }
 
 #[wasm_bindgen]
 impl Highlighter {
     #[wasm_bindgen(constructor)]
     pub fn new(language: &str, text: &str) -> Result<Highlighter, JsValue> {
-        let def =
-            by_id(language).ok_or_else(|| JsValue::from_str(&format!("language not in this module: {language}")))?;
-        let syntax = Syntax::new(def).map_err(|e| JsValue::from_str(&e))?;
-        Ok(Highlighter { rope: Rope::from_str(text), syntax })
+        let engine = Engine::new(language).map_err(|e| JsValue::from_str(&e))?;
+        Ok(Highlighter { rope: Rope::from_str(text), engine })
     }
 
     /// Ids of the languages this module parses.
     pub fn languages() -> Vec<String> {
-        languages().iter().map(|l| l.id.to_owned()).collect()
+        #[allow(unused_mut)]
+        let mut ids: Vec<String> = Vec::new();
+        #[cfg(feature = "tree-sitter")]
+        ids.extend(rustaco_syntax::languages().iter().map(|l| l.id.to_owned()));
+        #[cfg(feature = "textmate")]
+        ids.extend(rustaco_syntax::textmate_languages().map(str::to_owned));
+        ids
     }
 
     /// Replaces the text; the next [`Highlighter::parse`] starts from scratch.
     pub fn reset(&mut self, text: &str) {
         self.rope = Rope::from_str(text);
-        self.syntax.reset();
+        match &mut self.engine {
+            #[cfg(feature = "tree-sitter")]
+            Engine::TreeSitter(s) => s.reset(),
+            #[cfg(feature = "textmate")]
+            Engine::TextMate(s) => s.reset(),
+            Engine::Unavailable => {}
+        }
     }
 
-    /// Parses for at most `budget_ms` milliseconds. Returns true when the tree matches the
+    /// Parses for at most `budget_ms` milliseconds. Returns true when the result matches the
     /// text; false means call again (on a later frame) to continue.
     pub fn parse(&mut self, budget_ms: f64) -> bool {
         let deadline = js_sys::Date::now() + budget_ms;
-        self.syntax.parse_with_budget(&self.rope, || js_sys::Date::now() < deadline)
+        let keep_going = || js_sys::Date::now() < deadline;
+        match &mut self.engine {
+            #[cfg(feature = "tree-sitter")]
+            Engine::TreeSitter(s) => s.parse_with_budget(&self.rope, keep_going),
+            #[cfg(feature = "textmate")]
+            Engine::TextMate(s) => s.parse_with_budget(&self.rope, keep_going),
+            Engine::Unavailable => {
+                let _ = keep_going;
+                true
+            }
+        }
     }
 
     /// Applies edits in order; they take effect in highlighting after the next
@@ -73,7 +120,7 @@ impl Highlighter {
             self.rope.remove(start..old_end);
             self.rope.insert(start, inserted);
             let point = |row: u32, column: u32| Point { row: row as usize, column: column as usize };
-            self.syntax.apply_edit(&EditEvent {
+            let event = EditEvent {
                 start,
                 old_end,
                 new_end: start + inserted.chars().count(),
@@ -86,7 +133,16 @@ impl Highlighter {
                 start_utf16: Utf16Position::default(),
                 old_end_utf16: Utf16Position::default(),
                 text: String::new(),
-            });
+            };
+            match &mut self.engine {
+                #[cfg(feature = "tree-sitter")]
+                Engine::TreeSitter(s) => s.apply_edit(&event),
+                #[cfg(feature = "textmate")]
+                Engine::TextMate(s) => s.apply_edit(&event),
+                Engine::Unavailable => {
+                    let _ = event;
+                }
+            }
         }
         Ok(())
     }
@@ -94,8 +150,21 @@ impl Highlighter {
     /// Highlights lines `first..end`, as quads: line, start column, end column (chars),
     /// style id.
     pub fn highlight(&self, first: u32, end: u32) -> Vec<u32> {
-        let highlights = self.syntax.highlight(&self.rope, first as usize..end as usize);
+        let lines = first as usize..end as usize;
+        #[allow(unused_variables)]
+        let highlights = match &self.engine {
+            #[cfg(feature = "tree-sitter")]
+            Engine::TreeSitter(s) => s.highlight(&self.rope, lines),
+            #[cfg(feature = "textmate")]
+            Engine::TextMate(s) => s.highlight(&self.rope, lines),
+            Engine::Unavailable => {
+                let _ = lines;
+                return Vec::new();
+            }
+        };
+        #[allow(unreachable_code)]
         let mut out = Vec::new();
+        #[cfg(any(feature = "tree-sitter", feature = "textmate"))]
         for line in first..end {
             for span in highlights.line(line as usize) {
                 out.extend([line, span.start as u32, span.end as u32, span.style]);

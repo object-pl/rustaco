@@ -143,3 +143,17 @@ test('scripts inside HTML are coloured as JavaScript', async ({ page }) => {
   expect(keyword).not.toBeNull();
   expect(keyword).not.toBe(plainText);
 });
+
+test('SQL, Kotlin and Dockerfile are coloured by the TextMate module', async ({ page }) => {
+  const plainText = '212,212,212';
+  await open(page, "SELECT name FROM users; -- c", 'sql');
+  expect(await colorAt(page, 0)).not.toBe(plainText);
+  const loaded = await page.evaluate(() =>
+    performance.getEntriesByType('resource').map((r) => r.name).filter((n) => n.includes('/syntax-')));
+  expect(loaded.some((n) => n.includes('syntax-textmate/'))).toBe(true);
+
+  for (const [lang, text] of [['kotlin', 'fun main() {}'], ['dockerfile', 'FROM rust:1']]) {
+    expect(await page.evaluate(([l, t]) => { window.editor.setValue(t); return window.editor.getModel().setLanguage(l); }, [lang, text])).toBe(true);
+    expect(await colorAt(page, 0)).not.toBe(plainText);
+  }
+});
