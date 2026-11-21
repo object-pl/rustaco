@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 ropey.workspace = true
 unicode-segmentation = "1"
+regex-lite = "0.1"
 
 [dev-dependencies]
 proptest = "1"

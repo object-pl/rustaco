@@ -10,6 +10,7 @@ use crate::change::{Assoc, ChangeSet, Edit};
 use crate::editor::{Editor, word_at};
 use crate::history::EditKind;
 use crate::position::{char_to_position, line_end, line_len};
+use crate::search::Searcher;
 use crate::selection::{Selection, Selections};
 
 /// Chars on each side of a position examined to find grapheme boundaries. Clusters longer
@@ -619,6 +620,34 @@ impl Editor<'_> {
             goal_column: None,
         });
         self.commit(changes, after, EditKind::Other);
+    }
+}
+
+impl Editor<'_> {
+    /// Replaces every match of `searcher` with `replacement` (capture groups in regex mode)
+    /// as one undo step. Returns the number of replacements.
+    pub fn replace_all(&mut self, searcher: &Searcher, replacement: &str, regex_mode: bool) -> usize {
+        let rope = self.model.rope.clone();
+        let matches = searcher.find_all(&rope, None);
+        let edits: Vec<Edit> = matches
+            .iter()
+            .map(|m| Edit::new(m.start, m.end, searcher.replacement_for(&rope, m.clone(), replacement, regex_mode)))
+            .collect();
+        let count = edits.len();
+        let changes = ChangeSet::new(edits);
+        let after = self.cursors.selections.map(|s| Selection::cursor(changes.map(s.head, Assoc::Before)));
+        self.commit(changes, after, EditKind::Other);
+        count
+    }
+
+    /// Selects every match of `searcher` (Alt+Enter in the find widget).
+    pub fn select_matches(&mut self, searcher: &Searcher) -> usize {
+        let matches = searcher.find_all(&self.model.rope, None);
+        if !matches.is_empty() {
+            let ranges = matches.iter().map(|m| Selection::new(m.start, m.end)).collect();
+            self.set_selections(Selections::new(ranges, 0));
+        }
+        matches.len()
     }
 }
 

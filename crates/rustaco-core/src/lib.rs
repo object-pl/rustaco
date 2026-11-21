@@ -8,15 +8,18 @@
 
 mod change;
 mod commands;
+mod decorations;
 mod document;
 mod editor;
 mod history;
 mod keymap;
 mod model;
 mod position;
+mod search;
 mod selection;
 
 pub use change::{Assoc, ChangeSet, Edit, EditEvent};
+pub use decorations::{Decoration, DecorationId, Decorations, Stickiness};
 pub use document::Document;
 pub use editor::{Cursors, Editor, EditorId, word_at};
 pub use history::{EditKind, History, Transaction};
@@ -27,4 +30,5 @@ pub use position::{
     position_to_char, utf16_to_char,
 };
 pub use ropey::Rope;
+pub use search::{SearchQuery, Searcher, next_match};
 pub use selection::{Selection, Selections};

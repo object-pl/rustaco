@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 use ropey::Rope;
 
 use crate::change::{ChangeSet, Edit, EditEvent};
+use crate::decorations::Decorations;
 use crate::history::History;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -84,6 +85,8 @@ pub struct TextModel {
     pub(crate) line_ending: LineEnding,
     pub options: Options,
     pub editing: LanguageEditing,
+    /// Ranges that move with edits (search matches, diagnostics, diff hunks).
+    pub decorations: Decorations,
     version: u64,
     log: VecDeque<LogEntry>,
     /// Version of the text before the oldest log entry.
@@ -99,6 +102,7 @@ impl TextModel {
             history: History::default(),
             options: Options::default(),
             editing: LanguageEditing::default(),
+            decorations: Decorations::default(),
             version: 0,
             log: VecDeque::new(),
             log_base: 0,
@@ -176,6 +180,7 @@ impl TextModel {
         }
         let events = changes.describe(&self.rope);
         let inverse = changes.apply(&mut self.rope);
+        self.decorations.apply(changes);
         self.version += 1;
         self.log.push_back(LogEntry { changes: changes.clone(), events });
         if self.log.len() > LOG_CAPACITY {

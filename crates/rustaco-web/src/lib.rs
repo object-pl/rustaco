@@ -13,8 +13,8 @@ use std::rc::Rc;
 use std::collections::HashMap;
 
 use rustaco_core::{
-    Cursors, Editor as Commands, EditorId, KeyPress, Keymap, LanguageEditing, Platform, Resolved, Rope, Selection,
-    Selections, TextModel, default_keymap, jetbrains_keymap, word_at,
+    Cursors, Editor as Commands, EditorId, KeyPress, Keymap, LanguageEditing, Platform, Resolved, Rope, SearchQuery,
+    Searcher, Selection, Selections, Stickiness, TextModel, default_keymap, jetbrains_keymap, next_match, word_at,
 };
 use rustaco_syntax::{Colors, Style, Theme, ThemeRule, themes};
 use rustaco_view::{Metrics, Rect, StyleSpan, Styler, View};
@@ -33,7 +33,11 @@ struct Chrome {
     current_line: String,
     caret: String,
     scrollbar: String,
+    find_match: String,
 }
+
+/// Decoration kind of find matches.
+const FIND_MATCH: u32 = 1;
 
 fn css(rgba: u32) -> String {
     format!("#{rgba:08x}")
@@ -50,6 +54,7 @@ impl Chrome {
             current_line: css(c.current_line),
             caret: css(c.caret),
             scrollbar: css(c.scrollbar),
+            find_match: css(c.find_match),
         }
     }
 }
@@ -334,6 +339,8 @@ pub struct Editor {
     caret: Rect,
     keymap: Keymap,
     platform: Platform,
+    /// The current find query, kept for F3 navigation and for refreshing matches.
+    find: Option<(SearchQuery, Searcher)>,
 }
 
 #[wasm_bindgen]
@@ -362,6 +369,7 @@ impl Editor {
             caret: Rect::default(),
             keymap: default_keymap(Platform::Windows),
             platform: Platform::Windows,
+            find: None,
         })
     }
 
@@ -481,6 +489,14 @@ impl Editor {
             "cursorPageDownSelect" => Some((page, true)),
             _ => None,
         };
+        let find_step = match command {
+            "editor.action.nextMatchFindAction" => Some(true),
+            "editor.action.previousMatchFindAction" => Some(false),
+            _ => None,
+        };
+        if let Some(forward) = find_step {
+            return self.find_next(forward);
+        }
         let handled = match page_move {
             Some((lines, extend)) => {
                 self.edit(|ed| ed.move_vertical(lines, extend));
@@ -519,6 +535,103 @@ impl Editor {
             Resolved::Pending => true,
             Resolved::Unbound => false,
         }
+    }
+
+    /// Searches the model and highlights every match. Returns the number of matches, or -1
+    /// when the regular expression does not compile.
+    pub fn find(&mut self, pattern: &str, regex: bool, case_sensitive: bool, whole_word: bool) -> i32 {
+        let query = SearchQuery { pattern: pattern.to_owned(), regex, case_sensitive, whole_word };
+        match Searcher::new(&query) {
+            Ok(searcher) => {
+                self.find = Some((query, searcher));
+                self.refresh_find() as i32
+            }
+            Err(_) => {
+                self.clear_find();
+                if pattern.is_empty() { 0 } else { -1 }
+            }
+        }
+    }
+
+    /// Re-runs the current query, after the text changed. Returns the number of matches.
+    #[wasm_bindgen(js_name = refreshFind)]
+    pub fn refresh_find(&mut self) -> u32 {
+        let owner = self.cursors.id().0;
+        let mut model = self.model.borrow_mut();
+        let Some((_, searcher)) = &self.find else {
+            model.decorations.clear(owner);
+            return 0;
+        };
+        let matches = searcher.find_all(model.rope(), None);
+        let count = matches.len() as u32;
+        model.decorations.set(owner, FIND_MATCH, Stickiness::NeverGrows, matches);
+        count
+    }
+
+    #[wasm_bindgen(js_name = clearFind)]
+    pub fn clear_find(&mut self) {
+        self.find = None;
+        let owner = self.cursors.id().0;
+        self.model.borrow_mut().decorations.clear(owner);
+    }
+
+    /// Selects the next (or previous) match after the primary selection, wrapping around.
+    #[wasm_bindgen(js_name = findNext)]
+    pub fn find_next(&mut self, forward: bool) -> bool {
+        let owner = self.cursors.id().0;
+        let matches: Vec<std::ops::Range<usize>> = {
+            let model = self.model.borrow();
+            model.decorations.of_owner(owner).iter().map(|d| d.range.clone()).filter(|r| !r.is_empty()).collect()
+        };
+        let primary = self.selections_primary();
+        let from = if forward { primary.end() } else { primary.start() };
+        let Some(m) = next_match(&matches, from, forward) else { return false };
+        self.edit(|ed| ed.set_selections(Selections::single(Selection::new(m.start, m.end))));
+        self.reveal_primary();
+        true
+    }
+
+    /// Replaces the selected match and moves to the next one.
+    #[wasm_bindgen(js_name = replaceOne)]
+    pub fn replace_one(&mut self, replacement: &str) -> bool {
+        let primary = self.selections_primary();
+        let Some((query, searcher)) = &self.find else { return false };
+        let regex = query.regex;
+        let is_match = {
+            let model = self.model.borrow();
+            searcher.find_all(model.rope(), Some(primary.start()..primary.end())).first()
+                == Some(&(primary.start()..primary.end()))
+        };
+        if is_match {
+            let text = searcher.replacement_for(
+                self.model.borrow().rope(),
+                primary.start()..primary.end(),
+                replacement,
+                regex,
+            );
+            self.edit(|ed| ed.insert(&text));
+            self.refresh_find();
+        }
+        self.find_next(true)
+    }
+
+    /// Replaces every match as one undo step. Returns the number of replacements.
+    #[wasm_bindgen(js_name = replaceAll)]
+    pub fn replace_all(&mut self, replacement: &str) -> u32 {
+        let Some((query, searcher)) = self.find.take() else { return 0 };
+        let count = self.edit(|ed| ed.replace_all(&searcher, replacement, query.regex));
+        self.find = Some((query, searcher));
+        self.refresh_find();
+        count as u32
+    }
+
+    /// Selects every match (one cursor per match).
+    #[wasm_bindgen(js_name = selectAllMatches)]
+    pub fn select_all_matches(&mut self) -> u32 {
+        let Some((query, searcher)) = self.find.take() else { return 0 };
+        let count = self.edit(|ed| ed.select_matches(&searcher));
+        self.find = Some((query, searcher));
+        count as u32
     }
 
     /// True while the first key of a chord (`ctrl+k`) waits for the second.
@@ -644,6 +757,11 @@ impl Editor {
         ctx.begin_path();
         ctx.rect(gutter, 0.0, w - gutter, h);
         ctx.clip();
+        for (r, kind) in self.view.decoration_rects(&model) {
+            if kind == FIND_MATCH {
+                fill(&chrome.find_match, &r);
+            }
+        }
         for r in &frame.selections {
             fill(&chrome.selection, r);
         }
@@ -739,6 +857,11 @@ impl Editor {
 }
 
 impl Editor {
+    fn selections_primary(&mut self) -> Selection {
+        self.cursors.sync(&self.model.borrow());
+        self.cursors.selections().primary()
+    }
+
     /// Runs editing commands for this editor against the shared model.
     fn edit<R>(&mut self, f: impl FnOnce(&mut Commands) -> R) -> R {
         let mut model = self.model.borrow_mut();

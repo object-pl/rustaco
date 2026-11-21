@@ -36,6 +36,7 @@ pub struct Colors {
     pub line_number_active: u32,
     pub gutter: u32,
     pub scrollbar: u32,
+    pub find_match: u32,
 }
 
 impl Colors {
@@ -49,6 +50,7 @@ impl Colors {
         line_number_active: 0xccccccff,
         gutter: 0x1e1e1eff,
         scrollbar: 0x79797966,
+        find_match: 0xea5c0055,
     };
 
     pub const LIGHT: Colors = Colors {
@@ -61,6 +63,7 @@ impl Colors {
         line_number_active: 0x171184ff,
         gutter: 0xffffffff,
         scrollbar: 0x64646466,
+        find_match: 0xea5c0055,
     };
 
     /// Black background, white text, and a selection and current line that stand out
@@ -75,6 +78,7 @@ impl Colors {
         line_number_active: 0xf38518ff,
         gutter: 0x000000ff,
         scrollbar: 0x6fc3dfcc,
+        find_match: 0xf3851866,
     };
 
     /// Sets the colour a VS Code theme `colors` key names. Returns false for keys the editor
@@ -90,6 +94,7 @@ impl Colors {
             "editorLineNumber.activeForeground" => &mut self.line_number_active,
             "editorGutter.background" => &mut self.gutter,
             "scrollbarSlider.background" => &mut self.scrollbar,
+            "editor.findMatchHighlightBackground" => &mut self.find_match,
             _ => return false,
         };
         *field = rgba;

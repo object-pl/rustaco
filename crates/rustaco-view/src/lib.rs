@@ -240,17 +240,49 @@ impl View {
             if sel.is_empty() {
                 continue;
             }
-            let (start, end) = (char_to_position(rope, sel.start()), char_to_position(rope, sel.end()));
-            for line in start.line.max(visible.start)..=end.line.min(visible.end - 1) {
-                let from = if line == start.line { start.column } else { 0 };
-                let (to, newline) = if line == end.line { (end.column, false) } else { (line_len(rope, line), true) };
-                let x0 = x_of(visual_column(rope, line, from, tab));
-                let x1 = x_of(visual_column(rope, line, to, tab)) + if newline { cw * 0.5 } else { 0.0 };
-                frame.selections.push(Rect { x: x0, y: y_of(line), width: x1 - x0, height: self.line_height(line) });
-            }
+            frame.selections.extend(self.range_rects(rope, sel.start()..sel.end(), gutter));
         }
         self.widest_cells = widest;
         frame
+    }
+
+    /// Rectangles covering `range` on the visible lines; a line break inside the range adds
+    /// half a cell at the end of its line, as for selections.
+    fn range_rects(&self, rope: &Rope, range: std::ops::Range<usize>, gutter: f32) -> Vec<Rect> {
+        let tab = self.tab_size;
+        let cw = self.metrics.char_width;
+        let visible = self.visible_lines(rope);
+        let x_of = |cells: usize| gutter + cells as f32 * cw - self.scroll_left;
+        let (start, end) = (char_to_position(rope, range.start), char_to_position(rope, range.end));
+        let mut out = Vec::new();
+        for line in start.line.max(visible.start)..=end.line.min(visible.end.saturating_sub(1)) {
+            let from = if line == start.line { start.column } else { 0 };
+            let (to, newline) = if line == end.line { (end.column, false) } else { (line_len(rope, line), true) };
+            let x0 = x_of(visual_column(rope, line, from, tab));
+            let x1 = x_of(visual_column(rope, line, to, tab)) + if newline { cw * 0.5 } else { 0.0 };
+            out.push(Rect {
+                x: x0,
+                y: self.line_top(line) - self.scroll_top,
+                width: x1 - x0,
+                height: self.line_height(line),
+            });
+        }
+        out
+    }
+
+    /// Rectangles for decorations on the visible lines, with each decoration's kind. Call
+    /// after [`View::layout`] for the same frame.
+    pub fn decoration_rects(&self, model: &TextModel) -> Vec<(Rect, u32)> {
+        let rope = model.rope();
+        let visible = self.visible_lines(rope);
+        let range = rope.line_to_char(visible.start)..rope.line_to_char(visible.end.min(rope.len_lines()));
+        let gutter = self.gutter_width(rope);
+        model
+            .decorations
+            .in_range(range)
+            .into_iter()
+            .flat_map(|d| self.range_rects(rope, d.range.clone(), gutter).into_iter().map(move |r| (r, d.kind)))
+            .collect()
     }
 }
 
@@ -378,6 +410,20 @@ mod tests {
         assert_eq!(v.hit_test(doc.rope(), g + 26.0, 45.0), 2 * 7 + 3);
         v.reveal(doc.rope(), 30 * 7);
         assert_eq!(v.scroll_top(), 31.0 * 20.0 - 100.0);
+    }
+
+    #[test]
+    fn decoration_rects_follow_the_text() {
+        use rustaco_core::Stickiness;
+        let doc = Document::new("abc\ndef\nghi");
+        let mut v = view();
+        v.layout(doc.model(), doc.selections(), &Plain);
+        let mut model = doc.model().clone();
+        model.decorations.set(7, 3, Stickiness::NeverGrows, [1..2, 5..9]);
+        let rects = v.decoration_rects(&model);
+        assert_eq!(rects.len(), 3, "one rect for 1..2, two for the range across a line break");
+        assert!(rects.iter().all(|(_, kind)| *kind == 3));
+        assert_eq!(rects[0].0.width, 10.0);
     }
 
     #[test]

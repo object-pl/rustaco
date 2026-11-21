@@ -182,3 +182,27 @@ test('chords and custom keybindings', async ({ page }) => {
   await page.keyboard.press('Control+Shift+u');
   expect(await value(page)).toBe('A\nB');
 });
+
+test('find highlights matches, F3 moves between them, replace works with regex groups', async ({ page }) => {
+  await open(page, 'let a = 1;\nlet b = 22;\nconst c = 333;');
+  expect(await page.evaluate(() => window.editor.find('let'))).toBe(2);
+  await setCursor(page, 0);
+  await page.keyboard.press('F3');
+  expect(await selections(page)).toEqual([{ anchor: 0, head: 3 }], 'the match at the cursor comes first');
+  await page.keyboard.press('F3');
+  expect(await selections(page)).toEqual([{ anchor: 11, head: 14 }]);
+  await page.keyboard.press('F3');
+  expect(await selections(page)).toEqual([{ anchor: 0, head: 3 }], 'wraps around');
+  await page.keyboard.press('Shift+F3');
+  expect(await selections(page)).toEqual([{ anchor: 11, head: 14 }]);
+
+  expect(await page.evaluate(() => window.editor.find('(\\w) = (\\d+)', { regex: true }))).toBe(3);
+  expect(await page.evaluate(() => window.editor.replaceAll('$2 = $1'))).toBe(3);
+  expect(await value(page)).toBe('let 1 = a;\nlet 22 = b;\nconst 333 = c;');
+  await page.keyboard.press(`${mod}+z`);
+  expect(await value(page)).toBe('let a = 1;\nlet b = 22;\nconst c = 333;', 'replace all is one undo step');
+
+  expect(await page.evaluate(() => window.editor.find('(', { regex: true }))).toBe(-1);
+  expect(await page.evaluate(() => { window.editor.find('let'); return window.editor.selectAllMatches(); })).toBe(2);
+  expect((await selections(page)).length).toBe(2);
+});

@@ -192,6 +192,8 @@ export class RustacoModel {
   /** Redraws every editor showing this model and fires listeners if the text changed. */
   changed() {
     for (const e of this.editors) e.schedule();
+    const v0 = this.version;
+    if (this.core.version() !== v0) for (const e of this.editors) e.refreshFindSoon();
     const v = this.core.version();
     if (v !== this.version) {
       this.version = v;
@@ -256,6 +258,53 @@ export class RustacoEditor {
       bindings.map((b) => b.command).join('\n'),
       bindings.map((b) => b.when ?? '').join('\n'),
     );
+  }
+
+  /**
+   * Searches and highlights every match. Options: `regex`, `caseSensitive`, `wholeWord`.
+   * Returns the match count, or -1 for an invalid regular expression. Matches are kept up to
+   * date while the text changes, until `clearFind()`.
+   */
+  find(pattern, { regex = false, caseSensitive = false, wholeWord = false } = {}) {
+    const count = this.core.find(pattern, regex, caseSensitive, wholeWord);
+    this.findActive = count >= 0 && pattern !== '';
+    this.schedule();
+    return count;
+  }
+
+  /** Selects the next match after the cursor (wrapping); `findPrevious` goes back. */
+  findNext() { const ok = this.core.findNext(true); this.schedule(); return ok; }
+
+  findPrevious() { const ok = this.core.findNext(false); this.schedule(); return ok; }
+
+  /** Replaces the selected match and selects the next one. `$1` refers to regex groups. */
+  replace(replacement) {
+    const ok = this.core.replaceOne(replacement);
+    this.#changed();
+    return ok;
+  }
+
+  /** Replaces every match as one undo step; returns the number of replacements. */
+  replaceAll(replacement) {
+    const n = this.core.replaceAll(replacement);
+    this.#changed();
+    return n;
+  }
+
+  /** Puts a cursor on every match. */
+  selectAllMatches() { const n = this.core.selectAllMatches(); this.schedule(); return n; }
+
+  clearFind() {
+    this.findActive = false;
+    this.core.clearFind();
+    this.schedule();
+  }
+
+  /** Re-runs the active search shortly after edits, once typing pauses. */
+  refreshFindSoon() {
+    if (!this.findActive) return;
+    clearTimeout(this.findTimer);
+    this.findTimer = setTimeout(() => { this.core.refreshFind(); this.schedule(); }, 100);
   }
 
   /** Runs a command by id (`editor.action.commentLine`, `cursorWordLeft`, ...). */

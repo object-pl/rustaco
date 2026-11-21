@@ -219,6 +219,8 @@ const SHARED: &[Entry] = &[
     ("shift+alt+up", "editor.action.copyLinesUpAction", None),
     ("shift+alt+down", "editor.action.copyLinesDownAction", None),
     ("shift+alt+a", "editor.action.blockComment", None),
+    ("f3", "editor.action.nextMatchFindAction", None),
+    ("shift+f3", "editor.action.previousMatchFindAction", None),
 ];
 
 const WINDOWS_LINUX: &[Entry] = &[
@@ -284,6 +286,8 @@ const MAC: &[Entry] = &[
     ("cmd+k cmd+x", "editor.action.trimTrailingWhitespace", None),
     ("cmd+]", "editor.action.indentLines", None),
     ("cmd+[", "editor.action.outdentLines", None),
+    ("cmd+g", "editor.action.nextMatchFindAction", None),
+    ("shift+cmd+g", "editor.action.previousMatchFindAction", None),
 ];
 
 /// JetBrains-style bindings, layered over the default keymap.

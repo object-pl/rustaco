@@ -169,7 +169,15 @@ fn case_and_trailing_whitespace() {
 fn every_bound_command_runs() {
     use rustaco_core::{Platform, default_keymap, jetbrains_keymap};
     // Page movement needs the view's height; frontends run these.
-    let frontend = ["cursorPageUp", "cursorPageUpSelect", "cursorPageDown", "cursorPageDownSelect"];
+    let frontend = [
+        "cursorPageUp",
+        "cursorPageUpSelect",
+        "cursorPageDown",
+        "cursorPageDownSelect",
+        // Find navigation needs the frontend's current query.
+        "editor.action.nextMatchFindAction",
+        "editor.action.previousMatchFindAction",
+    ];
     for platform in [Platform::Windows, Platform::Mac] {
         for keymap in [default_keymap(platform), jetbrains_keymap(platform)] {
             for b in keymap.bindings() {
