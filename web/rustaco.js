@@ -3,6 +3,8 @@ import init, {
   Editor, Model, defineDecorationType as defineType, setBuiltinTheme, setThemeRules, widgetColors,
 } from './pkg/rustaco_web.js';
 import { SuggestController } from './suggest.js';
+import { Features } from './features.js';
+import { providersFor } from './languages.js';
 
 export { languages, CompletionItemKind, SymbolKind, fuzzyScore } from './languages.js';
 
@@ -356,6 +358,9 @@ export class RustacoModel {
 
   getLineCount() { return this.core.lineCount(); }
 
+  /** Symbols from the syntax tree; empty without a tree. */
+  async builtinSymbols() { return []; }
+
   /** The text of a line (0-based), without its line break. */
   getLineContent(line) {
     const start = this.core.offsetAt(line, 0);
@@ -534,6 +539,7 @@ export class RustacoEditor {
     this.frame = 0;
     this.findRequest = 0;
     this.suggest = new SuggestController(this, widgetColors);
+    this.features = new Features(this, widgetColors);
 
     this.#wire();
     new ResizeObserver(() => this.#resize()).observe(container);
@@ -552,7 +558,9 @@ export class RustacoEditor {
     Object.assign(this.options, options);
     this.core.refreshOverview();
     const o = this.options;
-    this.core.setViewOptions(Uint32Array.from(o.rulers ?? []), o.renderWhitespace === 'all', !!o.guides, !!o.occurrencesHighlight);
+    this.core.setViewOptions(
+      Uint32Array.from(o.rulers ?? []), o.renderWhitespace === 'all', !!o.guides, !!o.occurrencesHighlight && !this.occurrencesFromProvider,
+    );
     this.core.setWordWrap(o.wordWrap === 'on');
     this.core.setMinimap(!!(typeof o.minimap === 'object' ? o.minimap?.enabled : o.minimap));
     const sticky = o.stickyScroll ?? {};
@@ -681,6 +689,15 @@ export class RustacoEditor {
    * indentation get both.
    */
   refreshFolding() {
+    const folders = providersFor('foldingRange', this.model.getLanguage());
+    if (folders.length) {
+      Promise.all(folders.map(async (f) => { try { return (await f.provideFoldingRanges(this.model)) ?? []; } catch { return []; } }))
+        .then((lists) => {
+          this.core.setFoldingRanges(Uint32Array.from(lists.flat().flatMap((r) => [r.start, r.end])), false);
+          this.schedule();
+        });
+      return;
+    }
     const s = this.model.syntax;
     if (s) {
       if (!s.hasTree) { this.core.refreshFoldingRanges(); return; }
@@ -814,6 +831,8 @@ export class RustacoEditor {
   /** Replaces the selections; the first one becomes primary. */
   setSelections(selections) {
     this.core.set_selections(Uint32Array.from(selections.flatMap((s) => [s.anchor, s.head])));
+    this.features.caretMoved();
+    this.#mirror();
     this.schedule();
   }
 
@@ -866,6 +885,12 @@ export class RustacoEditor {
       if (e.button !== 0) return;
       e.preventDefault();
       input.focus();
+      this.features.hideHover();
+      const definitionKey = platform() === 'mac' ? e.metaKey : e.ctrlKey;
+      if (definitionKey && !e.altKey && !e.shiftKey && this.features.has('definition')) {
+        const offset = core.textOffsetAt(x, y);
+        if (offset >= 0) { this.features.goToDefinition(offset); return; }
+      }
       core.mouse_down(x, y, e.detail, e.shiftKey, e.altKey);
       this.#changed();
       let last = [x, y];
@@ -899,6 +924,11 @@ export class RustacoEditor {
     input.addEventListener('paste', () => setTimeout(() => this.#coverInput(null), 0));
     input.addEventListener('blur', () => { this.#coverInput(null); this.suggest.close(); });
 
+    canvas.addEventListener('mousemove', (e) => {
+      if (e.buttons === 0) this.features.mouseMove(...this.#point(e));
+    });
+    canvas.addEventListener('mouseleave', () => this.features.mouseLeave());
+
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
       const unit = e.deltaMode === 1 ? core.line_height() : e.deltaMode === 2 ? canvas.clientHeight : 1;
@@ -910,6 +940,7 @@ export class RustacoEditor {
     input.addEventListener('keydown', (e) => {
       if (e.isComposing || e.keyCode === 229) return;
       if (this.suggest.handleKey(e)) { e.preventDefault(); return; }
+      if (e.key === 'Escape' && this.features.escape()) { e.preventDefault(); return; }
       const result = core.key_down(bindingKey(e), e.ctrlKey, e.shiftKey, e.altKey, e.metaKey);
       if (result === 0) return;
       e.preventDefault();
@@ -935,6 +966,7 @@ export class RustacoEditor {
           core.insert_text(text, this.#inLiteral());
           this.#changed();
           this.suggest.typed(text);
+          this.features.typed(text);
         }
       } else if (e.inputType === 'insertLineBreak' || e.inputType === 'insertParagraph') {
         e.preventDefault();
@@ -1012,6 +1044,7 @@ export class RustacoEditor {
 
   /** Commands that need the language module or the DOM. */
   #frontendCommand(command) {
+    if (this.features.run(command)) return;
     if (command === 'editor.action.triggerSuggest') {
       this.suggest.trigger({ explicit: true });
       return;
@@ -1024,6 +1057,15 @@ export class RustacoEditor {
     if (command === 'editor.action.jumpToBracket' && this.model.syntax) {
       // The pair at the caret came with the last frame.
       this.core.runCommand(command);
+      return;
+    }
+    const selectors = providersFor('selectionRange', this.model.getLanguage());
+    if (command === 'editor.action.smartSelect.expand' && selectors.length) {
+      const head = this.core.selections()[1];
+      Promise.resolve(selectors[0].provideSelectionRanges(this.model, head)).then((ranges) => {
+        this.core.expandSelection(Uint32Array.from((ranges ?? []).flatMap((r) => [r.start, r.end])));
+        this.#changed();
+      });
       return;
     }
     if (command === 'editor.action.smartSelect.expand' && this.model.syntax) {
@@ -1073,6 +1115,7 @@ export class RustacoEditor {
     if (this.focused) this.#restartBlink();
     this.model.changed();
     this.#mirror();
+    this.features?.caretMoved();
   }
 
   /**
@@ -1084,6 +1127,36 @@ export class RustacoEditor {
     const choices = this.core.snippetChoices();
     if (choices.length) this.suggest.showChoices(choices);
     else if (this.suggest.open) this.suggest.refilter();
+    if (this.features.signature) this.features.signatureHelp(false);
+  }
+
+  /** Turns the built-in highlighting of the word at the caret off while a provider does it. */
+  setOccurrencesFromProvider(fromProvider) {
+    if (this.occurrencesFromProvider === fromProvider) return;
+    this.occurrencesFromProvider = fromProvider;
+    this.setOptions({});
+  }
+
+  /** The decoration type of a symbol's highlighted uses, defined on first use. */
+  async highlightDecorationType() {
+    this.highlightType ??= defineDecorationType({ background: `${widgetColors()[4]}55` });
+    return this.highlightType;
+  }
+
+  /**
+   * The document's symbols as a tree `[{ name, kind, range, selectionRange?, children? }]`:
+   * from a symbol provider, else from the syntax tree.
+   */
+  async getDocumentSymbols() {
+    for (const p of providersFor('documentSymbol', this.model.getLanguage())) {
+      try {
+        const r = await p.provideDocumentSymbols(this.model);
+        if (r?.length) return r;
+      } catch {
+        // Try the next provider.
+      }
+    }
+    return this.model.builtinSymbols();
   }
 
   /** Inserts a snippet in VS Code's syntax (`for ${1:i} in $2 {\n\t$0\n}`) at every cursor. */

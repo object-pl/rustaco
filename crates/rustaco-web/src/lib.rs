@@ -615,6 +615,14 @@ const FRONTEND_COMMANDS: &[&str] = &[
     "actions.find",
     "editor.action.startFindReplaceAction",
     "editor.action.triggerSuggest",
+    "editor.action.triggerParameterHints",
+    "editor.action.revealDefinition",
+    "editor.action.referenceSearch.trigger",
+    "editor.action.rename",
+    "editor.action.formatDocument",
+    "editor.action.showHover",
+    "editor.action.quickFix",
+    "editor.action.quickOutline",
 ];
 
 #[wasm_bindgen]
@@ -1318,6 +1326,42 @@ impl Editor {
     #[wasm_bindgen(js_name = snippetChoices)]
     pub fn snippet_choices(&mut self) -> Vec<String> {
         self.edit(|ed| ed.snippet().and_then(|s| s.choices()).map(<[String]>::to_vec).unwrap_or_default())
+    }
+
+    /// The char offset under a point in canvas coordinates, or -1 when the point is not over
+    /// text (the gutter, past a line's end, the minimap).
+    #[wasm_bindgen(js_name = textOffsetAt)]
+    pub fn text_offset_at(&mut self, x: f64, y: f64) -> i32 {
+        let model = self.model.borrow();
+        self.view.sync(&model);
+        let rope = model.rope();
+        if x < self.view.gutter_width(rope) as f64 || self.view.in_minimap(x as f32) {
+            return -1;
+        }
+        let pos = self.view.hit_test(rope, x as f32, y as f32);
+        let line = rope.char_to_line(pos);
+        let at_end = pos == rustaco_core::line_end(rope, line);
+        if at_end {
+            // Past the last char: only a hit when the point is still on that char's cell.
+            match self.view.position_rect(rope, pos) {
+                Some(r) if (x as f32) < r.x => pos.saturating_sub(1) as i32,
+                _ => -1,
+            }
+        } else {
+            pos as i32
+        }
+    }
+
+    /// Applies edits as one undo step: `ranges` holds start and end char offsets per edit,
+    /// `texts` the replacement texts. Edits must not overlap.
+    #[wasm_bindgen(js_name = applyEdits)]
+    pub fn apply_edits_js(&mut self, ranges: &[u32], texts: Vec<String>) {
+        let edits: Vec<rustaco_core::Edit> = ranges
+            .chunks_exact(2)
+            .zip(texts)
+            .map(|(r, t)| rustaco_core::Edit::new(r[0] as usize, r[1] as usize, t))
+            .collect();
+        self.edit(|ed| ed.apply_edits(edits));
     }
 
     /// The word at the primary caret: [start, end] char offsets (equal when there is none).

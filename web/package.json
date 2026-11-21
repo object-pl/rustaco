@@ -17,6 +17,7 @@
     "rustaco-worker.js",
     "languages.js",
     "suggest.js",
+    "features.js",
     "rustaco.d.ts",
     "pkg/**/*.js",
     "pkg/**/*.wasm",

@@ -259,8 +259,16 @@ fn every_bound_command_runs() {
         "jumpToNextSnippetPlaceholder",
         "jumpToPrevSnippetPlaceholder",
         "leaveSnippet",
-        // Suggestions come from the frontend's providers.
+        // Language features come from the frontend's providers.
         "editor.action.triggerSuggest",
+        "editor.action.triggerParameterHints",
+        "editor.action.revealDefinition",
+        "editor.action.referenceSearch.trigger",
+        "editor.action.rename",
+        "editor.action.formatDocument",
+        "editor.action.showHover",
+        "editor.action.quickFix",
+        "editor.action.quickOutline",
         // The find widget is the frontend's.
         "actions.find",
         "editor.action.startFindReplaceAction",

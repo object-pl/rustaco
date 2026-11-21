@@ -10,7 +10,7 @@ stage=target/npm/package
 rm -rf "$stage"
 mkdir -p "$stage"
 cp web/package.json web/*.js web/rustaco.d.ts LICENSE "$stage/"
-rm -f "$stage/csp.js"
+rm -f "$stage/csp.js" "$stage/demo-language.js"
 cp README.md "$stage/README.md"
 cp -r web/pkg "$stage/pkg"
 (cd target/npm && npm pack ./package --pack-destination . >/dev/null)

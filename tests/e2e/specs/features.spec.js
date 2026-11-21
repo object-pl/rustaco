@@ -1,0 +1,117 @@
+import { test, expect } from '@playwright/test';
+
+const mod = process.platform === 'darwin' ? 'Meta' : 'Control';
+const PROGRAM = 'fn add(a, b) {\n    let sum = a + b;\n    print(sum);\n}\nlet total = add(1, 2);\nvar old = 1;\n';
+
+async function open(page, value = PROGRAM) {
+  await page.goto('/');
+  await page.waitForFunction(() => window.editor?.ready);
+  await page.evaluate(async (v) => {
+    const { registerDemoLanguage } = await import('/demo-language.js');
+    window.demo ??= registerDemoLanguage();
+    const e = window.editor;
+    e.setValue(v);
+    await e.getModel().setLanguage('demo');
+    e.focus();
+  }, value);
+}
+
+const value = (page) => page.evaluate(() => window.editor.getValue());
+const setCursor = (page, offset) => page.evaluate((o) => window.editor.setSelections([{ anchor: o, head: o }]), offset);
+const point = (page, offset) => page.evaluate((o) => {
+  const e = window.editor;
+  const p = e.core.positionOf(o);
+  return { x: p[0] + 3, y: p[1] + p[2] / 2 };
+}, offset);
+
+test('hover shows the declaration', async ({ page }) => {
+  await open(page);
+  const at = PROGRAM.indexOf('add(1');
+  await page.evaluate(() => window.editor.core.render(false));
+  const p = await point(page, at + 1);
+  const box = await page.locator('canvas').first().boundingBox();
+  await page.mouse.move(box.x + p.x, box.y + p.y);
+  const hover = page.locator('[role="tooltip"][aria-label="Hover"]');
+  await expect(hover).toContainText('fn add(a, b)');
+  await expect(hover).toContainText('Declared on line 1.');
+});
+
+test('parameter hints follow the argument', async ({ page }) => {
+  await open(page, PROGRAM);
+  await setCursor(page, PROGRAM.length);
+  await page.keyboard.type('add(');
+  const hints = page.locator('[role="tooltip"][aria-label="Parameter hints"]');
+  await expect(hints).toContainText('add(a, b)');
+  await expect(hints.locator('b')).toHaveText('a');
+  await page.keyboard.type('1, ');
+  await expect(hints.locator('b')).toHaveText('b');
+  await page.keyboard.press('Escape');
+  await expect(hints).toBeHidden();
+});
+
+test('go to definition with F12 and Ctrl+click; references in a peek view', async ({ page }) => {
+  await open(page);
+  const use = PROGRAM.indexOf('add(1');
+  await setCursor(page, use + 1);
+  await page.keyboard.press('F12');
+  await expect.poll(() => page.evaluate(() => window.editor.getSelections()[0])).toEqual({ anchor: 3, head: 6 });
+
+  const sumUse = PROGRAM.indexOf('print(sum') + 6;
+  const p = await point(page, sumUse + 1);
+  const box = await page.locator('canvas').first().boundingBox();
+  await page.keyboard.down(mod);
+  await page.mouse.click(box.x + p.x, box.y + p.y);
+  await page.keyboard.up(mod);
+  const sumDecl = PROGRAM.indexOf('sum');
+  await expect.poll(() => page.evaluate(() => window.editor.getSelections()[0])).toEqual({ anchor: sumDecl, head: sumDecl + 3 });
+
+  await page.keyboard.press('Shift+F12');
+  const peek = page.locator('[role="listbox"][aria-label="References"]');
+  await expect(peek).toContainText('2 references');
+  await peek.locator('[role="option"]').nth(1).dispatchEvent('mousedown');
+  await expect(peek).toBeHidden();
+  expect((await page.evaluate(() => window.editor.getSelections()[0])).anchor).toBe(sumUse);
+});
+
+test('rename, format and a quick fix edit the text as one step each', async ({ page }) => {
+  await open(page, 'let  x  =  1;\t\nprint(x);\nvar y = x;\n');
+  await setCursor(page, 6);
+  await page.keyboard.press('F2');
+  const box = page.locator('input[aria-label="Rename"]');
+  await expect(box).toHaveValue('x');
+  await box.fill('count');
+  await box.press('Enter');
+  await expect.poll(() => value(page)).toBe('let  count  =  1;\t\nprint(count);\nvar y = count;\n');
+  await page.keyboard.press('Shift+Alt+F');
+  await expect.poll(() => value(page)).toBe('let  count = 1;\nprint(count);\nvar y = count;\n');
+  await page.keyboard.press(`${mod}+z`);
+  expect(await value(page)).toBe('let  count  =  1;\t\nprint(count);\nvar y = count;\n');
+
+  await setCursor(page, (await value(page)).indexOf('var') + 1);
+  await page.keyboard.press(`${mod}+.`);
+  const menu = page.locator('[role="dialog"][aria-label="Code actions"]');
+  await expect(menu).toContainText('Change var to let');
+  await page.keyboard.press('Enter');
+  await expect.poll(() => value(page)).toContain('let y = count;');
+});
+
+test('document highlights, folding ranges and quick outline come from providers', async ({ page }) => {
+  await open(page);
+  await setCursor(page, PROGRAM.indexOf('sum') + 1);
+  // The provider marks both uses of `sum`; the built-in word highlight is off meanwhile.
+  await expect.poll(() => page.evaluate(() => window.editor.occurrencesFromProvider)).toBe(true);
+
+  await page.evaluate(() => window.editor.refreshFolding());
+  await expect.poll(async () => {
+    await page.evaluate(() => { window.editor.setSelections([{ anchor: 2, head: 2 }]); window.editor.runCommand('editor.fold'); });
+    return page.evaluate(() => Array.from(window.editor.core.visibleLines()));
+  }).toEqual([0, 1, 3, 7]);
+  await page.evaluate(() => window.editor.runCommand('editor.unfoldAll'));
+
+  await page.keyboard.press(`${mod}+Shift+o`);
+  const outline = page.locator('[role="dialog"][aria-label="Go to symbol"]');
+  await expect(outline.locator('[role="option"]')).toHaveCount(3);
+  await page.keyboard.type('total');
+  await page.keyboard.press('Enter');
+  expect((await page.evaluate(() => window.editor.getSelections()[0])).head).toBe(PROGRAM.indexOf('total'));
+});
