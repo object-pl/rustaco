@@ -10,7 +10,12 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use rustaco_core::{Cursors, Editor as Commands, EditorId, Rope, Selection, Selections, TextModel, word_at};
+use std::collections::HashMap;
+
+use rustaco_core::{
+    Cursors, Editor as Commands, EditorId, KeyPress, Keymap, LanguageEditing, Platform, Resolved, Rope, Selection,
+    Selections, TextModel, default_keymap, jetbrains_keymap, word_at,
+};
 use rustaco_syntax::{Colors, Style, Theme, ThemeRule, themes};
 use rustaco_view::{Metrics, Rect, StyleSpan, Styler, View};
 use wasm_bindgen::JsCast;
@@ -196,6 +201,20 @@ impl Model {
         self.inner.borrow().version() as f64
     }
 
+    /// Sets comment tokens and auto-closing pairs from the language catalog; `""` clears them.
+    #[wasm_bindgen(js_name = setLanguageConfig)]
+    pub fn set_language_config(&self, language: &str) {
+        let editing = rustaco_syntax::info(language).map_or_else(LanguageEditing::default, |info| {
+            let c = info.config;
+            LanguageEditing {
+                line_comment: c.line_comment.map(str::to_owned),
+                block_comment: c.block_comment.map(|(a, b)| (a.to_owned(), b.to_owned())),
+                auto_closing: c.auto_closing.iter().map(|&(a, b)| (a.to_owned(), b.to_owned())).collect(),
+            }
+        });
+        self.inner.borrow_mut().editing = editing;
+    }
+
     /// Edits made after `version`, encoded for a language module (see [`EditBatch`]).
     #[wasm_bindgen(js_name = editsSince)]
     pub fn edits_since(&self, version: f64) -> EditBatch {
@@ -313,6 +332,8 @@ pub struct Editor {
     dpr: f64,
     drag: Option<Drag>,
     caret: Rect,
+    keymap: Keymap,
+    platform: Platform,
 }
 
 #[wasm_bindgen]
@@ -339,6 +360,8 @@ impl Editor {
             dpr: 1.0,
             drag: None,
             caret: Rect::default(),
+            keymap: default_keymap(Platform::Windows),
+            platform: Platform::Windows,
         })
     }
 
@@ -417,78 +440,103 @@ impl Editor {
         self.caret.y as f64
     }
 
-    /// Handles a keydown. Returns true when the key was consumed and the default action
-    /// must be prevented. Printable text arrives separately through [`Editor::insert_text`].
-    pub fn key_down(&mut self, key: &str, ctrl: bool, shift: bool, alt: bool, meta: bool) -> bool {
-        let m = ctrl || meta;
-        let page = ((self.view.height / self.view.metrics.line_height) as isize - 1).max(1);
-        let mut scroll_lines = 0isize;
-        let handled = self.edit(|d| {
-            match key {
-                "ArrowLeft" if m => d.move_word_left(shift),
-                "ArrowLeft" => d.move_left(shift),
-                "ArrowRight" if m => d.move_word_right(shift),
-                "ArrowRight" => d.move_right(shift),
-                "ArrowUp" if m && alt => d.add_cursor_vertical(false),
-                "ArrowUp" => d.move_up(shift),
-                "ArrowDown" if m && alt => d.add_cursor_vertical(true),
-                "ArrowDown" => d.move_down(shift),
-                "Home" if m => d.move_document_start(shift),
-                "Home" => d.move_line_start(shift),
-                "End" if m => d.move_document_end(shift),
-                "End" => d.move_line_end(shift),
-                "PageUp" => {
-                    d.move_vertical(-page, shift);
-                    scroll_lines = -page;
-                }
-                "PageDown" => {
-                    d.move_vertical(page, shift);
-                    scroll_lines = page;
-                }
-                "Backspace" if m => d.delete_word_backward(),
-                "Backspace" => d.delete_backward(),
-                "Delete" if m => d.delete_word_forward(),
-                "Delete" => d.delete_forward(),
-                "Enter" => d.newline(),
-                "Tab" => d.indent(),
-                "Escape" => {
-                    let primary = d.selections().primary();
-                    let collapsed = if d.selections().len() > 1 { primary } else { Selection::cursor(primary.head) };
-                    d.set_selections(Selections::single(collapsed));
-                }
-                _ if m && !alt => match key.to_ascii_lowercase().as_str() {
-                    "a" => d.select_all(),
-                    "z" if shift => {
-                        d.redo();
-                    }
-                    "z" => {
-                        d.undo();
-                    }
-                    "y" => {
-                        d.redo();
-                    }
-                    _ => return false,
-                },
-                _ => return false,
-            }
-            true
-        });
-        if !handled {
-            return false;
-        }
-        if scroll_lines != 0 {
-            let dy = scroll_lines as f32 * self.view.metrics.line_height;
-            self.view.scroll_by(self.model.borrow().rope(), 0.0, dy);
-        }
-        self.reveal_primary();
+    /// Selects the keymap: `preset` is `"default"` (VS Code) or `"jetbrains"`, `platform` is
+    /// `"mac"`, `"windows"` or `"linux"`.
+    #[wasm_bindgen(js_name = setKeymap)]
+    pub fn set_keymap(&mut self, preset: &str, platform: &str) -> bool {
+        self.platform = match platform {
+            "mac" => Platform::Mac,
+            "linux" => Platform::Linux,
+            _ => Platform::Windows,
+        };
+        self.keymap = match preset {
+            "default" => default_keymap(self.platform),
+            "jetbrains" => jetbrains_keymap(self.platform),
+            _ => return false,
+        };
         true
     }
 
-    pub fn insert_text(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
+    /// Adds keybindings over the current keymap: newline-separated keys (`"ctrl+k ctrl+c"`),
+    /// commands (`-command` removes a binding) and `when` clauses (empty for none).
+    #[wasm_bindgen(js_name = addKeybindings)]
+    pub fn add_keybindings(&mut self, keys: &str, commands: &str, whens: &str) {
+        let entries: Vec<(&str, &str, Option<&str>)> = keys
+            .split('\n')
+            .zip(commands.split('\n'))
+            .zip(whens.split('\n').chain(std::iter::repeat("")))
+            .map(|((k, c), w)| (k, c, (!w.is_empty()).then_some(w)))
+            .collect();
+        self.keymap.extend(entries);
+    }
+
+    /// Runs a command by id (see the keymap). Returns false for unknown ids.
+    #[wasm_bindgen(js_name = runCommand)]
+    pub fn run_command(&mut self, command: &str) -> bool {
+        let page = ((self.view.height / self.view.metrics.line_height) as isize - 1).max(1);
+        let page_move = match command {
+            "cursorPageUp" => Some((-page, false)),
+            "cursorPageUpSelect" => Some((-page, true)),
+            "cursorPageDown" => Some((page, false)),
+            "cursorPageDownSelect" => Some((page, true)),
+            _ => None,
+        };
+        let handled = match page_move {
+            Some((lines, extend)) => {
+                self.edit(|ed| ed.move_vertical(lines, extend));
+                let dy = lines as f32 * self.view.metrics.line_height;
+                self.view.scroll_by(self.model.borrow().rope(), 0.0, dy);
+                true
+            }
+            None => self.edit(|ed| ed.run(command)),
+        };
+        if handled {
+            self.reveal_primary();
         }
-        self.edit(|ed| ed.insert(text));
+        handled
+    }
+
+    /// Handles a keydown through the keymap. Returns true when the key was consumed and the
+    /// default action must be prevented. Unbound keys return false, so printable text
+    /// (including AltGr characters) arrives through [`Editor::insert_text`].
+    pub fn key_down(&mut self, key: &str, ctrl: bool, shift: bool, alt: bool, meta: bool) -> bool {
+        let pressed = KeyPress { ctrl, shift, alt, meta, key: key.to_lowercase() };
+        let context = {
+            let model = self.model.borrow();
+            self.cursors.sync(&model);
+            let sels = self.cursors.selections();
+            HashMap::from([
+                ("editorHasSelection".to_owned(), sels.iter().any(|s| !s.is_empty())),
+                ("editorHasMultipleSelections".to_owned(), sels.len() > 1),
+                ("editorTextFocus".to_owned(), true),
+            ])
+        };
+        match self.keymap.resolve(&pressed, &context) {
+            Resolved::Command(command) => {
+                self.run_command(&command);
+                true
+            }
+            Resolved::Pending => true,
+            Resolved::Unbound => false,
+        }
+    }
+
+    /// True while the first key of a chord (`ctrl+k`) waits for the second.
+    #[wasm_bindgen(js_name = hasPendingChord)]
+    pub fn has_pending_chord(&self) -> bool {
+        self.keymap.has_pending_chord()
+    }
+
+    /// Typed text from the input element. A single char goes through bracket handling
+    /// (auto-closing pairs, typing over a closing bracket); longer text (IME, dictation) is
+    /// inserted as is.
+    pub fn insert_text(&mut self, text: &str) {
+        let mut chars = text.chars();
+        match (chars.next(), chars.next()) {
+            (None, _) => return,
+            (Some(c), None) => self.edit(|ed| ed.type_char(c)),
+            _ => self.edit(|ed| ed.insert(text)),
+        }
         self.reveal_primary();
     }
 

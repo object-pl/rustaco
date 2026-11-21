@@ -55,6 +55,15 @@ impl Default for Options {
     }
 }
 
+/// Language-specific editing data, set by the frontend from its language catalog: comment
+/// tokens for comment toggling, bracket and quote pairs for auto-closing.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LanguageEditing {
+    pub line_comment: Option<String>,
+    pub block_comment: Option<(String, String)>,
+    pub auto_closing: Vec<(String, String)>,
+}
+
 /// Change sets kept in the log. A consumer further behind than this must resync from the full text.
 const LOG_CAPACITY: usize = 1024;
 
@@ -74,6 +83,7 @@ pub struct TextModel {
     pub(crate) history: History,
     pub(crate) line_ending: LineEnding,
     pub options: Options,
+    pub editing: LanguageEditing,
     version: u64,
     log: VecDeque<LogEntry>,
     /// Version of the text before the oldest log entry.
@@ -88,6 +98,7 @@ impl TextModel {
             rope,
             history: History::default(),
             options: Options::default(),
+            editing: LanguageEditing::default(),
             version: 0,
             log: VecDeque::new(),
             log_base: 0,

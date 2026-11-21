@@ -2,7 +2,8 @@
 
 use proptest::prelude::*;
 use rustaco_core::{
-    Assoc, ChangeSet, Document, Edit, EditEvent, Rope, Selection, Selections, Utf16Position, utf16_to_char,
+    Assoc, ChangeSet, Document, Edit, EditEvent, LanguageEditing, Rope, Selection, Selections, Utf16Position,
+    utf16_to_char,
 };
 
 /// Alphabet chosen to hit multi-byte chars, surrogate pairs and every line terminator.
@@ -35,6 +36,20 @@ enum Op {
     Undo,
     Redo,
     External(Vec<(usize, usize, String)>),
+    Tab,
+    Outdent,
+    MoveLines(bool),
+    CopyLines(bool),
+    DeleteLines,
+    InsertLine(bool),
+    LineComment,
+    BlockComment,
+    TypeChar(char),
+    BackspacePair,
+    NextOccurrence,
+    AllOccurrences,
+    Case(bool),
+    TrimTrailing,
 }
 
 fn op() -> impl Strategy<Value = Op> {
@@ -63,6 +78,20 @@ fn op() -> impl Strategy<Value = Op> {
         Just(Op::Undo),
         Just(Op::Redo),
         prop::collection::vec((pos.clone(), pos, text()), 1..3).prop_map(Op::External),
+        Just(Op::Tab),
+        Just(Op::Outdent),
+        any::<bool>().prop_map(Op::MoveLines),
+        any::<bool>().prop_map(Op::CopyLines),
+        Just(Op::DeleteLines),
+        any::<bool>().prop_map(Op::InsertLine),
+        Just(Op::LineComment),
+        Just(Op::BlockComment),
+        prop::sample::select(vec!['(', ')', '"', '[', ']', 'x']).prop_map(Op::TypeChar),
+        Just(Op::BackspacePair),
+        Just(Op::NextOccurrence),
+        Just(Op::AllOccurrences),
+        any::<bool>().prop_map(Op::Case),
+        Just(Op::TrimTrailing),
     ]
 }
 
@@ -110,6 +139,28 @@ fn run(doc: &mut Document, op: &Op) {
                 .collect();
             doc.apply_edits(edits);
         }
+        Op::Tab => doc.tab(),
+        Op::Outdent => doc.outdent_lines(),
+        Op::MoveLines(up) => doc.move_lines(*up),
+        Op::CopyLines(up) => doc.copy_lines(*up),
+        Op::DeleteLines => doc.delete_lines(),
+        Op::InsertLine(below) => doc.insert_line(*below),
+        Op::LineComment => doc.toggle_line_comment(),
+        Op::BlockComment => doc.toggle_block_comment(),
+        Op::TypeChar(c) => doc.type_char(*c),
+        Op::BackspacePair => doc.delete_backward_pair(),
+        Op::NextOccurrence => doc.add_next_occurrence(),
+        Op::AllOccurrences => doc.select_all_occurrences(),
+        Op::Case(upper) => doc.transform_case(*upper),
+        Op::TrimTrailing => doc.trim_trailing_whitespace(),
+    }
+}
+
+fn editing() -> LanguageEditing {
+    LanguageEditing {
+        line_comment: Some("//".into()),
+        block_comment: Some(("/*".into(), "*/".into())),
+        auto_closing: vec![("(".into(), ")".into()), ("[".into(), "]".into()), ("\"".into(), "\"".into())],
     }
 }
 
@@ -163,6 +214,7 @@ proptest! {
     #[test]
     fn edit_sequences_keep_invariants(initial in text(), ops in prop::collection::vec(op(), 1..30)) {
         let mut doc = Document::new(&initial);
+        doc.set_language_editing(editing());
         let mut shadows = Shadows::new(&initial);
         for op in &ops {
             let version = doc.version();

@@ -3,6 +3,7 @@
 use ropey::Rope;
 
 use crate::change::{Assoc, ChangeSet, Edit, inside_crlf};
+use crate::commands::{next_grapheme, prev_grapheme};
 use crate::history::{EditKind, Transaction};
 use crate::model::{Options, TextModel};
 use crate::position::{Position, char_to_position, line_end, line_len, position_to_char};
@@ -57,8 +58,8 @@ impl Cursors {
 
 /// Short-lived access to a model for one editor. Creating it syncs the cursors.
 pub struct Editor<'a> {
-    model: &'a mut TextModel,
-    cursors: &'a mut Cursors,
+    pub(crate) model: &'a mut TextModel,
+    pub(crate) cursors: &'a mut Cursors,
 }
 
 impl<'a> Editor<'a> {
@@ -78,7 +79,7 @@ impl<'a> Editor<'a> {
 
     // ---- core plumbing ----
 
-    fn commit(&mut self, changes: ChangeSet, after: Selections, kind: EditKind) {
+    pub(crate) fn commit(&mut self, changes: ChangeSet, after: Selections, kind: EditKind) {
         if changes.is_empty() {
             self.cursors.selections = snap_selections(&self.model.rope, &after);
             return;
@@ -122,6 +123,10 @@ impl<'a> Editor<'a> {
         let changes = ChangeSet::new(edits).snap_crlf(&self.model.rope);
         let after = self.cursors.selections.map(|s| Selection::cursor(changes.map(s.start(), Assoc::Before)));
         self.commit(changes, after, kind);
+    }
+
+    pub(crate) fn delete_each_pub(&mut self, kind: EditKind, f: impl FnMut(&Rope, &Selection) -> (usize, usize)) {
+        self.delete_each(kind, f);
     }
 
     fn move_each(&mut self, extend: bool, mut f: impl FnMut(&Rope, &Selection) -> (usize, Option<usize>)) {
@@ -171,14 +176,14 @@ impl<'a> Editor<'a> {
     /// Backspace: deletes the selection, or the char before each cursor.
     pub fn delete_backward(&mut self) {
         self.delete_each(EditKind::Deleting, |rope, s| {
-            if s.is_empty() { (prev_boundary(rope, s.head), s.head) } else { (s.start(), s.end()) }
+            if s.is_empty() { (prev_grapheme(rope, s.head), s.head) } else { (s.start(), s.end()) }
         });
     }
 
     /// Delete: deletes the selection, or the char after each cursor.
     pub fn delete_forward(&mut self) {
         self.delete_each(EditKind::Deleting, |rope, s| {
-            if s.is_empty() { (s.head, next_boundary(rope, s.head)) } else { (s.start(), s.end()) }
+            if s.is_empty() { (s.head, next_grapheme(rope, s.head)) } else { (s.start(), s.end()) }
         });
     }
 
@@ -267,13 +272,13 @@ impl<'a> Editor<'a> {
 
     pub fn move_left(&mut self, extend: bool) {
         self.move_each(extend, |rope, s| {
-            if !extend && !s.is_empty() { (s.start(), None) } else { (prev_boundary(rope, s.head), None) }
+            if !extend && !s.is_empty() { (s.start(), None) } else { (prev_grapheme(rope, s.head), None) }
         });
     }
 
     pub fn move_right(&mut self, extend: bool) {
         self.move_each(extend, |rope, s| {
-            if !extend && !s.is_empty() { (s.end(), None) } else { (next_boundary(rope, s.head), None) }
+            if !extend && !s.is_empty() { (s.end(), None) } else { (next_grapheme(rope, s.head), None) }
         });
     }
 

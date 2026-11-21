@@ -150,3 +150,35 @@ test('a keystroke in a 200k-line file stays fast', async ({ page }) => {
   });
   expect(ms).toBeLessThan(5);
 });
+
+test('keymap commands: comments, line moves, auto-closing, Ctrl+D', async ({ page }) => {
+  await open(page, 'foo bar\nfoo baz');
+  await page.evaluate(async () => { await window.editor.getModel().setLanguage('rust'); window.editor.focus(); });
+  await setCursor(page, 0);
+  await page.keyboard.press(`${mod}+/`);
+  expect(await value(page)).toBe('// foo bar\nfoo baz');
+  await page.keyboard.press(`${mod}+/`);
+  await page.keyboard.press('Alt+ArrowDown');
+  expect(await value(page)).toBe('foo baz\nfoo bar');
+  await setCursor(page, 0);
+  await page.keyboard.press(`${mod}+d`);
+  await page.keyboard.press(`${mod}+d`);
+  await page.keyboard.type('qux');
+  expect(await value(page)).toBe('qux baz\nqux bar');
+  await page.keyboard.press('End');
+  await page.keyboard.type('(');
+  expect(await value(page)).toBe('qux baz()\nqux bar()');
+  await page.keyboard.type(')');
+  expect(await value(page)).toBe('qux baz()\nqux bar()');
+});
+
+test('chords and custom keybindings', async ({ page }) => {
+  await open(page, 'a  \nb\t');
+  await page.keyboard.press(`${mod}+k`);
+  await page.keyboard.press(`${mod}+x`);
+  expect(await value(page)).toBe('a\nb');
+  await page.evaluate(() => window.editor.addKeybindings([{ key: 'ctrl+shift+u', command: 'editor.action.transformToUppercase' }]));
+  await page.evaluate(() => window.editor.setSelections([{ anchor: 0, head: 3 }]));
+  await page.keyboard.press('Control+Shift+u');
+  expect(await value(page)).toBe('A\nB');
+});

@@ -44,6 +44,13 @@ function loadPack(pack) {
 
 const editors = new Set();
 
+/** The keymap platform: Cmd-based bindings on Apple devices. */
+function platform() {
+  const p = navigator.userAgentData?.platform ?? navigator.platform ?? '';
+  if (/mac|iphone|ipad/i.test(p)) return 'mac';
+  return /linux/i.test(p) ? 'linux' : 'windows';
+}
+
 /**
  * Sets the theme for every editor on the page: `"dark"`, `"light"`, `"high-contrast"`, or a
  * VS Code colour theme object (the parsed JSON of a `*-color-theme.json` file). From a VS Code
@@ -125,6 +132,7 @@ export class RustacoModel {
    */
   async setLanguage(id) {
     this.language = id;
+    this.core.setLanguageConfig(id);
     this.highlighter?.free();
     this.highlighter = null;
     let ok = id === '';
@@ -197,6 +205,7 @@ export class RustacoEditor {
     value = '',
     language = '',
     model = null,
+    keymap = 'default',
     fontFamily = '"Cascadia Code", Consolas, "Courier New", monospace',
     fontSize = 14,
   } = {}) {
@@ -217,6 +226,7 @@ export class RustacoEditor {
     this.ready = language ? this.model.setLanguage(language) : Promise.resolve(true);
     editors.add(this);
     this.core = new Editor(this.canvas, this.model.core, fontFamily, fontSize);
+    this.setKeymap(keymap);
     this.model.editors.add(this);
     this.caretOn = true;
     this.focused = false;
@@ -229,6 +239,31 @@ export class RustacoEditor {
   }
 
   getModel() { return this.model; }
+
+  /** Selects the keymap preset: `"default"` (VS Code) or `"jetbrains"`. */
+  setKeymap(preset) {
+    if (!this.core.setKeymap(preset, platform())) throw new Error(`unknown keymap: ${preset}`);
+  }
+
+  /**
+   * Adds keybindings over the current keymap, in VS Code's format:
+   * `[{ key: 'ctrl+k ctrl+c', command: 'editor.action.commentLine', when: 'editorHasSelection' }]`.
+   * A command starting with `-` removes that binding.
+   */
+  addKeybindings(bindings) {
+    this.core.addKeybindings(
+      bindings.map((b) => b.key).join('\n'),
+      bindings.map((b) => b.command).join('\n'),
+      bindings.map((b) => b.when ?? '').join('\n'),
+    );
+  }
+
+  /** Runs a command by id (`editor.action.commentLine`, `cursorWordLeft`, ...). */
+  runCommand(id) {
+    const ok = this.core.runCommand(id);
+    if (ok) this.#changed();
+    return ok;
+  }
   getValue() { return this.model.getValue(); }
   setValue(text) { this.model.setValue(text); }
   focus() { this.input.focus(); }

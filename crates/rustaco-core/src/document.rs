@@ -127,6 +127,25 @@ impl Document {
         add_cursor_vertical(below: bool);
         undo() -> bool;
         redo() -> bool;
+        tab();
+        indent_lines();
+        outdent_lines();
+        move_lines(up: bool);
+        copy_lines(up: bool);
+        delete_lines();
+        insert_line(below: bool);
+        toggle_line_comment();
+        toggle_block_comment();
+        type_char(c: char);
+        delete_backward_pair();
+        add_next_occurrence();
+        select_all_occurrences();
+        transform_case(upper: bool);
+        trim_trailing_whitespace();
+    }
+
+    pub fn set_language_editing(&mut self, editing: crate::model::LanguageEditing) {
+        self.model.editing = editing;
     }
 }
 
