@@ -168,8 +168,7 @@ impl Syntax {
     /// open with a bracket among their first children, which is where grammars put pairs.
     pub fn bracket_depths(&self, bytes: Range<usize>) -> Vec<(usize, usize)> {
         fn opens_pair(n: Node) -> bool {
-            (0..n.child_count().min(3) as u32)
-                .any(|i| n.child(i).is_some_and(|c| !c.is_named() && is_opening(c.kind())))
+            (0..n.child_count().min(3)).any(|i| n.child(i).is_some_and(|c| !c.is_named() && is_opening(c.kind())))
         }
         fn visit(node: Node, bytes: &Range<usize>, out: &mut Vec<(usize, usize)>) {
             let mut cursor = node.walk();
