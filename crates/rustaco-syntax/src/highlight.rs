@@ -132,6 +132,84 @@ impl Syntax {
         out
     }
 
+    /// The bracket pair at `byte`: when the char at `byte` (or just before it) is a bracket
+    /// token, returns the start bytes of it and its partner, opening bracket first. Partners
+    /// come from the tree (siblings under one node), so brackets in strings never match code.
+    pub fn matching_bracket(&self, byte: usize) -> Option<(usize, usize)> {
+        let tree = self.tree.as_ref()?;
+        let root = tree.root_node();
+        let candidates = [byte.checked_sub(1), Some(byte)];
+        for at in candidates.into_iter().flatten() {
+            let Some(node) = root.descendant_for_byte_range(at, at + 1) else { continue };
+            let kind = node.kind();
+            let Some(partner_kind) = bracket_partner(kind) else { continue };
+            if node.is_named() || node.start_byte() != at {
+                continue;
+            }
+            let parent = node.parent()?;
+            let mut cursor = parent.walk();
+            let siblings: Vec<_> = parent.children(&mut cursor).collect();
+            let partner = if is_opening(kind) {
+                siblings.iter().rev().find(|s| s.kind() == partner_kind && !s.is_named())
+            } else {
+                siblings.iter().find(|s| s.kind() == partner_kind && !s.is_named())
+            };
+            if let Some(p) = partner {
+                let (a, b) = (node.start_byte(), p.start_byte());
+                return Some(if a < b { (a, b) } else { (b, a) });
+            }
+        }
+        None
+    }
+
+    /// Bracket tokens starting in `bytes`, with their nesting depth (0 for the outermost
+    /// pair): (start byte, depth). The walk descends only into nodes that reach the range, so
+    /// its cost follows the visible text, not the file. Depth counts the enclosing nodes that
+    /// open with a bracket among their first children, which is where grammars put pairs.
+    pub fn bracket_depths(&self, bytes: Range<usize>) -> Vec<(usize, usize)> {
+        fn opens_pair(n: Node) -> bool {
+            (0..n.child_count().min(3) as u32)
+                .any(|i| n.child(i).is_some_and(|c| !c.is_named() && is_opening(c.kind())))
+        }
+        fn visit(node: Node, bytes: &Range<usize>, out: &mut Vec<(usize, usize)>) {
+            let mut cursor = node.walk();
+            if cursor.goto_first_child_for_byte(bytes.start).is_none() {
+                return;
+            }
+            loop {
+                let child = cursor.node();
+                if child.start_byte() >= bytes.end {
+                    break;
+                }
+                if child.child_count() == 0 {
+                    if !child.is_named()
+                        && bracket_partner(child.kind()).is_some()
+                        && bytes.contains(&child.start_byte())
+                    {
+                        let mut depth = 0;
+                        let mut ancestor = child.parent().and_then(|p| p.parent());
+                        while let Some(a) = ancestor {
+                            if opens_pair(a) {
+                                depth += 1;
+                            }
+                            ancestor = a.parent();
+                        }
+                        out.push((child.start_byte(), depth));
+                    }
+                } else {
+                    visit(child, bytes, out);
+                }
+                if !cursor.goto_next_sibling() {
+                    break;
+                }
+            }
+        }
+        let Some(tree) = self.tree.as_ref() else { return Vec::new() };
+        let mut out = Vec::new();
+        visit(tree.root_node(), &bytes, &mut out);
+        out
+    }
+
     /// What kind of text is at `byte`: code, a string or a comment. Read from node kinds, which
     /// grammars name `string_literal`, `line_comment`, `template_string` and the like.
     pub fn context_at(&self, byte: usize) -> TextContext {
@@ -250,4 +328,20 @@ impl<'a> TextProvider<&'a [u8]> for RopeText<'a> {
         let start = node.start_byte().min(end);
         self.0.byte_slice(start..end).chunks().map(str::as_bytes as fn(&'a str) -> &'a [u8])
     }
+}
+
+fn bracket_partner(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "(" => ")",
+        ")" => "(",
+        "[" => "]",
+        "]" => "[",
+        "{" => "}",
+        "}" => "{",
+        _ => return None,
+    })
+}
+
+fn is_opening(kind: &str) -> bool {
+    matches!(kind, "(" | "[" | "{")
 }

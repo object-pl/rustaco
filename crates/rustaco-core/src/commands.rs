@@ -40,6 +40,62 @@ pub(crate) fn next_grapheme(rope: &Rope, pos: usize) -> usize {
     pos + first.max(1)
 }
 
+/// Chars scanned in each direction when matching brackets by text.
+const BRACKET_SCAN: usize = 50_000;
+
+/// The bracket pair at `pos` found by scanning the text: when the char before `pos` (or at
+/// it) is a bracket from `pairs`, returns the positions of it and its partner, opening first.
+/// Brackets inside strings and comments are counted too; frontends with a syntax tree use the
+/// tree's answer instead.
+pub fn matching_bracket_text(rope: &Rope, pos: usize, pairs: &[(String, String)]) -> Option<(usize, usize)> {
+    let single: Vec<(char, char)> = pairs
+        .iter()
+        .filter_map(|(o, c)| {
+            let (mut oi, mut ci) = (o.chars(), c.chars());
+            match (oi.next(), oi.next(), ci.next(), ci.next()) {
+                (Some(o), None, Some(c), None) if o != c => Some((o, c)),
+                _ => None,
+            }
+        })
+        .collect();
+    let len = rope.len_chars();
+    for at in [pos.checked_sub(1), Some(pos)].into_iter().flatten().filter(|&p| p < len) {
+        let ch = rope.char(at);
+        if let Some(&(open, close)) = single.iter().find(|(o, _)| *o == ch) {
+            let mut depth = 0usize;
+            for (i, c) in rope.chars_at(at).enumerate().take(BRACKET_SCAN) {
+                if c == open {
+                    depth += 1;
+                } else if c == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((at, at + i));
+                    }
+                }
+            }
+        } else if let Some(&(open, close)) = single.iter().find(|(_, c)| *c == ch) {
+            let mut depth = 0usize;
+            let mut chars = rope.chars_at(at + 1);
+            let mut i = at + 1;
+            while let Some(c) = chars.prev() {
+                i -= 1;
+                if at - i > BRACKET_SCAN {
+                    break;
+                }
+                if c == close {
+                    depth += 1;
+                } else if c == open {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some((i, at));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Lines touched by the selections, merged into ranges. A selection ending at the start of a
 /// line does not include that line, unless it is empty.
 fn selected_line_ranges(rope: &Rope, selections: &Selections) -> Vec<Range<usize>> {

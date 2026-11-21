@@ -21,6 +21,10 @@ fn time(label: &str, text: String) {
         let first = doc.rope().len_lines() / 2;
         let t = Instant::now();
         syntax.highlight(doc.rope(), first..first + 50);
+        let b0 = doc.rope().line_to_byte(first);
+        let b1 = doc.rope().line_to_byte(first + 50);
+        syntax.bracket_depths(b0..b1);
+        syntax.matching_bracket(b0 + 10);
         highlight += t.elapsed();
     }
     let errors = syntax.tree().unwrap().root_node().has_error();

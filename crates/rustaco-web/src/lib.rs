@@ -34,6 +34,12 @@ struct Chrome {
     caret: String,
     scrollbar: String,
     find_match: String,
+    indent_guide: String,
+    indent_guide_active: String,
+    ruler: String,
+    whitespace: String,
+    bracket_match: String,
+    word_highlight: String,
 }
 
 /// Decoration kind of find matches.
@@ -55,6 +61,12 @@ impl Chrome {
             caret: css(c.caret),
             scrollbar: css(c.scrollbar),
             find_match: css(c.find_match),
+            indent_guide: css(c.indent_guide),
+            indent_guide_active: css(c.indent_guide_active),
+            ruler: css(c.ruler),
+            whitespace: css(c.whitespace),
+            bracket_match: css(c.bracket_match),
+            word_highlight: css(c.word_highlight),
         }
     }
 }
@@ -97,9 +109,12 @@ struct CssStyle {
 }
 
 fn css_styles(theme: &Theme) -> Vec<CssStyle> {
+    let brackets = theme.colors.brackets.map(|c| Style { foreground: Some(c), ..Style::default() });
     theme
         .style_table()
         .iter()
+        // Bracket depth colours follow the highlight names (style ids from BRACKET_STYLE_BASE).
+        .chain(brackets.iter())
         .map(|s: &Style| CssStyle {
             color: css(s.foreground.unwrap_or(theme.colors.foreground)),
             font_prefix: match (s.italic.unwrap_or(false), s.bold.unwrap_or(false)) {
@@ -348,10 +363,22 @@ pub struct Editor {
     /// A command the keymap resolved that only the JS side can run (it needs the language
     /// module); [`Editor::key_down`] returns 2 and the JS side takes it from here.
     frontend_command: Option<String>,
+    options: ViewOptions,
+    /// The bracket pair at the cursor from the language module's tree, set each frame.
+    tree_brackets: Option<Option<(usize, usize)>>,
+}
+
+/// Display options (Monaco's names in the JS API).
+#[derive(Clone, Default)]
+struct ViewOptions {
+    rulers: Vec<usize>,
+    render_whitespace: bool,
+    guides: bool,
+    occurrences: bool,
 }
 
 /// Commands the JS side runs because they need the language module.
-const FRONTEND_COMMANDS: &[&str] = &["editor.action.smartSelect.expand"];
+const FRONTEND_COMMANDS: &[&str] = &["editor.action.smartSelect.expand", "editor.action.jumpToBracket"];
 
 #[wasm_bindgen]
 impl Editor {
@@ -381,6 +408,8 @@ impl Editor {
             platform: Platform::Windows,
             find: None,
             frontend_command: None,
+            options: ViewOptions { guides: true, occurrences: true, ..ViewOptions::default() },
+            tree_brackets: None,
         })
     }
 
@@ -502,6 +531,14 @@ impl Editor {
         };
         let find_step = match command {
             "editor.action.nextMatchFindAction" => Some(true),
+            "editor.action.jumpToBracket" => {
+                let Some((open, close)) = self.current_bracket_pair() else { return false };
+                let head = self.selections_primary().head;
+                let target = if head == open || head == open + 1 { close } else { open };
+                self.edit(|ed| ed.set_selections(Selections::single(Selection::cursor(target))));
+                self.reveal_primary();
+                return true;
+            }
             "editor.action.smartSelect.shrink" => {
                 let ok = self.edit(|ed| ed.shrink_selection());
                 self.reveal_primary();
@@ -555,6 +592,30 @@ impl Editor {
             Resolved::Pending => 1,
             Resolved::Unbound => 0,
         }
+    }
+
+    /// Display options: ruler columns, whitespace marks, indentation guides, highlighting of
+    /// other occurrences of the word at the cursor.
+    #[wasm_bindgen(js_name = setViewOptions)]
+    pub fn set_view_options(&mut self, rulers: &[u32], render_whitespace: bool, guides: bool, occurrences: bool) {
+        self.options = ViewOptions {
+            rulers: rulers.iter().map(|&r| r as usize).collect(),
+            render_whitespace,
+            guides,
+            occurrences,
+        };
+    }
+
+    /// The bracket pair at the cursor from the language module's tree ([open, close], or empty
+    /// for none). Without this call the editor matches brackets by scanning the text.
+    #[wasm_bindgen(js_name = setTreeBrackets)]
+    pub fn set_tree_brackets(&mut self, pair: &[u32]) {
+        self.tree_brackets = Some((pair.len() == 2).then(|| (pair[0] as usize, pair[1] as usize)));
+    }
+
+    #[wasm_bindgen(js_name = clearTreeBrackets)]
+    pub fn clear_tree_brackets(&mut self) {
+        self.tree_brackets = None;
     }
 
     /// The command [`Editor::key_down`] left for the JS side, once.
@@ -810,6 +871,7 @@ impl Editor {
     }
 
     pub fn render(&mut self, caret_visible: bool) -> Result<(), JsValue> {
+        let bracket_pair = self.current_bracket_pair();
         let model = self.model.borrow();
         self.cursors.sync(&model);
         let selections = self.cursors.selections();
@@ -835,9 +897,30 @@ impl Editor {
         ctx.begin_path();
         ctx.rect(gutter, 0.0, w - gutter, h);
         ctx.clip();
+        // 1px lines at whole device pixels, so they are not blurred across two.
+        let dpr = self.dpr;
+        let snap = |x: f32| (x as f64 * dpr).floor() / dpr;
+        let one_pixel = 1.0 / dpr;
+        if self.options.guides {
+            let cursor_line = model.rope().char_to_line(selections.primary().head);
+            for g in self.view.indent_guides(&model, cursor_line) {
+                let color = if g.active { &chrome.indent_guide_active } else { &chrome.indent_guide };
+                ctx.set_fill_style_str(color);
+                ctx.fill_rect(snap(g.x), g.top as f64, one_pixel, (g.bottom - g.top) as f64);
+            }
+        }
+        ctx.set_fill_style_str(&chrome.ruler);
+        for x in self.view.ruler_positions(&model, &self.options.rulers) {
+            ctx.fill_rect(snap(x), 0.0, one_pixel, h);
+        }
         for (r, kind) in self.view.decoration_rects(&model) {
             if kind == FIND_MATCH {
                 fill(&chrome.find_match, &r);
+            }
+        }
+        if self.options.occurrences {
+            for r in self.occurrence_rects(&model, selections) {
+                fill(&chrome.word_highlight, &r);
             }
         }
         for r in &frame.selections {
@@ -892,6 +975,24 @@ impl Editor {
             draw_runs(ctx, &text, &ops, &colors.join("\n"), &fonts.join("\n"));
         });
         ctx.set_font(&self.font);
+        if self.options.render_whitespace {
+            ctx.set_fill_style_str(&chrome.whitespace);
+            let lh = self.view.metrics.line_height as f64;
+            for (x, y, cells, tab) in self.view.whitespace_marks(&model) {
+                let mark = if tab { "\u{2192}" } else { "\u{b7}" };
+                let _ = cells;
+                ctx.fill_text(mark, x as f64, y as f64 + lh / 2.0)?;
+            }
+        }
+        if let Some((open, close)) = bracket_pair {
+            ctx.set_stroke_style_str(&chrome.bracket_match);
+            ctx.set_line_width(1.0);
+            for at in [open, close] {
+                for r in self.view.char_rects(&model, at) {
+                    ctx.stroke_rect(r.x as f64 + 0.5, r.y as f64 + 0.5, r.width as f64 - 1.0, r.height as f64 - 1.0);
+                }
+            }
+        }
         if caret_visible {
             for r in &frame.carets {
                 fill(&chrome.caret, r);
@@ -935,6 +1036,20 @@ impl Editor {
 }
 
 impl Editor {
+    /// The bracket pair at the primary cursor: from the tree when the JS side supplied it,
+    /// otherwise by scanning the text with the language's (or default) bracket pairs.
+    fn current_bracket_pair(&mut self) -> Option<(usize, usize)> {
+        if let Some(pair) = self.tree_brackets {
+            return pair;
+        }
+        let head = self.selections_primary().head;
+        let model = self.model.borrow();
+        let defaults: Vec<(String, String)> =
+            [("(", ")"), ("[", "]"), ("{", "}")].iter().map(|&(a, b)| (a.to_owned(), b.to_owned())).collect();
+        let pairs = if model.editing.brackets.is_empty() { &defaults } else { &model.editing.brackets };
+        rustaco_core::matching_bracket_text(model.rope(), head, pairs)
+    }
+
     fn selections_primary(&mut self) -> Selection {
         self.cursors.sync(&self.model.borrow());
         self.cursors.selections().primary()
@@ -951,6 +1066,44 @@ impl Editor {
         self.cursors.sync(&model);
         let head = self.cursors.selections().primary().head;
         self.view.reveal(model.rope(), head);
+    }
+}
+
+impl Editor {
+    /// Rectangles of the other whole-word occurrences, on the visible lines, of the word at an
+    /// empty primary cursor.
+    fn occurrence_rects(&self, model: &TextModel, selections: &Selections) -> Vec<Rect> {
+        let primary = selections.primary();
+        if !primary.is_empty() || selections.len() > 1 {
+            return Vec::new();
+        }
+        let rope = model.rope();
+        let (a, b) = word_at(rope, primary.head);
+        let word: String = rope.slice(a..b).to_string();
+        if word.is_empty() || !word.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            return Vec::new();
+        }
+        let visible = self.view.visible_lines(rope);
+        let start = rope.line_to_char(visible.start);
+        let end = rope.line_to_char(visible.end.min(rope.len_lines()));
+        let text: String = rope.slice(start..end).to_string();
+        let is_word = |c: char| c.is_alphanumeric() || c == '_';
+        let mut rects = Vec::new();
+        let mut chars_before = 0;
+        let mut last = 0;
+        for (i, _) in text.match_indices(word.as_str()) {
+            let before_ok = text[..i].chars().next_back().is_none_or(|c| !is_word(c));
+            let after_ok = text[i + word.len()..].chars().next().is_none_or(|c| !is_word(c));
+            chars_before += text[last..i].chars().count();
+            last = i;
+            if before_ok && after_ok {
+                let at = start + chars_before;
+                if at != a {
+                    rects.extend(self.view.char_range_rects(model, at..at + (b - a)));
+                }
+            }
+        }
+        rects
     }
 }
 

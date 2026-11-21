@@ -147,9 +147,37 @@ impl Highlighter {
         Ok(())
     }
 
+    /// The bracket pair at char `pos` (the bracket before the cursor or at it), as
+    /// [open, close] char positions; empty when there is none or the engine has no tree.
+    #[wasm_bindgen(js_name = matchingBracket)]
+    pub fn matching_bracket(&self, pos: u32) -> Vec<u32> {
+        #[cfg(feature = "tree-sitter")]
+        if let Engine::TreeSitter(s) = &self.engine {
+            let rope = &self.rope;
+            let byte = rope.char_to_byte((pos as usize).min(rope.len_chars()));
+            if let Some((a, b)) = s.matching_bracket(byte) {
+                return vec![rope.byte_to_char(a) as u32, rope.byte_to_char(b) as u32];
+            }
+        }
+        let _ = pos;
+        Vec::new()
+    }
+
+    /// True when this module answers bracket questions from a syntax tree.
+    #[wasm_bindgen(js_name = hasTree)]
+    pub fn has_tree(&self) -> bool {
+        #[cfg(feature = "tree-sitter")]
+        if let Engine::TreeSitter(_) = &self.engine {
+            return true;
+        }
+        false
+    }
+
     /// Highlights lines `first..end`, as quads: line, start column, end column (chars),
-    /// style id.
-    pub fn highlight(&self, first: u32, end: u32) -> Vec<u32> {
+    /// style id. With `bracket_colors`, bracket tokens get depth colours on top.
+    pub fn highlight(&self, first: u32, end: u32, bracket_colors: bool) -> Vec<u32> {
+        // Unused in builds without tree-sitter, where the function returns early.
+        let _ = bracket_colors;
         let lines = first as usize..end as usize;
         #[allow(unused_variables)]
         let highlights = match &self.engine {
@@ -168,6 +196,19 @@ impl Highlighter {
         for line in first..end {
             for span in highlights.line(line as usize) {
                 out.extend([line, span.start as u32, span.end as u32, span.style]);
+            }
+        }
+        #[cfg(feature = "tree-sitter")]
+        if bracket_colors && let Engine::TreeSitter(s) = &self.engine {
+            let rope = &self.rope;
+            let lines = (first as usize).min(rope.len_lines())..(end as usize).min(rope.len_lines());
+            let bytes = rope.line_to_byte(lines.start)..rope.line_to_byte(lines.end);
+            for (byte, depth) in s.bracket_depths(bytes) {
+                let c = rope.byte_to_char(byte);
+                let line = rope.char_to_line(c);
+                let col = c - rope.line_to_char(line);
+                let style = rustaco_syntax::BRACKET_STYLE_BASE + depth as u32 % rustaco_syntax::BRACKET_COLORS;
+                out.extend([line as u32, col as u32, col as u32 + 1, style]);
             }
         }
         out

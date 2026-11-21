@@ -44,6 +44,21 @@ function loadPack(pack) {
 
 const editors = new Set();
 
+/** Physical keys whose unshifted symbol names them in keybindings. */
+const SYMBOL_CODES = {
+  Backslash: '\\', Slash: '/', BracketLeft: '[', BracketRight: ']', Semicolon: ';', Quote: "'",
+  Comma: ',', Period: '.', Minus: '-', Equal: '=', Backquote: '`',
+};
+
+/**
+ * The key name a keybinding matches. With Shift held a symbol key types a different char
+ * (`|` for `\\` on US layouts), so it is named by its physical key, as VS Code does;
+ * otherwise the produced char counts, which keeps bindings working on other layouts.
+ */
+function bindingKey(e) {
+  return e.shiftKey && SYMBOL_CODES[e.code] ? SYMBOL_CODES[e.code] : e.key;
+}
+
 /** The keymap platform: Cmd-based bindings on Apple devices. */
 function platform() {
   const p = navigator.userAgentData?.platform ?? navigator.platform ?? '';
@@ -208,6 +223,11 @@ export class RustacoEditor {
     language = '',
     model = null,
     keymap = 'default',
+    rulers = [],
+    renderWhitespace = 'none',
+    guides = true,
+    occurrencesHighlight = true,
+    bracketPairColorization = true,
     fontFamily = '"Cascadia Code", Consolas, "Courier New", monospace',
     fontSize = 14,
   } = {}) {
@@ -229,6 +249,8 @@ export class RustacoEditor {
     editors.add(this);
     this.core = new Editor(this.canvas, this.model.core, fontFamily, fontSize);
     this.setKeymap(keymap);
+    this.options = {};
+    this.setOptions({ rulers, renderWhitespace, guides, occurrencesHighlight, bracketPairColorization });
     this.model.editors.add(this);
     this.caretOn = true;
     this.focused = false;
@@ -241,6 +263,17 @@ export class RustacoEditor {
   }
 
   getModel() { return this.model; }
+
+  /**
+   * Display options, Monaco's names: `rulers` (columns), `renderWhitespace` (`"none"` or
+   * `"all"`), `guides` (indentation guides), `occurrencesHighlight`, `bracketPairColorization`.
+   */
+  setOptions(options) {
+    Object.assign(this.options, options);
+    const o = this.options;
+    this.core.setViewOptions(Uint32Array.from(o.rulers ?? []), o.renderWhitespace === 'all', !!o.guides, !!o.occurrencesHighlight);
+    this.schedule();
+  }
 
   /** Selects the keymap preset: `"default"` (VS Code) or `"jetbrains"`. */
   setKeymap(preset) {
@@ -384,7 +417,7 @@ export class RustacoEditor {
 
     input.addEventListener('keydown', (e) => {
       if (e.isComposing || e.keyCode === 229) return;
-      const result = core.key_down(e.key, e.ctrlKey, e.shiftKey, e.altKey, e.metaKey);
+      const result = core.key_down(bindingKey(e), e.ctrlKey, e.shiftKey, e.altKey, e.metaKey);
       if (result === 0) return;
       e.preventDefault();
       if (result === 2) this.#frontendCommand(core.takeFrontendCommand());
@@ -421,6 +454,17 @@ export class RustacoEditor {
 
   /** Commands that need the language module. */
   #frontendCommand(command) {
+    if (command === 'editor.action.jumpToBracket') {
+      const h = this.model.highlighter;
+      if (h && h.hasTree()) {
+        this.model.updateHighlighter(50);
+        this.core.setTreeBrackets(h.matchingBracket(this.core.primaryRange()[0]));
+      } else {
+        this.core.clearTreeBrackets();
+      }
+      this.core.runCommand(command);
+      return;
+    }
     if (command === 'editor.action.smartSelect.expand') {
       const h = this.model.highlighter;
       if (!h) return;
@@ -454,13 +498,17 @@ export class RustacoEditor {
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
       const { model, core } = this;
-      if (model.highlighter) {
+      const h = model.highlighter;
+      if (h) {
         const parsed = model.updateHighlighter();
         const [first, end] = core.visibleLines();
-        core.setHighlights(first, end, model.highlighter.highlight(first, end));
+        core.setHighlights(first, end, h.highlight(first, end, !!this.options.bracketPairColorization));
+        if (h.hasTree()) core.setTreeBrackets(h.matchingBracket(core.primaryRange()[0]));
+        else core.clearTreeBrackets();
         if (!parsed) this.schedule();
       } else {
         core.clearHighlights();
+        core.clearTreeBrackets();
       }
       core.render(this.focused && this.caretOn);
       this.input.style.transform = `translate(${this.core.caret_x()}px, ${this.core.caret_y()}px)`;

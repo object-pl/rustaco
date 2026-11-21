@@ -2,7 +2,9 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Done: phases 0 to 3 (all 2026-11-21). Next: phase 4.
+Done: phases 0 to 4 (all 2026-11-21). Next: phase 5.
+
+Phase 4 summary: matching bracket highlight and jump (Ctrl+Shift+\), partners taken from the syntax tree, so brackets in strings never match code, with a text scan for languages without a tree; bracket pair colours by depth (three colours, from the theme); indentation guides with the cursor's block marked; highlighting of other occurrences of the word at the cursor; whitespace marks; rulers. Not done: bracket pair guides (lines joining a pair), occurrence highlighting scoped by locals queries (the bundled grammars ship few of them; whole-word matching is used).
 
 Phase 3 summary:
 - Decorations that follow edits; command registry with VS Code ids; keymaps as data (when clauses, chords, macOS variants, user overrides, default and JetBrains presets, AltGr-safe); grapheme-cluster movement; line operations; indent and outdent; comment toggling from the language catalog; auto-closing and surrounding pairs, not opened inside strings and comments; Enter that indents after brackets (and after `:` in Python and YAML) and splits bracket pairs; Ctrl+D and select all occurrences; column selection; cursor undo; expand and shrink selection along the syntax tree; case changes; trim trailing whitespace; find and replace with regex, case and whole-word options, capture groups. Status of every Monaco keybinding: docs/keybindings.md.

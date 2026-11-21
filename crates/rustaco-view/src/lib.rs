@@ -297,6 +297,133 @@ impl View {
             .flat_map(|d| self.range_rects(rope, d.range.clone(), gutter).into_iter().map(move |r| (r, d.kind)))
             .collect()
     }
+
+    /// Indentation guides for the visible lines: one vertical segment per indentation level
+    /// and run of lines. A blank line takes the smaller level of the nearest non-blank lines
+    /// around it, so guides continue through blank lines inside a block but not past its end.
+    /// The guide of the block holding `cursor_line` is marked active.
+    pub fn indent_guides(&self, model: &TextModel, cursor_line: usize) -> Vec<Guide> {
+        let rope = model.rope();
+        let tab = self.tab_size.max(1);
+        let visible = self.visible_lines(rope);
+        let total = rope.len_lines();
+        // Look a little past the screen so blank lines at its edges get the right level.
+        const REACH: usize = 200;
+        let from = visible.start.saturating_sub(REACH);
+        let to = (visible.end + REACH).min(total);
+        let raw: Vec<Option<usize>> = (from..to)
+            .map(|l| {
+                let len = line_len(rope, l);
+                let mut cells = 0;
+                for c in rope.line(l).chars().take(len) {
+                    match c {
+                        ' ' => cells += 1,
+                        '\t' => cells += tab - cells % tab,
+                        _ => return Some(cells / tab),
+                    }
+                }
+                None
+            })
+            .collect();
+        let mut levels = vec![0usize; raw.len()];
+        let mut prev = 0;
+        for (i, r) in raw.iter().enumerate() {
+            if let Some(l) = r {
+                prev = *l;
+                levels[i] = *l;
+            } else {
+                let next = raw[i..].iter().flatten().next().copied().unwrap_or(0);
+                levels[i] = prev.min(next);
+            }
+        }
+        let level_at = |line: usize| levels.get(line.wrapping_sub(from)).copied().unwrap_or(0);
+        let active_level = level_at(cursor_line).max(1);
+
+        let cw = self.metrics.char_width;
+        let gutter = self.gutter_width(rope);
+        let mut guides = Vec::new();
+        let max_level = (visible.clone()).map(level_at).max().unwrap_or(0);
+        for level in 1..=max_level {
+            let x = gutter + ((level - 1) * tab) as f32 * cw - self.scroll_left;
+            let mut start: Option<usize> = None;
+            for line in visible.start..=visible.end.min(total) {
+                let inside = line < visible.end.min(total) && level_at(line) >= level;
+                match (inside, start) {
+                    (true, None) => start = Some(line),
+                    (false, Some(s)) => {
+                        let active = level == active_level && (s..line).contains(&cursor_line);
+                        guides.push(Guide {
+                            x,
+                            top: self.line_top(s) - self.scroll_top,
+                            bottom: self.line_top(line) - self.scroll_top,
+                            level,
+                            active,
+                        });
+                        start = None;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        guides
+    }
+
+    /// The rectangle of the char at `pos` (one cell wide for a line end), if visible.
+    pub fn char_rects(&self, model: &TextModel, pos: usize) -> Vec<Rect> {
+        let rope = model.rope();
+        let end = (pos + 1).min(rope.len_chars());
+        let mut rects = self.range_rects(rope, pos..end, self.gutter_width(rope));
+        rects.truncate(1);
+        rects
+    }
+
+    /// Rectangles covering `range` on the visible lines.
+    pub fn char_range_rects(&self, model: &TextModel, range: std::ops::Range<usize>) -> Vec<Rect> {
+        let rope = model.rope();
+        self.range_rects(rope, range, self.gutter_width(rope))
+    }
+
+    /// X positions of rulers drawn at the given columns.
+    pub fn ruler_positions(&self, model: &TextModel, columns: &[usize]) -> Vec<f32> {
+        let gutter = self.gutter_width(model.rope());
+        columns.iter().map(|&c| gutter + c as f32 * self.metrics.char_width - self.scroll_left).collect()
+    }
+
+    /// Positions of spaces and tabs on the visible lines, for drawing them as `·` and `→`:
+    /// (x of the cell start, y of the line top, width in cells, is a tab).
+    pub fn whitespace_marks(&self, model: &TextModel) -> Vec<(f32, f32, usize, bool)> {
+        let rope = model.rope();
+        let tab = self.tab_size.max(1);
+        let cw = self.metrics.char_width;
+        let gutter = self.gutter_width(rope);
+        let mut out = Vec::new();
+        for line in self.visible_lines(rope) {
+            let y = self.line_top(line) - self.scroll_top;
+            let mut cells = 0;
+            for c in rope.line(line).chars().take(line_len(rope, line).min(MAX_MARKED_COLUMNS)) {
+                let w = cell_width(c, cells, tab);
+                if c == ' ' || c == '\t' {
+                    out.push((gutter + cells as f32 * cw - self.scroll_left, y, w, c == '\t'));
+                }
+                cells += w;
+            }
+        }
+        out
+    }
+}
+
+/// Whitespace marks stop after this many chars on a line.
+const MAX_MARKED_COLUMNS: usize = 2000;
+
+/// A vertical indentation guide in viewport coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Guide {
+    pub x: f32,
+    pub top: f32,
+    pub bottom: f32,
+    pub level: usize,
+    /// The guide of the block that holds the cursor.
+    pub active: bool,
 }
 
 fn cell_width(c: char, at_cell: usize, tab: usize) -> usize {
@@ -447,5 +574,28 @@ mod tests {
         assert_eq!(frame.selections.len(), 3);
         assert_eq!(frame.carets.len(), 1);
         assert!(frame.current_line.is_none());
+    }
+}
+
+#[cfg(test)]
+mod guide_tests {
+    use super::*;
+    use rustaco_core::Document;
+
+    #[test]
+    fn guides_follow_blocks_and_mark_the_active_one() {
+        let text = "fn a() {\n    x\n\n    y\n        z\n}\nq";
+        let doc = Document::new(text);
+        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 400.0);
+        v.layout(doc.model(), doc.selections(), &Plain);
+        let guides = v.indent_guides(doc.model(), 4);
+        let level1: Vec<&Guide> = guides.iter().filter(|g| g.level == 1).collect();
+        assert_eq!(level1.len(), 1, "the blank line inside the block keeps the guide whole");
+        assert_eq!((level1[0].top, level1[0].bottom), (20.0, 100.0));
+        let level2: Vec<&Guide> = guides.iter().filter(|g| g.level == 2).collect();
+        assert_eq!(level2.len(), 1);
+        assert!(level2[0].active, "the cursor on line 4 is in the level-2 block");
+        assert!(!level1[0].active);
+        assert_eq!(v.whitespace_marks(doc.model()).len(), 2 + 4 + 4 + 8, "two spaces in the fn line, then the indents");
     }
 }

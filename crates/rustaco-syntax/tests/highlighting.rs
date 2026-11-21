@@ -290,3 +290,24 @@ fn enclosing_ranges_and_context() {
     assert_eq!(syntax.context_at(src.find("g(").unwrap()), TextContext::Code);
     assert_eq!(syntax.context_at(src.find('"').unwrap()), TextContext::Code, "before the opening quote");
 }
+
+#[test]
+fn brackets_match_through_the_tree_and_have_depths() {
+    let src = "fn f() { let s = \")\"; g(h(1), [2]); }";
+    let doc = Document::new(src);
+    let mut syntax = Syntax::new(by_id("rust").unwrap()).unwrap();
+    syntax.update(doc.model());
+    let open = src.find("g(").unwrap() + 1;
+    let close = src.rfind(");").unwrap();
+    assert_eq!(syntax.matching_bracket(open), Some((open, close)));
+    assert_eq!(syntax.matching_bracket(close + 1), Some((open, close)), "the bracket before the cursor counts");
+    let quote_paren = src.find("\")\"").unwrap() + 1;
+    assert_eq!(syntax.matching_bracket(quote_paren), None, "a bracket inside a string has no partner");
+    let depths = syntax.bracket_depths(0..src.len());
+    let depth_of = |b: usize| depths.iter().find(|d| d.0 == b).map(|d| d.1);
+    assert_eq!(depth_of(src.find('{').unwrap()), Some(0));
+    assert_eq!(depth_of(open), Some(1));
+    assert_eq!(depth_of(src.find("h(").unwrap() + 1), Some(2));
+    assert_eq!(depth_of(src.find('[').unwrap()), Some(2));
+    assert_eq!(depth_of(quote_paren), None);
+}

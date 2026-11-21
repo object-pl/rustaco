@@ -228,6 +228,17 @@ fn cursor_undo_steps_back_through_selections() {
 }
 
 #[test]
+fn brackets_match_by_text() {
+    use rustaco_core::{Rope, matching_bracket_text};
+    let pairs = vec![("(".to_string(), ")".to_string()), ("[".to_string(), "]".to_string())];
+    let rope = Rope::from_str("f(a[1], (b))");
+    assert_eq!(matching_bracket_text(&rope, 1, &pairs), Some((1, 11)));
+    assert_eq!(matching_bracket_text(&rope, 12, &pairs), Some((1, 11)), "the bracket before the cursor");
+    assert_eq!(matching_bracket_text(&rope, 4, &pairs), Some((3, 5)));
+    assert_eq!(matching_bracket_text(&rope, 7, &pairs), None, "no bracket next to the cursor");
+}
+
+#[test]
 fn every_bound_command_runs() {
     use rustaco_core::{Platform, default_keymap, jetbrains_keymap};
     // Page movement needs the view's height; frontends run these.
@@ -239,6 +250,8 @@ fn every_bound_command_runs() {
         // Expanding by syntax needs the language module.
         "editor.action.smartSelect.expand",
         "editor.action.smartSelect.shrink",
+        // The bracket pair comes from the frontend's syntax data.
+        "editor.action.jumpToBracket",
         // Find navigation needs the frontend's current query.
         "editor.action.nextMatchFindAction",
         "editor.action.previousMatchFindAction",

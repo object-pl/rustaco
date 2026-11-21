@@ -19,6 +19,7 @@ mod search;
 mod selection;
 
 pub use change::{Assoc, ChangeSet, Edit, EditEvent};
+pub use commands::matching_bracket_text;
 pub use decorations::{Decoration, DecorationId, Decorations, Stickiness};
 pub use document::Document;
 pub use editor::{Cursors, Editor, EditorId, word_at};

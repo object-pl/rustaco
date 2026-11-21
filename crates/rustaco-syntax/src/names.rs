@@ -96,6 +96,13 @@ pub const HIGHLIGHT_NAMES: &[(&str, &[&str])] = &[
     ("variable.parameter", &["variable.parameter"]),
 ];
 
+/// Number of colours bracket pairs cycle through by depth.
+pub const BRACKET_COLORS: u32 = 3;
+
+/// First style id of the bracket depth colours; ids `BRACKET_STYLE_BASE + depth % 3` follow
+/// the highlight names, and their colours come from the theme's editor colours.
+pub const BRACKET_STYLE_BASE: u32 = HIGHLIGHT_NAMES.len() as u32 + 1;
+
 /// Style id for a capture name, or 0 when no entry covers it.
 pub fn style_for_capture(capture: &str) -> u32 {
     let mut best: Option<(usize, usize)> = None;

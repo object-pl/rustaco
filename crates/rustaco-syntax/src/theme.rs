@@ -37,6 +37,14 @@ pub struct Colors {
     pub gutter: u32,
     pub scrollbar: u32,
     pub find_match: u32,
+    pub indent_guide: u32,
+    pub indent_guide_active: u32,
+    pub ruler: u32,
+    pub whitespace: u32,
+    pub bracket_match: u32,
+    pub word_highlight: u32,
+    /// Bracket pair colours by depth, cycling.
+    pub brackets: [u32; 3],
 }
 
 impl Colors {
@@ -51,6 +59,13 @@ impl Colors {
         gutter: 0x1e1e1eff,
         scrollbar: 0x79797966,
         find_match: 0xea5c0055,
+        indent_guide: 0x404040ff,
+        indent_guide_active: 0x707070ff,
+        ruler: 0x5a5a5aff,
+        whitespace: 0xe3e4e229,
+        bracket_match: 0x888888ff,
+        word_highlight: 0x575757b8,
+        brackets: [0xffd700ff, 0xda70d6ff, 0x179fffff],
     };
 
     pub const LIGHT: Colors = Colors {
@@ -64,6 +79,13 @@ impl Colors {
         gutter: 0xffffffff,
         scrollbar: 0x64646466,
         find_match: 0xea5c0055,
+        indent_guide: 0xd3d3d3ff,
+        indent_guide_active: 0x939393ff,
+        ruler: 0xd3d3d3ff,
+        whitespace: 0x33333333,
+        bracket_match: 0xb9b9b9ff,
+        word_highlight: 0x57575740,
+        brackets: [0x0431faff, 0x319331ff, 0x7b3814ff],
     };
 
     /// Black background, white text, and a selection and current line that stand out
@@ -79,6 +101,13 @@ impl Colors {
         gutter: 0x000000ff,
         scrollbar: 0x6fc3dfcc,
         find_match: 0xf3851866,
+        indent_guide: 0x7c7c7cff,
+        indent_guide_active: 0xffffffff,
+        ruler: 0xffffffff,
+        whitespace: 0x7c7c7cff,
+        bracket_match: 0x6fc3dfff,
+        word_highlight: 0xffffff33,
+        brackets: [0xffd700ff, 0xda70d6ff, 0x87cefaff],
     };
 
     /// Sets the colour a VS Code theme `colors` key names. Returns false for keys the editor
@@ -95,6 +124,17 @@ impl Colors {
             "editorGutter.background" => &mut self.gutter,
             "scrollbarSlider.background" => &mut self.scrollbar,
             "editor.findMatchHighlightBackground" => &mut self.find_match,
+            "editorIndentGuide.background" | "editorIndentGuide.background1" => &mut self.indent_guide,
+            "editorIndentGuide.activeBackground" | "editorIndentGuide.activeBackground1" => {
+                &mut self.indent_guide_active
+            }
+            "editorRuler.foreground" => &mut self.ruler,
+            "editorWhitespace.foreground" => &mut self.whitespace,
+            "editorBracketMatch.border" => &mut self.bracket_match,
+            "editor.wordHighlightBackground" => &mut self.word_highlight,
+            "editorBracketHighlight.foreground1" => &mut self.brackets[0],
+            "editorBracketHighlight.foreground2" => &mut self.brackets[1],
+            "editorBracketHighlight.foreground3" => &mut self.brackets[2],
             _ => return false,
         };
         *field = rgba;

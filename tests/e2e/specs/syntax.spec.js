@@ -21,7 +21,7 @@ async function colorAt(page, offset) {
     e.setSelections([{ anchor: 0, head: 0 }]);
     e.getModel().updateHighlighter(1e9);
     const [first, end] = e.core.visibleLines();
-    e.core.setHighlights(first, end, e.getModel().highlighter.highlight(first, end));
+    e.core.setHighlights(first, end, e.getModel().highlighter.highlight(first, end, false));
     e.setSelections([{ anchor: o, head: o }]);
     e.core.render(false);
     const x = e.core.caret_x(), y = e.core.caret_y(), h = e.core.line_height();
@@ -105,7 +105,7 @@ test('highlighting keeps a keystroke fast in a 100k-line file', async ({ page })
     const frame = () => {
       m.updateHighlighter(4);
       const [a, b] = e.core.visibleLines();
-      e.core.setHighlights(a, b, m.highlighter.highlight(a, b));
+      e.core.setHighlights(a, b, m.highlighter.highlight(a, b, true));
       e.core.render(true);
     };
     m.updateHighlighter(1e9);
@@ -129,7 +129,7 @@ test('a long parse finishes over several frames and then colours the text', asyn
     await m.setLanguage('rust');
     let frames = 0;
     while (!m.updateHighlighter(4)) frames++;
-    const quads = m.highlighter.highlight(0, 5);
+    const quads = m.highlighter.highlight(0, 5, false);
     return { frames, colouredSpans: quads.length / 4 };
   });
   expect(result.frames).toBeGreaterThan(1);
@@ -199,4 +199,41 @@ test('expand selection follows the syntax tree; no auto-closing inside strings',
   await page.evaluate(() => window.editor.setSelections([{ anchor: 27, head: 27 }]));
   await page.keyboard.type('(');
   expect(await page.evaluate(() => window.editor.getValue())).toContain('let s = "(";');
+});
+
+test('matching brackets: jump with the tree and by text, depth colours', async ({ page }) => {
+  const jump = `${process.platform === 'darwin' ? 'Meta' : 'Control'}+Shift+Backslash`;
+  await open(page, 'fn f() { g(h(1), ")"); }', 'rust');
+  await page.evaluate(() => { const e = window.editor; e.getModel().updateHighlighter(1e9); e.setSelections([{ anchor: 10, head: 10 }]); e.core.render(true); });
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await page.keyboard.press(jump);
+  expect(await page.evaluate(() => window.editor.getSelections()[0].head)).toBe(20);
+  const styles = await page.evaluate(() => {
+    const q = window.editor.getModel().highlighter.highlight(0, 1, true);
+    const at = (col) => { for (let i = q.length - 4; i >= 0; i -= 4) if (q[i + 1] === col) return q[i + 3]; return -1; };
+    return { outer: at(7), mid: at(10), inner: at(12) };
+  });
+  expect(styles.outer).not.toBe(styles.mid);
+  expect(styles.mid).not.toBe(styles.inner);
+
+  await page.evaluate(async () => { const e = window.editor; e.setValue('(a [b] c)'); await e.getModel().setLanguage(''); e.setSelections([{ anchor: 0, head: 0 }]); });
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await page.keyboard.press(jump);
+  expect(await page.evaluate(() => window.editor.getSelections()[0].head)).toBe(8);
+});
+
+test('rulers and indentation guides are drawn', async ({ page }) => {
+  await open(page, 'fn f() {\n    x\n}', 'rust');
+  const pixel = await page.evaluate(() => {
+    const e = window.editor;
+    e.setOptions({ rulers: [20] });
+    e.core.render(false);
+    const dpr = window.devicePixelRatio || 1;
+    const gutter = e.core.caret_x(); // caret at offset 0 sits at the start of the text area
+    const cw = (() => { e.setSelections([{ anchor: 1, head: 1 }]); e.core.render(false); return e.core.caret_x() - gutter; })();
+    const x = Math.floor((gutter + 20 * cw) * dpr);
+    const d = e.canvas.getContext('2d').getImageData(x, Math.round(200 * dpr), 1, 1).data;
+    return `${d[0]},${d[1]},${d[2]}`;
+  });
+  expect(pixel).toBe('90,90,90');
 });

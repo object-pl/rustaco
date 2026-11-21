@@ -254,6 +254,7 @@ const WINDOWS_LINUX: &[Entry] = &[
     ("ctrl+alt+down", "editor.action.insertCursorBelow", None),
     ("ctrl+k ctrl+x", "editor.action.trimTrailingWhitespace", None),
     ("ctrl+u", "cursorUndo", None),
+    ("ctrl+shift+\\", "editor.action.jumpToBracket", None),
     ("ctrl+]", "editor.action.indentLines", None),
     ("ctrl+[", "editor.action.outdentLines", None),
 ];
@@ -288,6 +289,7 @@ const MAC: &[Entry] = &[
     ("alt+cmd+down", "editor.action.insertCursorBelow", None),
     ("cmd+k cmd+x", "editor.action.trimTrailingWhitespace", None),
     ("cmd+u", "cursorUndo", None),
+    ("shift+cmd+\\", "editor.action.jumpToBracket", None),
     ("cmd+]", "editor.action.indentLines", None),
     ("cmd+[", "editor.action.outdentLines", None),
     ("cmd+g", "editor.action.nextMatchFindAction", None),
