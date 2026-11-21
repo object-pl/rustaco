@@ -17,6 +17,7 @@ mod model;
 mod position;
 mod search;
 mod selection;
+mod snippet;
 
 pub use change::{Assoc, ChangeSet, Edit, EditEvent};
 pub use commands::matching_bracket_text;
@@ -33,3 +34,4 @@ pub use position::{
 pub use ropey::{Rope, RopeSlice};
 pub use search::{SearchQuery, Searcher, next_match};
 pub use selection::{Selection, Selections};
+pub use snippet::{SNIPPET_OWNER, SNIPPET_STOP, Snippet, SnippetSession, TabStop};

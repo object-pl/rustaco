@@ -297,3 +297,27 @@ fn pasting_pieces_gives_each_cursor_its_own() {
     d.editor().paste_each(&["1".into(), "2".into()]);
     assert_eq!(d.text(), "x1\n2\ny", "one cursor takes the pieces joined");
 }
+
+#[test]
+fn snippet_session_walks_its_stops() {
+    use rustaco_core::Snippet;
+    let mut d = doc("    x", &[(5, 5)]);
+    let snippet = Snippet::parse("for ${1:i} in ${2:items} {\n\t$1;$0\n}", &|_| None);
+    d.editor().insert_snippet(&snippet);
+    assert_eq!(d.text(), "    xfor i in items {\n        i;\n    }");
+    // Stop 1 selects both places `i` appears.
+    let sels: Vec<(usize, usize)> = d.selections().iter().map(|s| (s.start(), s.end())).collect();
+    assert_eq!(sels.len(), 2);
+    assert_eq!(&d.text()[sels[0].0..sels[0].1], "i");
+    d.insert("k");
+    assert_eq!(d.text(), "    xfor k in items {\n        k;\n    }");
+    assert!(d.editor().next_snippet_stop());
+    let s = d.selections().primary();
+    assert_eq!(&d.text()[s.start()..s.end()], "items");
+    assert!(d.editor().prev_snippet_stop());
+    assert_eq!(d.selections().len(), 2, "back on the mirrored stop");
+    d.editor().next_snippet_stop();
+    d.editor().next_snippet_stop();
+    assert!(d.editor().snippet().is_none(), "reaching $0 ends the session");
+    assert_eq!(d.selections().primary().head, "    xfor k in items {\n        k;".len());
+}

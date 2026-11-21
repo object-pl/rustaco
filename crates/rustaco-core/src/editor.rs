@@ -23,6 +23,8 @@ pub struct Cursors {
     cursor_history: Vec<Selections>,
     /// Selections before each expand-selection step, for shrinking back.
     pub(crate) expansions: Vec<Selections>,
+    /// The snippet being filled in, if any.
+    pub(crate) snippet: Option<crate::snippet::SnippetSession>,
 }
 
 /// Cursor states kept for cursor undo.
@@ -36,6 +38,7 @@ impl Cursors {
             synced: model.version(),
             cursor_history: Vec::new(),
             expansions: Vec::new(),
+            snippet: None,
         }
     }
 
@@ -135,7 +138,7 @@ impl<'a> Editor<'a> {
     }
 
     /// Replaces every selection with the text `f` returns for it; carets land after the text.
-    fn replace_each(&mut self, kind: EditKind, mut f: impl FnMut(&Rope, usize, &Selection) -> String) {
+    pub(crate) fn replace_each(&mut self, kind: EditKind, mut f: impl FnMut(&Rope, usize, &Selection) -> String) {
         self.replace_ranges(kind, |rope, i, sel| (sel.start(), sel.end(), f(rope, i, sel)));
     }
 
