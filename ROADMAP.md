@@ -7,7 +7,7 @@ Done: phases 0 to 11 (all 2026-11-21). Phase 12 in progress.
 Phase 12 so far:
 - Done: guides for embedding in a web page and in a native application and for adding a language (`docs/`); a performance report from the repository's benchmarks (`docs/performance.md`); an API review with what to settle before 1.0 (`docs/api-review.md`); provider text is never parsed as HTML (tested), pastes above `maxPasteLength` are refused.
 - Repository: github.com/theObjectCo/rustaco (private for now), in every manifest. Version stays 0.1.0 without an API freeze.
-- Publishing: crates.io waits for a publish token on the build machine (`cargo login`); npm is postponed until the account is reachable. The crates package cleanly (`cargo publish --dry-run`). The browser packs depend on a patched `tree-sitter-language` that crates.io cannot carry, so they ship only in the npm package.
+- Published to crates.io on 2026-11-21 as 0.1.0: rustaco-core, rustaco-view, rustaco-syntax, rustaco-lsp, rustaco-desktop. npm is postponed until the account is reachable. The crates package cleanly (`cargo publish --dry-run`). The browser packs depend on a patched `tree-sitter-language` that crates.io cannot carry, so they ship only in the npm package.
 - Done: the comparison with Monaco on the same files (`docs/performance.md`, last section, harness in `tests/bench-monaco/`): Rustaco loads as fast and scales the same, but spends about 1.5 times Monaco's main-thread time per keystroke; the causes are listed there.
 
 Phase 11 summary:
