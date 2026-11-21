@@ -215,6 +215,8 @@ impl Model {
                 line_comment: c.line_comment.map(str::to_owned),
                 block_comment: c.block_comment.map(|(a, b)| (a.to_owned(), b.to_owned())),
                 auto_closing: c.auto_closing.iter().map(|&(a, b)| (a.to_owned(), b.to_owned())).collect(),
+                brackets: c.brackets.iter().map(|&(a, b)| (a.to_owned(), b.to_owned())).collect(),
+                indent_after: c.indent_after.iter().map(|&s| s.to_owned()).collect(),
             }
         });
         self.inner.borrow_mut().editing = editing;
@@ -343,7 +345,13 @@ pub struct Editor {
     platform: Platform,
     /// The current find query, kept for F3 navigation and for refreshing matches.
     find: Option<(SearchQuery, Searcher)>,
+    /// A command the keymap resolved that only the JS side can run (it needs the language
+    /// module); [`Editor::key_down`] returns 2 and the JS side takes it from here.
+    frontend_command: Option<String>,
 }
+
+/// Commands the JS side runs because they need the language module.
+const FRONTEND_COMMANDS: &[&str] = &["editor.action.smartSelect.expand"];
 
 #[wasm_bindgen]
 impl Editor {
@@ -372,6 +380,7 @@ impl Editor {
             keymap: default_keymap(Platform::Windows),
             platform: Platform::Windows,
             find: None,
+            frontend_command: None,
         })
     }
 
@@ -493,6 +502,11 @@ impl Editor {
         };
         let find_step = match command {
             "editor.action.nextMatchFindAction" => Some(true),
+            "editor.action.smartSelect.shrink" => {
+                let ok = self.edit(|ed| ed.shrink_selection());
+                self.reveal_primary();
+                return ok;
+            }
             "editor.action.previousMatchFindAction" => Some(false),
             _ => None,
         };
@@ -514,10 +528,10 @@ impl Editor {
         handled
     }
 
-    /// Handles a keydown through the keymap. Returns true when the key was consumed and the
-    /// default action must be prevented. Unbound keys return false, so printable text
-    /// (including AltGr characters) arrives through [`Editor::insert_text`].
-    pub fn key_down(&mut self, key: &str, ctrl: bool, shift: bool, alt: bool, meta: bool) -> bool {
+    /// Handles a keydown through the keymap: 0 when the key is not bound (printable text,
+    /// AltGr characters arrive through [`Editor::insert_text`]), 1 when it was handled, 2 when
+    /// it resolved to a command the JS side must run ([`Editor::take_frontend_command`]).
+    pub fn key_down(&mut self, key: &str, ctrl: bool, shift: bool, alt: bool, meta: bool) -> u8 {
         let pressed = KeyPress { ctrl, shift, alt, meta, key: key.to_lowercase() };
         let context = {
             let model = self.model.borrow();
@@ -530,13 +544,42 @@ impl Editor {
             ])
         };
         match self.keymap.resolve(&pressed, &context) {
+            Resolved::Command(command) if FRONTEND_COMMANDS.contains(&command.as_str()) => {
+                self.frontend_command = Some(command);
+                2
+            }
             Resolved::Command(command) => {
                 self.run_command(&command);
-                true
+                1
             }
-            Resolved::Pending => true,
-            Resolved::Unbound => false,
+            Resolved::Pending => 1,
+            Resolved::Unbound => 0,
         }
+    }
+
+    /// The command [`Editor::key_down`] left for the JS side, once.
+    #[wasm_bindgen(js_name = takeFrontendCommand)]
+    pub fn take_frontend_command(&mut self) -> String {
+        self.frontend_command.take().unwrap_or_default()
+    }
+
+    /// Expands the primary selection to the next enclosing syntax node. `flat` holds node
+    /// ranges from the language module as (start, end) pairs, innermost first.
+    #[wasm_bindgen(js_name = expandSelection)]
+    pub fn expand_selection(&mut self, flat: &[u32]) -> bool {
+        let ranges: Vec<std::ops::Range<usize>> = flat.chunks_exact(2).map(|p| p[0] as usize..p[1] as usize).collect();
+        let ok = self.edit(|ed| ed.expand_selection(&ranges));
+        if ok {
+            self.reveal_primary();
+        }
+        ok
+    }
+
+    /// The primary selection as [start, end] char offsets.
+    #[wasm_bindgen(js_name = primaryRange)]
+    pub fn primary_range(&mut self) -> Vec<u32> {
+        let p = self.selections_primary();
+        vec![p.start() as u32, p.end() as u32]
     }
 
     /// Searches the model and highlights every match. Returns the number of matches, or -1
@@ -643,13 +686,14 @@ impl Editor {
     }
 
     /// Typed text from the input element. A single char goes through bracket handling
-    /// (auto-closing pairs, typing over a closing bracket); longer text (IME, dictation) is
+    /// (auto-closing pairs, typing over a closing bracket), except that `in_literal` (the
+    /// cursor is inside a string or comment) opens no pairs; longer text (IME, dictation) is
     /// inserted as is.
-    pub fn insert_text(&mut self, text: &str) {
+    pub fn insert_text(&mut self, text: &str, in_literal: bool) {
         let mut chars = text.chars();
         match (chars.next(), chars.next()) {
             (None, _) => return,
-            (Some(c), None) => self.edit(|ed| ed.type_char(c)),
+            (Some(c), None) => self.edit(|ed| ed.type_char_in(c, in_literal)),
             _ => self.edit(|ed| ed.insert(text)),
         }
         self.reveal_primary();

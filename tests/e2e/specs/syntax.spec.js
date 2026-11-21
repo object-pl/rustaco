@@ -180,3 +180,23 @@ test('themes change the editor surface and token colours', async ({ page }) => {
   expect(await colorAt(page, 0)).toBe('255,0,0');
   await page.evaluate(() => window.rustacoSetTheme('dark'));
 });
+
+test('expand selection follows the syntax tree; no auto-closing inside strings', async ({ page }) => {
+  await open(page, 'fn f() { g(1, 2); let s = ""; }', 'rust');
+  await page.evaluate(() => { window.editor.getModel().updateHighlighter(1e9); window.editor.setSelections([{ anchor: 11, head: 11 }]); });
+  await page.keyboard.press('Shift+Alt+ArrowRight');
+  const first = await page.evaluate(() => window.editor.getSelections()[0]);
+  expect(first).toEqual({ anchor: 11, head: 12 });
+  const selected = () => page.evaluate(() => { const s = window.editor.getSelections()[0]; return window.editor.getValue().slice(s.anchor, s.head); });
+  await page.keyboard.press('Shift+Alt+ArrowRight');
+  expect(await selected()).toBe('(1, 2)');
+  await page.keyboard.press('Shift+Alt+ArrowRight');
+  expect(await selected()).toBe('g(1, 2)');
+  await page.keyboard.press('Shift+Alt+ArrowLeft');
+  await page.keyboard.press('Shift+Alt+ArrowLeft');
+  expect(await page.evaluate(() => window.editor.getSelections()[0])).toEqual({ anchor: 11, head: 12 });
+
+  await page.evaluate(() => window.editor.setSelections([{ anchor: 27, head: 27 }]));
+  await page.keyboard.type('(');
+  expect(await page.evaluate(() => window.editor.getValue())).toContain('let s = "(";');
+});

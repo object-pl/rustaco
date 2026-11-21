@@ -9,6 +9,9 @@ pub struct LanguageConfig {
     pub block_comment: Option<(&'static str, &'static str)>,
     pub brackets: &'static [(&'static str, &'static str)],
     pub auto_closing: &'static [(&'static str, &'static str)],
+    /// Line endings after which Enter indents one level more, besides opening brackets
+    /// (`:` in Python and YAML).
+    pub indent_after: &'static [&'static str],
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -35,9 +38,15 @@ const C_STYLE: LanguageConfig = LanguageConfig {
     block_comment: Some(("/*", "*/")),
     brackets: BRACKETS,
     auto_closing: CLOSE_C,
+    indent_after: &[],
 };
-const HASH_STYLE: LanguageConfig =
-    LanguageConfig { line_comment: Some("#"), block_comment: None, brackets: BRACKETS, auto_closing: CLOSE_C };
+const HASH_STYLE: LanguageConfig = LanguageConfig {
+    line_comment: Some("#"),
+    block_comment: None,
+    brackets: BRACKETS,
+    auto_closing: CLOSE_C,
+    indent_after: &[],
+};
 
 macro_rules! lang {
     ($id:literal, $name:literal, $pack:literal, ext: $ext:expr, files: $files:expr, shebangs: $sb:expr, $config:expr) => {
@@ -68,9 +77,10 @@ static CATALOG: &[LanguageInfo] = &[
         block_comment: None,
         brackets: &[("{", "}"), ("[", "]")],
         auto_closing: &[("{", "}"), ("[", "]"), ("\"", "\"")],
+        indent_after: &[],
     }),
     lang!("python", "Python", "python", ext: &["py", "pyi", "pyw"], files: &[], shebangs: &["python"],
-        LanguageConfig { block_comment: Some(("\"\"\"", "\"\"\"")), ..HASH_STYLE }),
+        LanguageConfig { block_comment: Some(("\"\"\"", "\"\"\"")), indent_after: &[":"], ..HASH_STYLE }),
     lang!("c", "C", "c", ext: &["c", "h"], files: &[], shebangs: &[], C_STYLE),
     lang!("cpp", "C++", "cpp", ext: &["cpp", "cc", "cxx", "hpp", "hh", "hxx", "ipp"], files: &[], shebangs: &[], C_STYLE),
     lang!("go", "Go", "go", ext: &["go"], files: &[], shebangs: &[], LanguageConfig { auto_closing: CLOSE_JS, ..C_STYLE }),
@@ -78,21 +88,22 @@ static CATALOG: &[LanguageInfo] = &[
     lang!("kotlin", "Kotlin", "textmate", ext: &["kt", "kts"], files: &[], shebangs: &[], C_STYLE),
     lang!("csharp", "C#", "csharp", ext: &["cs", "csx"], files: &[], shebangs: &[], C_STYLE),
     lang!("html", "HTML", "html", ext: &["html", "htm", "xhtml"], files: &[], shebangs: &[],
-        LanguageConfig { line_comment: None, block_comment: Some(("<!--", "-->")), brackets: &[("<", ">")], auto_closing: CLOSE_TAGS }),
+        LanguageConfig { line_comment: None, block_comment: Some(("<!--", "-->")), brackets: &[("<", ">")], auto_closing: CLOSE_TAGS, indent_after: &[] }),
     lang!("css", "CSS", "css", ext: &["css"], files: &[], shebangs: &[],
         LanguageConfig { line_comment: None, ..C_STYLE }),
     lang!("bash", "Shell", "bash", ext: &["sh", "bash", "zsh"], files: &[".bashrc", ".zshrc", ".profile"],
         shebangs: &["sh", "bash", "zsh", "dash"], HASH_STYLE),
     lang!("toml", "TOML", "toml", ext: &["toml"], files: &["Cargo.lock"], shebangs: &[], HASH_STYLE),
-    lang!("yaml", "YAML", "yaml", ext: &["yaml", "yml"], files: &[], shebangs: &[], HASH_STYLE),
+    lang!("yaml", "YAML", "yaml", ext: &["yaml", "yml"], files: &[], shebangs: &[],
+        LanguageConfig { indent_after: &[":"], ..HASH_STYLE }),
     lang!("sql", "SQL", "textmate", ext: &["sql"], files: &[], shebangs: &[],
         LanguageConfig { line_comment: Some("--"), ..C_STYLE }),
     lang!("markdown", "Markdown", "markdown", ext: &["md", "markdown"], files: &[], shebangs: &[],
-        LanguageConfig { line_comment: None, block_comment: Some(("<!--", "-->")), brackets: BRACKETS, auto_closing: CLOSE_C }),
+        LanguageConfig { line_comment: None, block_comment: Some(("<!--", "-->")), brackets: BRACKETS, auto_closing: CLOSE_C, indent_after: &[] }),
     // Inline Markdown (emphasis, links, code spans); reached only through the Markdown
     // grammar's injections, never detected from a file name.
     lang!("markdown_inline", "Markdown (inline)", "markdown", ext: &[], files: &[], shebangs: &[],
-        LanguageConfig { line_comment: None, block_comment: None, brackets: BRACKETS, auto_closing: CLOSE_C }),
+        LanguageConfig { line_comment: None, block_comment: None, brackets: BRACKETS, auto_closing: CLOSE_C, indent_after: &[] }),
     lang!("dockerfile", "Dockerfile", "textmate", ext: &["dockerfile"], files: &["Dockerfile", "Containerfile"],
         shebangs: &[], HASH_STYLE),
 ];

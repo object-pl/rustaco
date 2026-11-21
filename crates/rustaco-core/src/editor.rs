@@ -21,6 +21,8 @@ pub struct Cursors {
     synced: u64,
     /// Earlier selections, for cursor undo (Ctrl+U); valid only until the text changes.
     cursor_history: Vec<Selections>,
+    /// Selections before each expand-selection step, for shrinking back.
+    pub(crate) expansions: Vec<Selections>,
 }
 
 /// Cursor states kept for cursor undo.
@@ -33,6 +35,7 @@ impl Cursors {
             selections: Selections::single(Selection::cursor(0)),
             synced: model.version(),
             cursor_history: Vec::new(),
+            expansions: Vec::new(),
         }
     }
 
@@ -122,6 +125,7 @@ impl<'a> Editor<'a> {
         }
         let before = self.cursors.selections.clone();
         self.cursors.cursor_history.clear();
+        self.cursors.expansions.clear();
         let inverse = self.model.apply(&changes);
         self.cursors.selections = snap_selections(&self.model.rope, &after);
         self.cursors.synced = self.model.version();
@@ -194,13 +198,62 @@ impl<'a> Editor<'a> {
     /// Inserts a line break and copies the current line's indentation up to the caret.
     pub fn newline(&mut self) {
         let eol = self.model.line_ending.as_str();
+        let o = self.model.options;
+        let unit = if o.insert_spaces { " ".repeat(o.tab_size) } else { "\t".to_owned() };
+        let editing = self.model.editing.clone();
+        // Where each caret lands inside its inserted text, when not at the end (between a
+        // bracket pair the caret goes on the middle line).
+        let mut caret_offsets: Vec<Option<usize>> = Vec::new();
         self.replace_each(EditKind::Other, |rope, _, sel| {
             let line = rope.char_to_line(sel.start());
             let line_start = rope.line_to_char(line);
             let indent: String =
                 rope.slice(line_start..sel.start()).chars().take_while(|c| *c == ' ' || *c == '\t').collect();
-            format!("{eol}{indent}")
+            let before: String = rope.slice(line_start..sel.start()).to_string();
+            let before = before.trim_end();
+            let opens = editing.brackets.iter().find(|(open, _)| before.ends_with(open.as_str()));
+            let after_starts = |close: &str| {
+                rope.slice(sel.end()..rope.len_chars()).chars().take(close.chars().count()).eq(close.chars())
+            };
+            match opens {
+                Some((_, close)) if after_starts(close) => {
+                    let middle = format!("{eol}{indent}{unit}");
+                    caret_offsets.push(Some(middle.chars().count()));
+                    format!("{middle}{eol}{indent}")
+                }
+                Some(_) => {
+                    caret_offsets.push(None);
+                    format!("{eol}{indent}{unit}")
+                }
+                None if editing.indent_after.iter().any(|s| before.ends_with(s.as_str())) => {
+                    caret_offsets.push(None);
+                    format!("{eol}{indent}{unit}")
+                }
+                None => {
+                    caret_offsets.push(None);
+                    format!("{eol}{indent}")
+                }
+            }
         });
+        if caret_offsets.iter().any(Option::is_some) {
+            // replace_each put each caret after its inserted text; pull back the ones that
+            // belong on the middle line of a bracket pair.
+            let rope = &self.model.rope;
+            let mut i = 0;
+            let next = self.cursors.selections.map(|s| {
+                let offset = caret_offsets.get(i).copied().flatten();
+                i += 1;
+                match offset {
+                    Some(_) => {
+                        // The caret sits after "\n{indent}"; the middle line ends one line up.
+                        let line = rope.char_to_line(s.head);
+                        Selection::cursor(crate::position::line_end(rope, line.saturating_sub(1)))
+                    }
+                    None => *s,
+                }
+            });
+            self.cursors.selections = next;
+        }
     }
 
     /// Inserts indentation up to the next tab stop at every cursor.

@@ -2,6 +2,14 @@
 
 use rustaco_view::{StyleSpan, Styler};
 
+/// The kind of text at a position, for editing decisions such as auto-closing brackets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TextContext {
+    Code = 0,
+    String = 1,
+    Comment = 2,
+}
+
 /// Lines longer than this are highlighted only up to this column, as in Monaco.
 pub const MAX_HIGHLIGHT_COLUMNS: usize = 20_000;
 

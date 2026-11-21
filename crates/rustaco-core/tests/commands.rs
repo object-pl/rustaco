@@ -6,6 +6,8 @@ fn doc(text: &str, sels: &[(usize, usize)]) -> Document {
         line_comment: Some("//".into()),
         block_comment: Some(("/*".into(), "*/".into())),
         auto_closing: vec![("(".into(), ")".into()), ("[".into(), "]".into()), ("\"".into(), "\"".into())],
+        brackets: vec![("{".into(), "}".into()), ("(".into(), ")".into())],
+        indent_after: vec![":".into()],
     });
     d.set_selections(Selections::new(sels.iter().map(|&(a, h)| Selection::new(a, h)).collect(), 0));
     d
@@ -166,6 +168,48 @@ fn case_and_trailing_whitespace() {
 }
 
 #[test]
+fn smart_enter_indents_after_brackets_and_colons() {
+    let mut d = doc("fn f() {}", &[(8, 8)]);
+    d.newline();
+    assert_eq!(d.text(), "fn f() {\n    \n}");
+    assert_eq!(sels(&d), [(13, 13)], "the caret is on the indented middle line");
+    let mut d = doc("    if x {", &[(10, 10)]);
+    d.newline();
+    assert_eq!(d.text(), "    if x {\n        ");
+    let mut d = doc("def f():", &[(8, 8)]);
+    d.newline();
+    assert_eq!(d.text(), "def f():\n    ");
+    let mut d = doc("    x = 1", &[(9, 9)]);
+    d.newline();
+    assert_eq!(d.text(), "    x = 1\n    ");
+}
+
+#[test]
+fn expand_and_shrink_selection_follow_given_ranges() {
+    let mut d = doc("f(a + b)", &[(2, 2)]);
+    let ranges = [2..3, 2..7, 1..8, 0..8];
+    assert!(d.expand_selection(&ranges));
+    assert_eq!(sels(&d), [(2, 3)]);
+    assert!(d.expand_selection(&ranges));
+    assert_eq!(sels(&d), [(2, 7)]);
+    assert!(d.shrink_selection());
+    assert_eq!(sels(&d), [(2, 3)]);
+    assert!(d.shrink_selection());
+    assert_eq!(sels(&d), [(2, 2)]);
+    assert!(!d.shrink_selection());
+}
+
+#[test]
+fn no_auto_closing_inside_literals() {
+    let mut d = doc("\"ab\"", &[(2, 2)]);
+    d.type_char_in('(', true);
+    assert_eq!(d.text(), "\"a(b\"", "no pair opened inside a string");
+    let mut d = doc("\"a\"", &[(2, 2)]);
+    d.type_char_in('"', true);
+    assert_eq!(sels(&d), [(3, 3)], "typing the closing quote steps over it");
+}
+
+#[test]
 fn cursor_undo_steps_back_through_selections() {
     let mut d = doc("foo bar foo", &[(1, 1)]);
     d.add_next_occurrence();
@@ -192,6 +236,9 @@ fn every_bound_command_runs() {
         "cursorPageUpSelect",
         "cursorPageDown",
         "cursorPageDownSelect",
+        // Expanding by syntax needs the language module.
+        "editor.action.smartSelect.expand",
+        "editor.action.smartSelect.shrink",
         // Find navigation needs the frontend's current query.
         "editor.action.nextMatchFindAction",
         "editor.action.previousMatchFindAction",

@@ -173,6 +173,41 @@ impl Highlighter {
         out
     }
 
+    /// Char ranges of the syntax nodes around `start..end`, innermost first, as pairs
+    /// (start, end). Empty for engines without a tree (TextMate).
+    #[wasm_bindgen(js_name = enclosingRanges)]
+    pub fn enclosing_ranges(&self, start: u32, end: u32) -> Vec<u32> {
+        #[allow(unused_mut)]
+        let mut out = Vec::new();
+        #[cfg(feature = "tree-sitter")]
+        if let Engine::TreeSitter(s) = &self.engine {
+            let rope = &self.rope;
+            let len = rope.len_chars();
+            let bytes = rope.char_to_byte((start as usize).min(len))..rope.char_to_byte((end as usize).min(len));
+            for r in s.enclosing_ranges(bytes) {
+                out.extend([rope.byte_to_char(r.start) as u32, rope.byte_to_char(r.end) as u32]);
+            }
+        }
+        let _ = (start, end);
+        out
+    }
+
+    /// 0 for code, 1 inside a string, 2 inside a comment, at char `pos`.
+    #[wasm_bindgen(js_name = contextAt)]
+    pub fn context_at(&self, pos: u32) -> u8 {
+        let pos = (pos as usize).min(self.rope.len_chars());
+        match &self.engine {
+            #[cfg(feature = "tree-sitter")]
+            Engine::TreeSitter(s) => s.context_at(self.rope.char_to_byte(pos)) as u8,
+            #[cfg(feature = "textmate")]
+            Engine::TextMate(s) => s.context_at(&self.rope, pos) as u8,
+            Engine::Unavailable => {
+                let _ = pos;
+                0
+            }
+        }
+    }
+
     /// The module's copy of the text; for tests that check it stays in step with the editor.
     pub fn text(&self) -> String {
         self.rope.to_string()

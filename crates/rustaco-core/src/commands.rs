@@ -422,7 +422,17 @@ impl Editor<'_> {
     /// the pair (or wraps a selection in it), a closing char steps over the same char after
     /// the cursor. Other chars are typed as usual.
     pub fn type_char(&mut self, c: char) {
-        let pairs = self.model.editing.auto_closing.clone();
+        self.type_char_in(c, false);
+    }
+
+    /// Like [`Editor::type_char`]; inside a string or comment (`in_literal`) no pair is
+    /// opened, but a closing char still steps over the same char after the cursor.
+    pub fn type_char_in(&mut self, c: char, in_literal: bool) {
+        let mut pairs = self.model.editing.auto_closing.clone();
+        if in_literal {
+            // No pair opens; closing chars keep stepping over.
+            pairs.iter_mut().for_each(|(open, _)| open.clear());
+        }
         let mut buf = [0u8; 4];
         let typed: &str = c.encode_utf8(&mut buf);
         let open_pair = pairs.iter().find(|(o, _)| o == typed).cloned();
@@ -571,6 +581,32 @@ impl Editor<'_> {
             .collect();
         let primary_index = ranges.iter().position(|s| s.start() == a).unwrap_or(0);
         self.set_selections(Selections::new(ranges, primary_index));
+    }
+
+    /// Expands the primary selection to the smallest of `ranges` (syntax node ranges from the
+    /// language module, innermost first) that contains it and is larger. The previous
+    /// selections are kept for [`Editor::shrink_selection`].
+    pub fn expand_selection(&mut self, ranges: &[Range<usize>]) -> bool {
+        let primary = self.cursors.selections.primary();
+        let (a, b) = (primary.start(), primary.end());
+        let Some(next) = ranges.iter().find(|r| r.start <= a && b <= r.end && r.len() > b - a) else { return false };
+        let before = self.cursors.selections.clone();
+        self.set_selections(Selections::single(Selection::new(next.start, next.end)));
+        self.cursors.expansions.push(before);
+        true
+    }
+
+    /// Goes back to the selections before the last [`Editor::expand_selection`].
+    pub fn shrink_selection(&mut self) -> bool {
+        match self.cursors.expansions.pop() {
+            Some(prev) => {
+                let expansions = std::mem::take(&mut self.cursors.expansions);
+                self.set_selections(prev);
+                self.cursors.expansions = expansions;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Converts the selected text (or the word at each cursor) to upper or lower case.

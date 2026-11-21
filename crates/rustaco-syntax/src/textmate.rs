@@ -25,7 +25,8 @@ use rustaco_core::{EditEvent, Rope};
 use serde_json::Value;
 
 use crate::names::HIGHLIGHT_NAMES;
-use crate::spans::{Highlights, MAX_HIGHLIGHT_COLUMNS};
+use crate::names::name_of_style;
+use crate::spans::{Highlights, MAX_HIGHLIGHT_COLUMNS, TextContext};
 
 type RuleId = usize;
 type ScopeId = u32;
@@ -481,6 +482,20 @@ impl TextMateSyntax {
                     .join(" > ")
             })
             .collect()
+    }
+
+    /// What kind of text is at char `pos`, from the token styles of its line.
+    pub fn context_at(&self, rope: &Rope, pos: usize) -> TextContext {
+        let line = rope.char_to_line(pos.min(rope.len_chars()));
+        let Some(tokens) = self.lines.get(line).and_then(|l| l.tokens.as_ref()) else { return TextContext::Code };
+        let byte = rope.char_to_byte(pos) - rope.line_to_byte(line);
+        // The last token covering the position wins, as in painting.
+        let style = tokens.iter().rev().find(|&&(s, e, _)| s < byte && byte < e).map_or(0, |t| t.2);
+        match name_of_style(style) {
+            Some(n) if n.starts_with("comment") => TextContext::Comment,
+            Some(n) if n.starts_with("string") => TextContext::String,
+            _ => TextContext::Code,
+        }
     }
 
     pub fn needs_parse(&self) -> bool {

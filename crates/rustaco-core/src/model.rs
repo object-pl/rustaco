@@ -63,6 +63,11 @@ pub struct LanguageEditing {
     pub line_comment: Option<String>,
     pub block_comment: Option<(String, String)>,
     pub auto_closing: Vec<(String, String)>,
+    /// Bracket pairs: Enter after an opening bracket indents, and between a pair it opens an
+    /// empty line with the closing bracket below.
+    pub brackets: Vec<(String, String)>,
+    /// Line endings after which Enter indents one level more (`:` in Python).
+    pub indent_after: Vec<String>,
 }
 
 /// Change sets kept in the log. A consumer further behind than this must resync from the full text.

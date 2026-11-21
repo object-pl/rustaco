@@ -271,3 +271,22 @@ fn unknown_fence_languages_keep_the_code_block_style() {
     let h = highlight_all(&doc, &mut syntax);
     assert_eq!(names_on(&h, 1, md), vec![("qapla'".to_string(), Some("text.literal"))]);
 }
+
+#[test]
+fn enclosing_ranges_and_context() {
+    use rustaco_syntax::TextContext;
+    let src = "fn f() { let s = \"ab\"; /* c */ g(1, 2); }";
+    let doc = Document::new(src);
+    let mut syntax = Syntax::new(by_id("rust").unwrap()).unwrap();
+    syntax.update(doc.model());
+    let at = src.find("1, 2").unwrap();
+    let ranges: Vec<&str> = syntax.enclosing_ranges(at..at + 1).iter().map(|r| &src[r.clone()]).collect();
+    assert_eq!(ranges[0], "1");
+    assert!(ranges.contains(&"(1, 2)"), "{ranges:?}");
+    assert!(ranges.contains(&"g(1, 2)"), "{ranges:?}");
+    assert_eq!(*ranges.last().unwrap(), src);
+    assert_eq!(syntax.context_at(src.find("ab").unwrap()), TextContext::String);
+    assert_eq!(syntax.context_at(src.find(" c ").unwrap()), TextContext::Comment);
+    assert_eq!(syntax.context_at(src.find("g(").unwrap()), TextContext::Code);
+    assert_eq!(syntax.context_at(src.find('"').unwrap()), TextContext::Code, "before the opening quote");
+}

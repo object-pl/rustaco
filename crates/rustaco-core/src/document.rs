@@ -143,6 +143,12 @@ impl Document {
         transform_case(upper: bool);
         trim_trailing_whitespace();
         cursor_undo() -> bool;
+        shrink_selection() -> bool;
+        type_char_in(c: char, in_literal: bool);
+    }
+
+    pub fn expand_selection(&mut self, ranges: &[std::ops::Range<usize>]) -> bool {
+        self.editor().expand_selection(ranges)
     }
 
     pub fn set_language_editing(&mut self, editing: crate::model::LanguageEditing) {

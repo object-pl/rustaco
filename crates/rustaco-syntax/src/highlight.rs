@@ -8,7 +8,7 @@ use tree_sitter::{InputEdit, Node, ParseOptions, ParseState, Parser, Point, Stre
 
 use crate::injection::{InjectionCache, find_regions};
 use crate::language::{CompiledQuery, LanguageDef};
-use crate::spans::{Highlights, MAX_HIGHLIGHT_COLUMNS};
+use crate::spans::{Highlights, MAX_HIGHLIGHT_COLUMNS, TextContext};
 
 /// Parse state for one model in one language. Shared by every editor showing the model.
 pub struct Syntax {
@@ -114,6 +114,43 @@ impl Syntax {
     /// True when edits are recorded that no parse has caught up with yet.
     pub fn needs_parse(&self) -> bool {
         self.stale
+    }
+
+    /// Byte ranges of the syntax nodes around `bytes`, from the smallest node that contains it
+    /// out to the root, without repeats. Expand selection walks this list outward.
+    pub fn enclosing_ranges(&self, bytes: Range<usize>) -> Vec<Range<usize>> {
+        let Some(tree) = self.tree.as_ref() else { return Vec::new() };
+        let mut node = tree.root_node().descendant_for_byte_range(bytes.start, bytes.end);
+        let mut out: Vec<Range<usize>> = Vec::new();
+        while let Some(n) = node {
+            let r = n.byte_range();
+            if out.last() != Some(&r) {
+                out.push(r);
+            }
+            node = n.parent();
+        }
+        out
+    }
+
+    /// What kind of text is at `byte`: code, a string or a comment. Read from node kinds, which
+    /// grammars name `string_literal`, `line_comment`, `template_string` and the like.
+    pub fn context_at(&self, byte: usize) -> TextContext {
+        let Some(tree) = self.tree.as_ref() else { return TextContext::Code };
+        let mut node = tree.root_node().descendant_for_byte_range(byte, byte);
+        while let Some(n) = node {
+            let kind = n.kind();
+            if kind.contains("comment") {
+                return TextContext::Comment;
+            }
+            if kind.contains("string") || kind.contains("char_literal") || kind == "heredoc_body" {
+                // The quotes themselves belong to the string node; between them is string text.
+                if n.start_byte() < byte && byte < n.end_byte() {
+                    return TextContext::String;
+                }
+            }
+            node = n.parent();
+        }
+        TextContext::Code
     }
 
     /// Drops the tree, so the next parse starts from scratch.

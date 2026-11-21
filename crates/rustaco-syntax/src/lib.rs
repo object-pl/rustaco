@@ -29,7 +29,7 @@ pub use injection::{MAX_INJECTION_BYTES, resolve as resolve_injection_language};
 pub use language::{LanguageDef, by_id, languages};
 pub use names::{HIGHLIGHT_NAMES, name_of_style, style_for_capture};
 #[cfg(any(feature = "engine", feature = "textmate"))]
-pub use spans::{Highlights, MAX_HIGHLIGHT_COLUMNS};
+pub use spans::{Highlights, MAX_HIGHLIGHT_COLUMNS, TextContext};
 #[cfg(feature = "textmate")]
 pub use textmate::{Grammar, TextMateSyntax, grammar as textmate_grammar, textmate_languages};
 pub use theme::{Colors, Style, Theme, ThemeRule};

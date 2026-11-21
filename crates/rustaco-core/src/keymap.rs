@@ -219,6 +219,8 @@ const SHARED: &[Entry] = &[
     ("shift+alt+up", "editor.action.copyLinesUpAction", None),
     ("shift+alt+down", "editor.action.copyLinesDownAction", None),
     ("shift+alt+a", "editor.action.blockComment", None),
+    ("shift+alt+right", "editor.action.smartSelect.expand", None),
+    ("shift+alt+left", "editor.action.smartSelect.shrink", None),
     ("f3", "editor.action.nextMatchFindAction", None),
     ("shift+f3", "editor.action.previousMatchFindAction", None),
 ];

@@ -384,22 +384,23 @@ export class RustacoEditor {
 
     input.addEventListener('keydown', (e) => {
       if (e.isComposing || e.keyCode === 229) return;
-      if (core.key_down(e.key, e.ctrlKey, e.shiftKey, e.altKey, e.metaKey)) {
-        e.preventDefault();
-        this.#changed();
-      }
+      const result = core.key_down(e.key, e.ctrlKey, e.shiftKey, e.altKey, e.metaKey);
+      if (result === 0) return;
+      e.preventDefault();
+      if (result === 2) this.#frontendCommand(core.takeFrontendCommand());
+      this.#changed();
     });
     input.addEventListener('input', () => {
       if (this.composing) return;
       const text = input.value;
       input.value = '';
-      if (text) { core.insert_text(text); this.#changed(); }
+      if (text) { core.insert_text(text, this.#inLiteral()); this.#changed(); }
     });
     input.addEventListener('compositionstart', () => { this.composing = true; });
     input.addEventListener('compositionend', (e) => {
       this.composing = false;
       input.value = '';
-      if (e.data) { core.insert_text(e.data); this.#changed(); }
+      if (e.data) { core.insert_text(e.data, false); this.#changed(); }
     });
 
     input.addEventListener('copy', (e) => { e.preventDefault(); e.clipboardData.setData('text/plain', core.copy()); });
@@ -416,6 +417,25 @@ export class RustacoEditor {
 
     input.addEventListener('focus', () => { this.focused = true; this.#restartBlink(); });
     input.addEventListener('blur', () => { this.focused = false; clearInterval(this.blink); this.schedule(); });
+  }
+
+  /** Commands that need the language module. */
+  #frontendCommand(command) {
+    if (command === 'editor.action.smartSelect.expand') {
+      const h = this.model.highlighter;
+      if (!h) return;
+      this.model.updateHighlighter(50);
+      const [start, end] = this.core.primaryRange();
+      this.core.expandSelection(h.enclosingRanges(start, end));
+    }
+  }
+
+  /** True when the primary cursor is inside a string or comment. */
+  #inLiteral() {
+    const h = this.model.highlighter;
+    if (!h) return false;
+    this.model.updateHighlighter(2);
+    return h.contextAt(this.core.primaryRange()[0]) !== 0;
   }
 
   #restartBlink() {
