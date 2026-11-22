@@ -1,5 +1,8 @@
 // Type definitions for the Rustaco editor's JavaScript API (rustaco.js).
 // Offsets are char positions (Unicode scalar values) from the start of the text.
+// Only what is declared here is the API. Other fields reachable at run time (an editor's
+// `core`, `features` and `suggest`, a model's `core` and `syntax`) are internal and change
+// without notice.
 
 /** A VS Code colour theme: the parsed JSON of a `*-color-theme.json` file. */
 export interface VsCodeTheme {
