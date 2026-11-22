@@ -33,6 +33,7 @@
     "rustaco.d.ts",
     "lsp.d.ts",
     "diff.d.ts",
+    "favicon.ico",
     "pkg/**/*.js",
     "pkg/**/*.wasm",
     "pkg/THIRD_PARTY.md",
