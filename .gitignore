@@ -5,3 +5,5 @@
 /tests/bench-monaco/node_modules
 /tests/bench-monaco/rustaco
 /tests/bench-monaco/package*.json
+/vendor/*/target/
+/vendor/*/Cargo.lock
