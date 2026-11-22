@@ -135,21 +135,22 @@ impl LspSession {
                 None => Value::Null,
                 Some(h) => json!({ "contents": h.contents, "range": h.range.map(r) }),
             },
-            Kind::Completion => json!(s
-                .completion(model, v)
-                .into_iter()
-                .map(|i| json!({
-                    "label": i.label,
-                    "kind": i.kind.map(|k| k.saturating_sub(1)),
-                    "detail": i.detail,
-                    "documentation": i.documentation,
-                    "insertText": i.insert_text,
-                    "isSnippet": i.is_snippet,
-                    "sortText": i.sort_text,
-                    "filterText": i.filter_text,
-                    "range": i.range.map(r),
-                }))
-                .collect::<Vec<_>>()),
+            Kind::Completion => json!(
+                s.completion(model, v)
+                    .into_iter()
+                    .map(|i| json!({
+                        "label": i.label,
+                        "kind": i.kind.map(|k| k.saturating_sub(1)),
+                        "detail": i.detail,
+                        "documentation": i.documentation,
+                        "insertText": i.insert_text,
+                        "isSnippet": i.is_snippet,
+                        "sortText": i.sort_text,
+                        "filterText": i.filter_text,
+                        "range": i.range.map(r),
+                    }))
+                    .collect::<Vec<_>>()
+            ),
             Kind::SignatureHelp => match s.signature_help(v) {
                 None => Value::Null,
                 Some(h) => json!({
@@ -163,14 +164,15 @@ impl LspSession {
                 }),
             },
             // Ranges in this document; the rest keep LSP's coordinates for JS to place.
-            Kind::Definition | Kind::References => json!(s
-                .locations(doc, model, v)
-                .into_iter()
-                .map(|l| match l.range {
-                    Some(x) => r(x),
-                    None => json!({ "uri": l.uri, "lspRange": l.lsp_range }),
-                })
-                .collect::<Vec<_>>()),
+            Kind::Definition | Kind::References => json!(
+                s.locations(doc, model, v)
+                    .into_iter()
+                    .map(|l| match l.range {
+                        Some(x) => r(x),
+                        None => json!({ "uri": l.uri, "lspRange": l.lsp_range }),
+                    })
+                    .collect::<Vec<_>>()
+            ),
             Kind::DocumentHighlight => json!(s.ranges(model, v).into_iter().map(r).collect::<Vec<_>>()),
             Kind::Rename => {
                 let edit = s.workspace_edit(doc, model, v);
@@ -181,27 +183,27 @@ impl LspSession {
                     "others": others,
                 })
             }
-            Kind::Formatting => json!(s
-                .text_edits(model, v)
-                .into_iter()
-                .map(|e| json!({ "range": r(e.range), "text": e.text }))
-                .collect::<Vec<_>>()),
+            Kind::Formatting => json!(
+                s.text_edits(model, v)
+                    .into_iter()
+                    .map(|e| json!({ "range": r(e.range), "text": e.text }))
+                    .collect::<Vec<_>>()
+            ),
             // Titles with the raw edit and command: JS applies them when one is picked.
-            Kind::CodeAction => json!(v
-                .as_array()
-                .map(Vec::as_slice)
-                .unwrap_or(&[])
-                .iter()
-                .map(|a| {
-                    let command = if a["command"].is_string() { a.clone() } else { a["command"].clone() };
-                    json!({ "title": a["title"], "edit": a["edit"], "command": command })
-                })
-                .collect::<Vec<_>>()),
-            Kind::FoldingRange => json!(s
-                .folding_ranges(v)
-                .into_iter()
-                .map(|(a, b)| json!({ "start": a, "end": b }))
-                .collect::<Vec<_>>()),
+            Kind::CodeAction => json!(
+                v.as_array()
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[])
+                    .iter()
+                    .map(|a| {
+                        let command = if a["command"].is_string() { a.clone() } else { a["command"].clone() };
+                        json!({ "title": a["title"], "edit": a["edit"], "command": command })
+                    })
+                    .collect::<Vec<_>>()
+            ),
+            Kind::FoldingRange => {
+                json!(s.folding_ranges(v).into_iter().map(|(a, b)| json!({ "start": a, "end": b })).collect::<Vec<_>>())
+            }
             Kind::SelectionRange => json!(s.selection_ranges(model, v).into_iter().map(r).collect::<Vec<_>>()),
             Kind::DocumentSymbol => {
                 fn symbol(x: rustaco_lsp::Symbol) -> Value {
@@ -216,26 +218,28 @@ impl LspSession {
                 }
                 json!(s.document_symbols(model, v).into_iter().map(symbol).collect::<Vec<_>>())
             }
-            Kind::CodeLens => json!(s
-                .code_lens(model, v)
-                .into_iter()
-                .filter(|l| l.command.is_some())
-                .map(|l| json!({
-                    "line": model.rope().char_to_line(l.range.start.min(model.len_chars())),
-                    "title": l.title,
-                    "command": l.command,
-                }))
-                .collect::<Vec<_>>()),
+            Kind::CodeLens => json!(
+                s.code_lens(model, v)
+                    .into_iter()
+                    .filter(|l| l.command.is_some())
+                    .map(|l| json!({
+                        "line": model.rope().char_to_line(l.range.start.min(model.len_chars())),
+                        "title": l.title,
+                        "command": l.command,
+                    }))
+                    .collect::<Vec<_>>()
+            ),
             Kind::SemanticTokens => json!(s
                 .semantic_tokens(model, v)
                 .into_iter()
                 .map(|t| json!({ "start": t.range.start, "end": t.range.end, "style": semantic_style(&t.token_type) }))
                 .collect::<Vec<_>>()),
-            Kind::InlayHint => json!(s
-                .inlay_hints(model, v)
-                .into_iter()
-                .map(|h| json!({ "offset": h.offset, "label": h.label }))
-                .collect::<Vec<_>>()),
+            Kind::InlayHint => json!(
+                s.inlay_hints(model, v)
+                    .into_iter()
+                    .map(|h| json!({ "offset": h.offset, "label": h.label }))
+                    .collect::<Vec<_>>()
+            ),
         }
     }
 }
