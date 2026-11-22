@@ -285,6 +285,11 @@ export class RustacoEditor {
 
   /** Calls `fn` after every text change, from this or any other editor on the model. */
   onDidChangeContent(fn: () => void): () => void;
+  /**
+   * Adds a command: `id` runs `handler`, from `runCommand(id)` and from `keybinding` (VS
+   * Code's format, e.g. `'alt+f5'`) when given.
+   */
+  addCommand(id: string, handler: (editor: RustacoEditor) => void, keybinding?: string): Disposable;
   /** Detaches the editor from its model and removes its DOM. */
   dispose(): void;
   /** The editor drawn now, without the caret, as one canvas at device resolution (for tests and screenshots). */

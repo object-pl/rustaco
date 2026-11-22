@@ -116,6 +116,22 @@ pub fn info(id: &str) -> Option<&'static LanguageInfo> {
     CATALOG.iter().find(|l| l.id == id)
 }
 
+/// The editing data (comments, auto-closing pairs, brackets, indentation triggers) of
+/// language `id` from the catalog, for `Document::set_language_editing`; empty for unknown
+/// ids.
+pub fn language_editing(id: &str) -> rustaco_core::LanguageEditing {
+    let mut editing = rustaco_core::LanguageEditing::default();
+    if let Some(c) = info(id).map(|i| &i.config) {
+        let pairs = |p: &[(&str, &str)]| p.iter().map(|&(a, b)| (a.to_owned(), b.to_owned())).collect();
+        editing.line_comment = c.line_comment.map(str::to_owned);
+        editing.block_comment = c.block_comment.map(|(a, b)| (a.to_owned(), b.to_owned()));
+        editing.auto_closing = pairs(c.auto_closing);
+        editing.brackets = pairs(c.brackets);
+        editing.indent_after = c.indent_after.iter().map(|&s| s.to_owned()).collect();
+    }
+    editing
+}
+
 /// Picks a language from a file path and, when that fails, from the first line (`#!`).
 pub fn detect(path: &str, first_line: &str) -> Option<&'static LanguageInfo> {
     let file = path.rsplit(['/', '\\']).next().unwrap_or(path);

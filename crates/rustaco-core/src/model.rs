@@ -44,7 +44,9 @@ impl LineEnding {
     }
 }
 
+/// Indentation settings. More fields may come: build one from `Options::default()`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Options {
     pub tab_size: usize,
     pub insert_spaces: bool,
@@ -57,8 +59,10 @@ impl Default for Options {
 }
 
 /// Language-specific editing data, set by the frontend from its language catalog: comment
-/// tokens for comment toggling, bracket and quote pairs for auto-closing.
+/// tokens for comment toggling, bracket and quote pairs for auto-closing. More fields may
+/// come: start from `LanguageEditing::default()` and set the fields.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LanguageEditing {
     pub line_comment: Option<String>,
     pub block_comment: Option<(String, String)>,

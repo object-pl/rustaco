@@ -13,8 +13,8 @@ use std::rc::Rc;
 use std::collections::HashMap;
 
 use rustaco_core::{
-    Cursors, Editor as Commands, EditorId, KeyPress, Keymap, LanguageEditing, Platform, Resolved, Rope, SearchQuery,
-    Searcher, Selection, Selections, Stickiness, TextModel, default_keymap, jetbrains_keymap, next_match, word_at,
+    Cursors, Editor as Commands, EditorId, KeyPress, Keymap, Platform, Resolved, Rope, SearchQuery, Searcher,
+    Selection, Selections, Stickiness, TextModel, default_keymap, jetbrains_keymap, next_match, word_at,
 };
 use rustaco_syntax::{Colors, Style, Theme, ThemeRule, themes};
 use rustaco_view::{Metrics, Rect, StyleSpan, Styler, View, indent_fold_ranges};
@@ -482,16 +482,7 @@ impl Model {
     /// Sets comment tokens and auto-closing pairs from the language catalog; `""` clears them.
     #[wasm_bindgen(js_name = setLanguageConfig)]
     pub fn set_language_config(&self, language: &str) {
-        let editing = rustaco_syntax::info(language).map_or_else(LanguageEditing::default, |info| {
-            let c = info.config;
-            LanguageEditing {
-                line_comment: c.line_comment.map(str::to_owned),
-                block_comment: c.block_comment.map(|(a, b)| (a.to_owned(), b.to_owned())),
-                auto_closing: c.auto_closing.iter().map(|&(a, b)| (a.to_owned(), b.to_owned())).collect(),
-                brackets: c.brackets.iter().map(|&(a, b)| (a.to_owned(), b.to_owned())).collect(),
-                indent_after: c.indent_after.iter().map(|&s| s.to_owned()).collect(),
-            }
-        });
+        let editing = rustaco_syntax::language_editing(language);
         self.inner.borrow_mut().editing = editing;
     }
 
@@ -776,6 +767,9 @@ pub struct Editor {
     zone_rects: Vec<(u32, Rect)>,
     /// The open completion list: the text each item is filtered by and its sort text.
     completion_items: (Vec<String>, Vec<String>),
+    /// Commands the embedder added (`editor.addCommand`): keybindings resolving to them go
+    /// to the JS side, like the frontend commands.
+    host_commands: std::collections::HashSet<String>,
     /// The WebGL layer, when JS set one up: frames are then painted as quads for WebGL
     /// instead of on the canvas.
     gl: Option<GlLayer>,
@@ -844,6 +838,7 @@ impl Editor {
             text_drag: None,
             zone_rects: Vec::new(),
             completion_items: (Vec::new(), Vec::new()),
+            host_commands: std::collections::HashSet::new(),
             gl: None,
         })
     }
@@ -1218,7 +1213,9 @@ impl Editor {
             ])
         };
         match self.keymap.resolve(&pressed, &context) {
-            Resolved::Command(command) if FRONTEND_COMMANDS.contains(&command.as_str()) => {
+            Resolved::Command(command)
+                if FRONTEND_COMMANDS.contains(&command.as_str()) || self.host_commands.contains(&command) =>
+            {
                 self.frontend_command = Some(command);
                 2
             }
@@ -1324,6 +1321,13 @@ impl Editor {
             self.highlights.changed = true;
         }
         self.tree_brackets = None;
+    }
+
+    /// Makes keybindings that resolve to `id` hand it to the JS side, where the embedder's
+    /// handler runs (see `addCommand` in rustaco.js).
+    #[wasm_bindgen(js_name = registerHostCommand)]
+    pub fn register_host_command(&mut self, id: &str) {
+        self.host_commands.insert(id.to_owned());
     }
 
     /// The command [`Editor::key_down`] left for the JS side, once.

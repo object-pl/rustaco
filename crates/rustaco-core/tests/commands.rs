@@ -2,13 +2,13 @@ use rustaco_core::{Document, LanguageEditing, Selection, Selections};
 
 fn doc(text: &str, sels: &[(usize, usize)]) -> Document {
     let mut d = Document::new(text);
-    d.set_language_editing(LanguageEditing {
-        line_comment: Some("//".into()),
-        block_comment: Some(("/*".into(), "*/".into())),
-        auto_closing: vec![("(".into(), ")".into()), ("[".into(), "]".into()), ("\"".into(), "\"".into())],
-        brackets: vec![("{".into(), "}".into()), ("(".into(), ")".into())],
-        indent_after: vec![":".into()],
-    });
+    let mut editing = LanguageEditing::default();
+    editing.line_comment = Some("//".into());
+    editing.block_comment = Some(("/*".into(), "*/".into()));
+    editing.auto_closing = vec![("(".into(), ")".into()), ("[".into(), "]".into()), ("\"".into(), "\"".into())];
+    editing.brackets = vec![("{".into(), "}".into()), ("(".into(), ")".into())];
+    editing.indent_after = vec![":".into()];
+    d.set_language_editing(editing);
     d.set_selections(Selections::new(sels.iter().map(|&(a, h)| Selection::new(a, h)).collect(), 0));
     d
 }

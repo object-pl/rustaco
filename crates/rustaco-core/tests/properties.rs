@@ -157,13 +157,13 @@ fn run(doc: &mut Document, op: &Op) {
 }
 
 fn editing() -> LanguageEditing {
-    LanguageEditing {
-        line_comment: Some("//".into()),
-        block_comment: Some(("/*".into(), "*/".into())),
-        auto_closing: vec![("(".into(), ")".into()), ("[".into(), "]".into()), ("\"".into(), "\"".into())],
-        brackets: vec![("{".into(), "}".into()), ("(".into(), ")".into())],
-        indent_after: vec![":".into()],
-    }
+    let mut e = LanguageEditing::default();
+    e.line_comment = Some("//".into());
+    e.block_comment = Some(("/*".into(), "*/".into()));
+    e.auto_closing = vec![("(".into(), ")".into()), ("[".into(), "]".into()), ("\"".into(), "\"".into())];
+    e.brackets = vec![("{".into(), "}".into()), ("(".into(), ")".into())];
+    e.indent_after = vec![":".into()];
+    e
 }
 
 fn assert_selections_valid(doc: &Document) {

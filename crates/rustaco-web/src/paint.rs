@@ -383,24 +383,6 @@ fn parse_css_color(css: &str) -> Option<[u8; 4]> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::rgba;
-
-    #[test]
-    fn css_colours_become_rgba_words() {
-        let bytes = |c: &str| rgba(c).to_le_bytes();
-        assert_eq!(bytes("#ff000080"), [255, 0, 0, 128]);
-        assert_eq!(bytes("#00ff00"), [0, 255, 0, 255]);
-        assert_eq!(bytes("#f00"), [255, 0, 0, 255]);
-        assert_eq!(bytes("#f008"), [255, 0, 0, 136]);
-        assert_eq!(bytes("rgb(1, 2, 3)"), [1, 2, 3, 255]);
-        assert_eq!(bytes("rgba(10,20,30,0.5)"), [10, 20, 30, 128]);
-        assert_eq!(bytes("rgb(10 20 30 / 50%)"), [10, 20, 30, 128]);
-        assert_eq!(bytes("tomato"), [255, 255, 255, 255]);
-    }
-}
-
 /// 4 when the colour is dark enough that its glyphs should be rasterised as dark text.
 fn darkness(color: u32) -> u8 {
     let [r, g, b, _] = color.to_le_bytes();
@@ -565,5 +547,23 @@ impl Painter for GlPainter<'_> {
             }
             y += 1.0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rgba;
+
+    #[test]
+    fn css_colours_become_rgba_words() {
+        let bytes = |c: &str| rgba(c).to_le_bytes();
+        assert_eq!(bytes("#ff000080"), [255, 0, 0, 128]);
+        assert_eq!(bytes("#00ff00"), [0, 255, 0, 255]);
+        assert_eq!(bytes("#f00"), [255, 0, 0, 255]);
+        assert_eq!(bytes("#f008"), [255, 0, 0, 136]);
+        assert_eq!(bytes("rgb(1, 2, 3)"), [1, 2, 3, 255]);
+        assert_eq!(bytes("rgba(10,20,30,0.5)"), [10, 20, 30, 128]);
+        assert_eq!(bytes("rgb(10 20 30 / 50%)"), [10, 20, 30, 128]);
+        assert_eq!(bytes("tomato"), [255, 255, 255, 255]);
     }
 }

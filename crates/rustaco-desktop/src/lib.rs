@@ -15,9 +15,7 @@ use std::time::Duration;
 
 pub use font::{Font, FontError};
 pub use input::key_press;
-use rustaco_core::{
-    Document, KeyPress, Keymap, LanguageEditing, Platform, Resolved, Selection, Selections, default_keymap, word_at,
-};
+use rustaco_core::{Document, KeyPress, Keymap, Platform, Resolved, Selection, Selections, default_keymap, word_at};
 use rustaco_syntax::{BackgroundSyntax, Colors, Highlights, Theme, by_id, themes};
 use rustaco_view::{Metrics, Plain, Rect, View};
 
@@ -103,16 +101,7 @@ impl DesktopEditor {
 
     /// Highlights `language` on a background thread; empty or unknown ids turn it off.
     pub fn set_language(&mut self, language: &str) {
-        let editing = rustaco_syntax::info(language).map_or_else(LanguageEditing::default, |info| {
-            let c = info.config;
-            LanguageEditing {
-                line_comment: c.line_comment.map(str::to_owned),
-                block_comment: c.block_comment.map(|(a, b)| (a.to_owned(), b.to_owned())),
-                auto_closing: c.auto_closing.iter().map(|&(a, b)| (a.to_owned(), b.to_owned())).collect(),
-                brackets: c.brackets.iter().map(|&(a, b)| (a.to_owned(), b.to_owned())).collect(),
-                indent_after: c.indent_after.iter().map(|&s| s.to_owned()).collect(),
-            }
-        });
+        let editing = rustaco_syntax::language_editing(language);
         self.doc.set_language_editing(editing);
         let model = self.doc.model();
         self.syntax = by_id(language).and_then(|def| BackgroundSyntax::spawn(def, model).ok());

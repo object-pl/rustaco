@@ -86,6 +86,11 @@ export class RustacoDiffEditor {
     }
     this.originalDecorations = original.createDecorationsCollection();
     this.modifiedDecorations = modified.createDecorationsCollection();
+    // Next and previous change from the keyboard, with VS Code's keys, in both panes.
+    this.commands = [this.originalEditor, this.modifiedEditor].filter(Boolean).flatMap((e) => [
+      e.addCommand('diffEditor.nextChange', () => this.goToChange(true), 'alt+f5'),
+      e.addCommand('diffEditor.previousChange', () => this.goToChange(false), 'shift+alt+f5'),
+    ]);
     let timer = 0;
     const later = () => { clearTimeout(timer); timer = setTimeout(() => this.computeDiff(), RECOMPUTE_MS); };
     this.offs = [original.onDidChangeContent(later), modified.onDidChangeContent(later)];

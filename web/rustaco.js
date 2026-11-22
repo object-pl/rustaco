@@ -897,8 +897,32 @@ export class RustacoEditor {
     this.schedule();
   }
 
+  /**
+   * Adds a command the keymap can call: `id` runs `handler(editor)`, and `keybinding` (VS
+   * Code's format, e.g. `'alt+f5'`), when given, is bound to it. `runCommand(id)` runs it too.
+   * Returns a disposable that removes the handler (and the binding).
+   */
+  addCommand(id, handler, keybinding) {
+    this.hostCommands ??= new Map();
+    this.hostCommands.set(id, handler);
+    this.core.registerHostCommand(id);
+    if (keybinding) this.addKeybindings([{ key: keybinding, command: id }]);
+    return {
+      dispose: () => {
+        if (this.hostCommands.get(id) !== handler) return;
+        this.hostCommands.delete(id);
+        if (keybinding) this.addKeybindings([{ key: keybinding, command: `-${id}` }]);
+      },
+    };
+  }
+
   /** Runs a command by id (`editor.action.commentLine`, `cursorWordLeft`, ...). */
   runCommand(id) {
+    const host = this.hostCommands?.get(id);
+    if (host) {
+      host(this);
+      return true;
+    }
     if (FRONTEND_COMMANDS.has(id)) {
       this.#frontendCommand(id);
       return true;
@@ -1186,6 +1210,8 @@ export class RustacoEditor {
 
   /** Commands that need the language module or the DOM. */
   #frontendCommand(command) {
+    const host = this.hostCommands?.get(command);
+    if (host) { host(this); return; }
     if (this.features.run(command)) return;
     if (command === 'editor.action.triggerSuggest') {
       this.suggest.trigger({ explicit: true });

@@ -8,7 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rustaco-core = { workspace = true, optional = true }
+rustaco-core.workspace = true
 rustaco-view = { workspace = true, optional = true }
 tree-sitter = { version = "0.27", default-features = false, optional = true }
 fancy-regex = { version = "0.20", optional = true }
@@ -40,9 +40,9 @@ all-languages = [
 ]
 # The parser and highlighter. Without it the crate provides only themes and highlight names,
 # which is all the browser editor bundle needs; parsing runs in separate language modules.
-engine = ["dep:tree-sitter", "dep:rustaco-core", "dep:rustaco-view", "dep:ropey"]
+engine = ["dep:tree-sitter", "dep:rustaco-view", "dep:ropey"]
 # The TextMate tokenizer and bundled TextMate grammars (SQL, Kotlin, Dockerfile).
-textmate = ["dep:fancy-regex", "dep:serde_json", "dep:rustaco-core", "dep:rustaco-view", "dep:ropey"]
+textmate = ["dep:fancy-regex", "dep:serde_json", "dep:rustaco-view", "dep:ropey"]
 rust = ["engine", "dep:tree-sitter-rust"]
 javascript = ["engine", "dep:tree-sitter-javascript"]
 json = ["engine", "dep:tree-sitter-json"]
@@ -63,4 +63,3 @@ markdown = ["engine", "dep:tree-sitter-md"]
 
 [dev-dependencies]
 proptest = "1"
-rustaco-core.workspace = true

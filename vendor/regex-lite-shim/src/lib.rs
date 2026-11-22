@@ -1,6 +1,10 @@
-//! The part of the `regex` API tree-sitter calls (`bytes::Regex::new` and `is_match`),
-//! backed by `regex-lite`. `regex-lite` has no Unicode classes (`\p{..}`), and `\w`, `\d`
-//! and `\b` are ASCII; the highlight queries of the bundled grammars need neither.
+//! The part of the `regex` API tree-sitter calls (`bytes::Regex::new` and `is_match`) and
+//! criterion calls (`Regex` on `&str`), backed by `regex-lite`. `regex-lite` has no Unicode
+//! classes (`\p{..}`), and `\w`, `\d` and `\b` are ASCII; the highlight queries of the
+//! bundled grammars need neither.
+
+// criterion (a dev-dependency) filters benchmark names with `regex::Regex` on `&str`.
+pub use regex_lite::{Error, Regex};
 
 pub mod bytes {
     use std::fmt;

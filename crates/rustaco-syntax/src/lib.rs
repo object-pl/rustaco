@@ -24,7 +24,7 @@ mod theme;
 
 #[cfg(all(feature = "engine", not(target_arch = "wasm32")))]
 pub use background::{BackgroundSyntax, HighlightReply};
-pub use catalog::{LanguageConfig, LanguageInfo, catalog, detect, info};
+pub use catalog::{LanguageConfig, LanguageInfo, catalog, detect, info, language_editing};
 #[cfg(feature = "engine")]
 pub use highlight::{Symbol, Syntax};
 #[cfg(feature = "engine")]

@@ -10,14 +10,14 @@ The public surface as of the end of phase 11, with what should change before it 
 | `RustacoEditor` | values, selections, options, keymaps, find, folding, snippets, view zones and widgets, scroll, events | `core`, `features`, `suggest` and `model.core` are reachable from outside but internal; hide them behind private fields or document them as unstable. Event names follow Monaco only partly (`onDidChangeContent`, `onDidScrollChange`, `onPasteTooLarge`); settle one naming scheme. |
 | Positions | char offsets (Unicode scalar values) | Monaco uses 1-based line and column. Offsets are simpler and survive edits better; keep them, and keep `positionAt` and `offsetAt` as the bridge. |
 | Providers | Monaco's function names, offsets instead of ranges; a `CancellationToken` comes last in every call, and the LSP client turns it into `$/cancelRequest` | Done for 1.0. |
-| Diff editor | `createDiffEditor`, `RustacoDiffEditor` | Add keyboard commands for next and previous change. |
+| Diff editor | `createDiffEditor`, `RustacoDiffEditor`; Alt+F5 and Shift+Alt+F5 go to the next and previous change (`diffEditor.nextChange`, `diffEditor.previousChange`) | Done for 1.0. |
 
 ## Rust crates
 
 | Crate | Stable enough | Before freezing |
 |---|---|---|
-| `rustaco-core` | `TextModel`, `Cursors`, `Editor` commands, `ChangeSet`, `EditEvent`, `Decorations`, `Keymap`, `Snippet`, `diff` | `Editor::run` takes command ids as strings; a typed enum alongside would catch typos at compile time. Several fields are `pub` on structs that may grow (`Options`, `LanguageEditing`): mark them `#[non_exhaustive]`. |
-| `rustaco-view` | `View`, `Frame`, `Metrics`, `Styler` | `Frame` grows with each feature (minimap, sticky, zones); mark it `#[non_exhaustive]`. Text measurement is a fixed cell grid; a `TextMeasurer` trait for proportional fonts would change `Metrics`. |
+| `rustaco-core` | `TextModel`, `Cursors`, `Editor` commands, `ChangeSet`, `EditEvent`, `Decorations`, `Keymap`, `Snippet`, `diff` | `Editor::run` takes command ids as strings; a typed enum alongside would catch typos at compile time. `Options` and `LanguageEditing` are `#[non_exhaustive]` (start from `default()`); `rustaco_syntax::language_editing(id)` builds the latter from the catalog. |
+| `rustaco-view` | `View`, `Frame`, `Metrics`, `Styler` | `Frame` is `#[non_exhaustive]`. Text measurement is a fixed cell grid; a `TextMeasurer` trait for proportional fonts would change `Metrics`. |
 | `rustaco-syntax` | `Syntax`, `BackgroundSyntax`, `Theme`, catalog | Language packs are cargo features of this crate; publishing it pulls every grammar crate as an optional dependency, which is fine, but the browser build also depends on a patched `tree-sitter-language` (`vendor/`), which crates.io cannot carry. The patch has to land upstream, or the browser packs build from the repository only. |
 | `rustaco-lsp` | `LspClient`, request methods returning plain structs | Requests are blocking with a timeout; an async or callback form is needed for UI threads that must not wait. |
 | `rustaco-desktop` | `DesktopEditor` | Young: no gutter UI beyond line numbers, no widgets. Publish as 0.x after the other crates reach 1.0. |

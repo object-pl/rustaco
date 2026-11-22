@@ -86,3 +86,33 @@ test('a diff of two 100k-line files completes in the worker under a second @perf
   expect(await page.evaluate(() => window.bigDiffChanges)).toBe(1000);
   expect(ms).toBeLessThan(1000);
 });
+
+test('Alt+F5 and Shift+Alt+F5 step through the changes; addCommand binds host commands', async ({ page }) => {
+  await open(page, ORIGINAL, MODIFIED);
+  const line = () => page.evaluate(() => {
+    const e = window.diff.modifiedEditor;
+    return window.diff.modifiedModel.positionAt(e.core.selections()[1]).line;
+  });
+  await page.evaluate(() => {
+    const e = window.diff.modifiedEditor;
+    e.setSelections([{ anchor: 0, head: 0 }]);
+    e.focus();
+  });
+  await page.keyboard.press('Alt+F5');
+  expect(await line()).toBe(1);
+  await page.keyboard.press('Alt+F5');
+  expect(await line()).toBe(3);
+  await page.keyboard.press('Shift+Alt+F5');
+  expect(await line()).toBe(1);
+
+  const ran = await page.evaluate(() => {
+    const e = window.diff.modifiedEditor;
+    let n = 0;
+    const d = e.addCommand('host.count', () => { n++; });
+    e.runCommand('host.count');
+    d.dispose();
+    e.runCommand('host.count');
+    return n;
+  });
+  expect(ran).toBe(1);
+});

@@ -84,7 +84,10 @@ pub struct FrameLine {
     pub runs: Vec<TextRun>,
 }
 
+/// One laid-out frame. Grows with features (minimap, sticky lines, zones): read its fields,
+/// do not build it.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct Frame {
     pub gutter_width: f32,
     pub lines: Vec<FrameLine>,
