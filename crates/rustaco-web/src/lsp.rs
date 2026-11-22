@@ -53,6 +53,18 @@ pub struct LspSession {
     outbox: Vec<String>,
 }
 
+/// Drops null fields, so JS sees them as absent (`undefined`), as providers return them.
+fn strip_nulls(v: &mut Value) {
+    match v {
+        Value::Object(o) => {
+            o.retain(|_, x| !x.is_null());
+            o.values_mut().for_each(strip_nulls);
+        }
+        Value::Array(a) => a.iter_mut().for_each(strip_nulls),
+        _ => {}
+    }
+}
+
 fn r(range: Range<usize>) -> Value {
     json!({ "start": range.start, "end": range.end })
 }
@@ -422,7 +434,9 @@ impl LspSession {
         let Some(Ok(v)) = p.answer else { return "null".into() };
         let doc = self.docs.get(&p.doc).cloned();
         let m = model.inner.borrow();
-        self.decode(p.kind, doc.as_ref(), &m, &v).to_string()
+        let mut out = self.decode(p.kind, doc.as_ref(), &m, &v);
+        strip_nulls(&mut out);
+        out.to_string()
     }
 
     /// The result of `initialize` or a raw request, as JSON; the request is forgotten.

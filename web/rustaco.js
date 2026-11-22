@@ -1,6 +1,6 @@
 // DOM glue for the Rustaco editor. Rust draws and edits; this file forwards browser events.
 import init, {
-  Editor, Model, defineDecorationType as defineType, setBuiltinTheme, setThemeRules, styleId, widgetColors,
+  Editor, LspSession, Model, defineDecorationType as defineType, setBuiltinTheme, setThemeRules, styleId, widgetColors,
 } from './pkg/rustaco_web.js';
 import { SuggestController } from './suggest.js';
 import { Features } from './features.js';
@@ -8,6 +8,11 @@ import { onDidChangeProviders, providersFor } from './languages.js';
 import { WebGLText } from './webgl-text.js';
 
 export { languages, CompletionItemKind, SymbolKind, fuzzyScore, CancellationTokenSource } from './languages.js';
+
+/** The LSP client's protocol in wasm, for lsp.js (internal). */
+export async function lspSession() { await load(); return new LspSession(); }
+/** The same once the editor's wasm is loaded (any model exists). */
+export function lspSessionNow() { return new LspSession(); }
 
 const BLINK_MS = 530;
 /** Parsing time per frame; the rest of a long parse continues on later frames. */

@@ -1,12 +1,11 @@
-// A Language Server Protocol client for the browser. It talks JSON-RPC over a transport
-// (a WebSocket to a server bridge, or any object with `send` and `onMessage`), keeps attached
-// models in sync with incremental `didChange`, shows the server's diagnostics as squiggles,
-// and registers the editor's providers (languages.js) backed by LSP requests.
-//
-// Positions: the editor counts chars (code points), LSP counts UTF-16 units by default,
-// which is what JS strings count, so the conversion goes through each line's text.
+// A Language Server Protocol client for the browser. The protocol runs in the editor's wasm
+// (`LspSession`, built on rustaco-lsp's `Session`): it builds every message, keeps attached
+// models in sync with incremental `didChange`, converts positions in the encoding the server
+// chose, and decodes every answer into char offsets. This file carries the strings over a
+// transport (a WebSocket to a server bridge, or any object with `send` and `onMessage`),
+// keeps the promises, shows diagnostics as squiggles and registers the editor's providers.
 
-import { defineDecorationType, languages } from './rustaco.js';
+import { defineDecorationType, languages, lspSession, lspSessionNow } from './rustaco.js';
 
 /** A transport over a WebSocket carrying one JSON-RPC message per text frame. */
 export function webSocketTransport(url) {
@@ -22,42 +21,19 @@ export function webSocketTransport(url) {
   };
 }
 
+/** A session that never talked to a server: positions in UTF-16, LSP's default. */
+let utf16 = null;
+
 /** `{ line, character }` (UTF-16) of a char offset. */
 export function toPosition(model, offset) {
-  const { line, column } = model.positionAt(offset);
-  const text = model.getLineContent(line);
-  let character = 0;
-  let i = 0;
-  for (const c of text) {
-    if (i++ >= column) break;
-    character += c.length;
-  }
-  return { line, character };
+  utf16 ??= lspSessionNow();
+  return JSON.parse(utf16.toPosition(model.core, offset));
 }
 
 /** The char offset of an LSP position (UTF-16), clamped into the text. */
 export function toOffset(model, position) {
-  const line = Math.min(position.line, model.getLineCount() - 1);
-  const text = model.getLineContent(line);
-  let column = 0;
-  let units = 0;
-  for (const c of text) {
-    if (units >= position.character) break;
-    units += c.length;
-    column++;
-  }
-  return model.offsetAt({ line, column });
-}
-
-const toRange = (model, r) => ({ start: toOffset(model, r.start), end: toOffset(model, r.end) });
-const fromRange = (model, r) => ({ start: toPosition(model, r.start), end: toPosition(model, r.end) });
-
-/** Text of a MarkedString or MarkupContent: code in a ``` fence, markdown as is. */
-function markup(v) {
-  if (v == null) return '';
-  if (typeof v === 'string') return v;
-  if (v.language) return `\`\`\`${v.language}\n${v.value}\n\`\`\``;
-  return v.value ?? '';
+  utf16 ??= lspSessionNow();
+  return utf16.toOffset(model.core, JSON.stringify(position));
 }
 
 let diagnosticTypes = null;
@@ -77,102 +53,101 @@ async function diagnosticType(severity) {
  * uri)` opens a model on the server.
  */
 export async function connectLanguageServer({ transport, languageId, rootUri = null, onApplyEdit = null }) {
-  const client = new LspClient(transport, languageId, onApplyEdit);
+  const client = new LspClient(transport, languageId, onApplyEdit, await lspSession());
   await client.initialize(rootUri);
   client.registerProviders();
   return client;
 }
 
 export class LspClient {
-  constructor(transport, languageId, onApplyEdit) {
+  constructor(transport, languageId, onApplyEdit, session) {
     this.transport = transport;
     this.languageId = languageId;
     this.onApplyEdit = onApplyEdit;
-    this.nextId = 1;
+    this.session = session;
+    /** Requests waiting for an answer: id -> { resolve, reject, model }. */
     this.pending = new Map();
-    /** Attached models: model -> { uri, version, sent, diagnostics, collection, off }. */
+    /** Attached models: model -> { uri, handle, diagnostics, collection, off }. */
     this.docs = new Map();
     this.byUri = new Map();
     this.disposables = [];
-    transport.onMessage((text) => this.#receive(JSON.parse(text)));
+    transport.onMessage((text) => this.#receive(text));
+  }
+
+  /** Sends what the session queued. */
+  #flush() {
+    for (const m of this.session.take()) this.transport.send(m);
   }
 
   /**
-   * Sends a request. When `token` (from the editor's provider call) is cancelled first, the
-   * server gets `$/cancelRequest` and the promise resolves to null.
+   * Waits for request `id`. When `token` (from the editor's provider call) is cancelled
+   * first, the server gets `$/cancelRequest` and the promise resolves to null.
    */
-  request(method, params, token) {
-    const id = this.nextId++;
+  #wait(id, model, token) {
+    if (id < 0) return Promise.resolve(null);
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.transport.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+      this.pending.set(id, { resolve, reject, model });
+      this.#flush();
       token?.onCancellationRequested(() => {
         if (!this.pending.has(id)) return;
         this.pending.delete(id);
-        this.notify('$/cancelRequest', { id });
+        this.session.cancel(id);
+        this.#flush();
         resolve(null);
       });
     });
   }
 
-  notify(method, params) {
-    this.transport.send(JSON.stringify({ jsonrpc: '2.0', method, params }));
+  /** Asks the server about an attached model: `kind` is the editor feature (see LspSession.request). */
+  #ask(kind, model, token, a = 0, b = 0, text = undefined) {
+    const doc = this.docs.get(model);
+    if (!doc) return Promise.resolve(null);
+    return this.#wait(this.session.request(kind, doc.handle, model.core, a, b, text), model, token);
   }
 
-  #receive(msg) {
-    if (msg.id !== undefined && msg.method === undefined) {
-      const p = this.pending.get(msg.id);
-      this.pending.delete(msg.id);
-      if (msg.error) p?.reject(new Error(msg.error.message));
-      else p?.resolve(msg.result ?? null);
-      return;
+  /** Sends any request; resolves to the result as the server sent it. */
+  request(method, params, token) {
+    return this.#wait(this.session.requestRaw(method, JSON.stringify(params ?? null)), null, token);
+  }
+
+  notify(method, params) {
+    this.session.notify(method, JSON.stringify(params ?? null));
+    this.#flush();
+  }
+
+  #receive(text) {
+    const r = JSON.parse(this.session.receive(text));
+    if (r.type === 'response') {
+      const p = this.pending.get(r.id);
+      this.pending.delete(r.id);
+      if (r.error) {
+        this.session.resultRaw(r.id);
+        p?.reject(new Error(r.error));
+      } else if (p) {
+        p.resolve(JSON.parse(p.model ? this.session.result(r.id, p.model.core) : this.session.resultRaw(r.id)));
+      }
+    } else if (r.type === 'diagnostics') {
+      this.#diagnostics(r.uri);
+    } else if (r.type === 'applyEdit') {
+      const applied = this.applyWorkspaceEdit(r.edit);
+      this.session.respond(JSON.stringify(r.id), JSON.stringify({ applied }));
     }
-    if (msg.method === 'textDocument/publishDiagnostics') {
-      this.#diagnostics(msg.params);
-    } else if (msg.method === 'workspace/applyEdit') {
-      const applied = this.applyWorkspaceEdit(msg.params.edit);
-      this.transport.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { applied } }));
-    } else if (msg.id !== undefined) {
-      // Other requests (configuration, progress): an empty answer keeps the server going.
-      this.transport.send(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: null }));
-    }
+    this.#flush();
   }
 
   async initialize(rootUri) {
-    const result = await this.request('initialize', {
-      processId: null,
-      rootUri,
-      clientInfo: { name: 'rustaco' },
-      capabilities: {
-        general: { positionEncodings: ['utf-16'] },
-        textDocument: {
-          synchronization: { didSave: false },
-          hover: { contentFormat: ['markdown', 'plaintext'] },
-          completion: { completionItem: { snippetSupport: true, documentationFormat: ['markdown', 'plaintext'] }, contextSupport: true },
-          signatureHelp: { signatureInformation: { parameterInformation: { labelOffsetSupport: true } } },
-          definition: { linkSupport: true },
-          references: {}, documentHighlight: {}, formatting: {}, rename: {}, foldingRange: { lineFoldingOnly: true },
-          selectionRange: {}, codeLens: {}, inlayHint: {},
-          documentSymbol: { hierarchicalDocumentSymbolSupport: true },
-          codeAction: { codeActionLiteralSupport: { codeActionKind: { valueSet: ['', 'quickfix', 'refactor', 'source'] } } },
-          semanticTokens: { requests: { full: true }, tokenTypes: [], tokenModifiers: [], formats: ['relative'] },
-          publishDiagnostics: {},
-        },
-        workspace: { applyEdit: true, workspaceEdit: { documentChanges: true } },
-      },
-    });
-    this.capabilities = result?.capabilities ?? {};
-    this.notify('initialized', {});
+    this.capabilities = (await this.#wait(this.session.initialize(rootUri), null)) ?? {};
     return this.capabilities;
   }
 
   /** Opens `model` on the server as `uri` and keeps it in sync. */
   attach(model, uri) {
-    const doc = { uri, version: 1, sent: model.core.version(), collection: model.createDecorationsCollection() };
+    const handle = this.session.open(model.core, uri, this.languageId);
+    const doc = { uri, handle, collection: model.createDecorationsCollection() };
     this.docs.set(model, doc);
     this.byUri.set(uri, model);
-    this.notify('textDocument/didOpen', { textDocument: { uri, languageId: this.languageId, version: 1, text: model.getValue() } });
     doc.off = model.onDidChangeContent(() => this.sync(model));
+    this.#flush();
     return () => this.detach(model);
   }
 
@@ -181,49 +156,39 @@ export class LspClient {
     if (!doc) return;
     doc.off?.();
     doc.collection.clear();
-    this.notify('textDocument/didClose', { textDocument: { uri: doc.uri } });
+    this.session.close(doc.handle);
+    this.#flush();
     this.docs.delete(model);
     this.byUri.delete(doc.uri);
   }
 
-  /** Sends the model's edits since the last sync: incremental when the server takes them. */
+  /** Sends the model's edits since the last sync. */
   sync(model) {
     const doc = this.docs.get(model);
     if (!doc) return null;
-    const v = model.core.version();
-    if (v === doc.sent) return doc;
-    const kind = typeof this.capabilities.textDocumentSync === 'number'
-      ? this.capabilities.textDocumentSync : this.capabilities.textDocumentSync?.change ?? 1;
-    const batch = model.core.editsSince(doc.sent);
-    let changes;
-    if (kind === 2 && !batch.stale()) {
-      const n = batch.utf16();
-      const texts = batch.texts();
-      changes = texts.map((text, i) => ({
-        range: { start: { line: n[i * 4], character: n[i * 4 + 1] }, end: { line: n[i * 4 + 2], character: n[i * 4 + 3] } },
-        text,
-      }));
-    } else {
-      changes = [{ text: model.getValue() }];
-    }
-    batch.free();
-    doc.sent = v;
-    doc.version++;
-    this.notify('textDocument/didChange', { textDocument: { uri: doc.uri, version: doc.version }, contentChanges: changes });
+    this.session.sync(doc.handle, model.core);
+    this.#flush();
     return doc;
   }
 
-  async #diagnostics({ uri, diagnostics }) {
+  async #diagnostics(uri) {
     const model = this.byUri.get(uri);
     const doc = model && this.docs.get(model);
     if (!doc) return;
-    doc.diagnostics = diagnostics.map((d) => ({ ...d, offsets: toRange(model, d.range) }));
+    doc.diagnostics = JSON.parse(this.session.diagnostics(uri, model.core))
+      .map((d) => ({ message: d.message, severity: d.severity, offsets: { start: d.start, end: d.end } }));
     const list = [];
     for (const d of doc.diagnostics) {
       const r = d.offsets.start === d.offsets.end ? { start: d.offsets.start, end: d.offsets.start + 1 } : d.offsets;
       list.push({ start: r.start, end: r.end, type: await diagnosticType(d.severity) });
     }
     doc.collection.set(list);
+  }
+
+  /** The char range of an LSP range in `model`. */
+  #range(model, lspRange) {
+    const [start, end] = this.session.toRange(JSON.stringify(lspRange), model.core);
+    return { start, end };
   }
 
   /** Applies a WorkspaceEdit to attached models; returns whether every document was attached. */
@@ -240,21 +205,23 @@ export class LspClient {
         if (this.onApplyEdit) this.onApplyEdit(uri, edits);
         continue;
       }
-      editor.features.applyEdits(edits.map((e) => ({ range: toRange(model, e.range), text: e.newText })));
+      editor.features.applyEdits(edits.map((e) => ({ range: this.#range(model, e.range), text: e.newText })));
     }
     return all;
   }
 
-  /** `{ textDocument, position }` for a request about `offset`, after syncing. */
-  #at(model, offset) {
-    const doc = this.sync(model);
-    if (!doc) return null;
-    return { textDocument: { uri: doc.uri }, position: toPosition(model, offset) };
+  /** Locations: ranges in `model` as they are, the rest with their model when attached. */
+  #locations(model, list) {
+    return (list ?? []).map((l) => {
+      if (!('uri' in l)) return l;
+      const target = this.byUri.get(l.uri);
+      if (target === model) return this.#range(model, l.lspRange);
+      return { model: target ?? null, uri: l.uri, lspRange: l.lspRange, range: target ? this.#range(target, l.lspRange) : null };
+    });
   }
 
-  #doc(model) {
-    const doc = this.sync(model);
-    return doc ? { textDocument: { uri: doc.uri } } : null;
+  #execute(command) {
+    if (command) this.request('workspace/executeCommand', { command: command.command, arguments: command.arguments ?? [] });
   }
 
   /** Registers the editor providers the server's capabilities allow. */
@@ -262,189 +229,82 @@ export class LspClient {
     const c = this.capabilities;
     const id = this.languageId;
     const reg = (cap, register) => { if (c[cap]) this.disposables.push(register()); };
-    const locations = (model, result) => {
-      const list = Array.isArray(result) ? result : result ? [result] : [];
-      return list.map((l) => {
-        const uri = l.uri ?? l.targetUri;
-        const r = l.range ?? l.targetSelectionRange;
-        const target = this.byUri.get(uri);
-        return target === model ? toRange(model, r) : { model: target ?? null, uri, lspRange: r, range: target ? toRange(target, r) : null };
-      });
-    };
+    const diagnosticsAt = (model, start, end) => (this.docs.get(model)?.diagnostics ?? [])
+      .filter((d) => d.offsets.start <= end && start <= d.offsets.end);
 
     reg('hoverProvider', () => languages.registerHoverProvider(id, {
       provideHover: async (model, offset, token) => {
-        const params = this.#at(model, offset);
-        const diagnostics = (this.docs.get(model)?.diagnostics ?? []).filter((d) => d.offsets.start <= offset && offset <= d.offsets.end);
-        const result = params ? await this.request('textDocument/hover', params, token) : null;
-        const contents = [...diagnostics.map((d) => d.message)];
-        if (result) contents.push(...(Array.isArray(result.contents) ? result.contents : [result.contents]).map(markup));
-        if (!contents.length) return null;
-        return { contents, range: result?.range ? toRange(model, result.range) : undefined };
+        const result = await this.#ask('hover', model, token, offset);
+        const contents = [...diagnosticsAt(model, offset, offset).map((d) => d.message), ...(result?.contents ?? [])];
+        return contents.length ? { contents, range: result?.range } : null;
       },
     }));
     reg('completionProvider', () => languages.registerCompletionItemProvider(id, {
       triggerCharacters: c.completionProvider.triggerCharacters ?? [],
-      provideCompletionItems: async (model, offset, context, token) => {
-        const params = this.#at(model, offset);
-        if (!params) return [];
-        params.context = context.triggerCharacter ? { triggerKind: 2, triggerCharacter: context.triggerCharacter } : { triggerKind: 1 };
-        const result = await this.request('textDocument/completion', params, token);
-        const items = Array.isArray(result) ? result : result?.items ?? [];
-        return items.map((item) => {
-          const edit = item.textEdit;
-          const range = edit ? toRange(model, edit.range ?? edit.replace) : undefined;
-          return {
-            label: item.label,
-            kind: item.kind ? item.kind - 1 : undefined,
-            detail: item.detail,
-            documentation: markup(item.documentation),
-            insertText: edit?.newText ?? item.insertText ?? item.label,
-            isSnippet: item.insertTextFormat === 2,
-            sortText: item.sortText,
-            filterText: item.filterText,
-            range,
-          };
-        });
-      },
+      provideCompletionItems: async (model, offset, context, token) =>
+        (await this.#ask('completion', model, token, offset, 0, context.triggerCharacter)) ?? [],
     }));
     reg('signatureHelpProvider', () => languages.registerSignatureHelpProvider(id, {
       signatureHelpTriggerCharacters: c.signatureHelpProvider.triggerCharacters ?? ['(', ','],
-      provideSignatureHelp: async (model, offset, context, token) => {
-        const params = this.#at(model, offset);
-        const result = params ? await this.request('textDocument/signatureHelp', params, token) : null;
-        if (!result?.signatures?.length) return null;
-        return {
-          signatures: result.signatures.map((s) => ({
-            label: s.label,
-            documentation: markup(s.documentation),
-            parameters: (s.parameters ?? []).map((p) => ({ label: Array.isArray(p.label) ? s.label.slice(p.label[0], p.label[1]) : p.label })),
-          })),
-          activeSignature: result.activeSignature ?? 0,
-          activeParameter: result.activeParameter ?? 0,
-        };
-      },
+      provideSignatureHelp: (model, offset, context, token) => this.#ask('signatureHelp', model, token, offset),
     }));
     reg('definitionProvider', () => languages.registerDefinitionProvider(id, {
-      provideDefinition: async (model, offset, token) => locations(model, await this.request('textDocument/definition', this.#at(model, offset), token)),
+      provideDefinition: async (model, offset, token) => this.#locations(model, await this.#ask('definition', model, token, offset)),
     }));
     reg('referencesProvider', () => languages.registerReferenceProvider(id, {
-      provideReferences: async (model, offset, context, token) => {
-        const params = { ...this.#at(model, offset), context: { includeDeclaration: true } };
-        return locations(model, await this.request('textDocument/references', params, token)).filter((r) => 'start' in r);
-      },
+      provideReferences: async (model, offset, context, token) =>
+        this.#locations(model, await this.#ask('references', model, token, offset)).filter((r) => 'start' in r),
     }));
     reg('documentHighlightProvider', () => languages.registerDocumentHighlightProvider(id, {
-      provideDocumentHighlights: async (model, offset, token) => {
-        const result = await this.request('textDocument/documentHighlight', this.#at(model, offset), token);
-        return (result ?? []).map((h) => toRange(model, h.range));
-      },
+      provideDocumentHighlights: async (model, offset, token) => (await this.#ask('documentHighlight', model, token, offset)) ?? [],
     }));
     reg('renameProvider', () => languages.registerRenameProvider(id, {
       provideRenameEdits: async (model, offset, newName, token) => {
-        const result = await this.request('textDocument/rename', { ...this.#at(model, offset), newName }, token);
+        const result = await this.#ask('rename', model, token, offset, 0, newName);
         // Edits to this model come back for the editor; other documents go to the host.
-        const own = [];
-        const others = { changes: {} };
-        const add = (uri, edits) => {
-          if (this.byUri.get(uri) === model) own.push(...edits.map((e) => ({ range: toRange(model, e.range), text: e.newText })));
-          else others.changes[uri] = edits;
-        };
-        for (const [uri, edits] of Object.entries(result?.changes ?? {})) add(uri, edits);
-        for (const ch of result?.documentChanges ?? []) if (ch.textDocument) add(ch.textDocument.uri, ch.edits);
-        if (Object.keys(others.changes).length) this.applyWorkspaceEdit(others);
-        return own;
+        if (result?.others && Object.keys(result.others).length) this.applyWorkspaceEdit({ changes: result.others });
+        return result?.own ?? [];
       },
     }));
     reg('documentFormattingProvider', () => languages.registerDocumentFormattingEditProvider(id, {
-      provideDocumentFormattingEdits: async (model, options, token) => {
-        const result = await this.request('textDocument/formatting', { ...this.#doc(model), options }, token);
-        return (result ?? []).map((e) => ({ range: toRange(model, e.range), text: e.newText }));
-      },
+      provideDocumentFormattingEdits: async (model, options, token) =>
+        (await this.#ask('formatting', model, token, options?.tabSize ?? 4, options?.insertSpaces === false ? 0 : 1)) ?? [],
     }));
     reg('codeActionProvider', () => languages.registerCodeActionProvider(id, {
       provideCodeActions: async (model, range, token) => {
-        const diagnostics = (this.docs.get(model)?.diagnostics ?? []).filter((d) => d.offsets.start <= range.end && range.start <= d.offsets.end);
-        const result = await this.request('textDocument/codeAction', {
-          ...this.#doc(model), range: fromRange(model, range), context: { diagnostics: diagnostics.map(({ offsets, ...d }) => d) },
-        }, token);
+        const result = await this.#ask('codeAction', model, token, range.start, range.end);
         return (result ?? []).map((a) => ({
           title: a.title,
           edits: undefined,
           command: () => {
             if (a.edit) this.applyWorkspaceEdit(a.edit);
-            const cmd = typeof a.command === 'string' ? a : a.command;
-            if (cmd) this.request('workspace/executeCommand', { command: cmd.command, arguments: cmd.arguments ?? [] });
+            this.#execute(a.command);
           },
         }));
       },
     }));
     reg('foldingRangeProvider', () => languages.registerFoldingRangeProvider(id, {
-      provideFoldingRanges: async (model) => {
-        const result = await this.request('textDocument/foldingRange', this.#doc(model));
-        return (result ?? []).map((f) => ({ start: f.startLine, end: f.endLine }));
-      },
+      provideFoldingRanges: async (model) => (await this.#ask('foldingRange', model)) ?? [],
     }));
     reg('selectionRangeProvider', () => languages.registerSelectionRangeProvider(id, {
-      provideSelectionRanges: async (model, offset) => {
-        const result = await this.request('textDocument/selectionRange', { ...this.#doc(model), positions: [toPosition(model, offset)] });
-        const out = [];
-        for (let n = result?.[0]; n; n = n.parent) out.push(toRange(model, n.range));
-        return out;
-      },
+      provideSelectionRanges: async (model, offset) => (await this.#ask('selectionRange', model, null, offset)) ?? [],
     }));
     reg('documentSymbolProvider', () => languages.registerDocumentSymbolProvider(id, {
-      provideDocumentSymbols: async (model) => {
-        const result = await this.request('textDocument/documentSymbol', this.#doc(model));
-        const convert = (s) => ({
-          name: s.name,
-          kind: (s.kind ?? 13) - 1,
-          detail: s.detail,
-          range: toRange(model, s.range ?? s.location.range),
-          selectionRange: toRange(model, s.selectionRange ?? s.range ?? s.location.range),
-          children: (s.children ?? []).map(convert),
-        });
-        return (result ?? []).map(convert);
-      },
+      provideDocumentSymbols: async (model) => (await this.#ask('documentSymbol', model)) ?? [],
     }));
     reg('codeLensProvider', () => languages.registerCodeLensProvider(id, {
-      provideCodeLenses: async (model, token) => {
-        const result = await this.request('textDocument/codeLens', this.#doc(model), token);
-        return (result ?? []).filter((l) => l.command).map((l) => ({
-          line: l.range.start.line,
-          title: l.command.title,
-          command: () => this.request('workspace/executeCommand', { command: l.command.command, arguments: l.command.arguments ?? [] }),
-        }));
-      },
+      provideCodeLenses: async (model, token) => ((await this.#ask('codeLens', model, token)) ?? []).map((l) => ({
+        line: l.line,
+        title: l.title,
+        command: () => this.#execute(l.command),
+      })),
     }));
     reg('inlayHintProvider', () => languages.registerInlayHintsProvider(id, {
-      provideInlayHints: async (model, range, token) => {
-        const result = await this.request('textDocument/inlayHint', { ...this.#doc(model), range: fromRange(model, range) }, token);
-        return (result ?? []).map((h) => ({
-          offset: toOffset(model, h.position),
-          label: typeof h.label === 'string' ? h.label : h.label.map((p) => p.value).join(''),
-        }));
-      },
+      provideInlayHints: async (model, range, token) => (await this.#ask('inlayHint', model, token, range.start, range.end)) ?? [],
     }));
-    reg('semanticTokensProvider', () => {
-      const legend = c.semanticTokensProvider.legend ?? { tokenTypes: [] };
-      return languages.registerDocumentSemanticTokensProvider(id, {
-        provideSemanticTokens: async (model, token) => {
-          const result = await this.request('textDocument/semanticTokens/full', this.#doc(model), token);
-          const data = result?.data ?? [];
-          const out = [];
-          let line = 0;
-          let start = 0;
-          for (let i = 0; i + 4 < data.length; i += 5) {
-            if (data[i] > 0) { line += data[i]; start = data[i + 1]; } else start += data[i + 1];
-            const s = toOffset(model, { line, character: start });
-            const e = toOffset(model, { line, character: start + data[i + 2] });
-            out.push({ start: s, end: e, style: SEMANTIC_STYLES[legend.tokenTypes[data[i + 3]]] ?? 'variable' });
-          }
-          return out;
-        },
-      });
-    });
+    reg('semanticTokensProvider', () => languages.registerDocumentSemanticTokensProvider(id, {
+      provideSemanticTokens: async (model, token) => (await this.#ask('semanticTokens', model, token)) ?? [],
+    }));
   }
 
   /** `shutdown`, `exit`, and the providers go away. */
@@ -455,12 +315,3 @@ export class LspClient {
     this.notify('exit', null);
   }
 }
-
-/** LSP semantic token types to the editor's highlight names. */
-const SEMANTIC_STYLES = {
-  namespace: 'module', type: 'type', class: 'type', enum: 'type', interface: 'type', struct: 'type',
-  typeParameter: 'type', parameter: 'variable.parameter', variable: 'variable', property: 'property',
-  enumMember: 'constant', event: 'property', function: 'function', method: 'function.method', macro: 'function.macro',
-  keyword: 'keyword', modifier: 'keyword', comment: 'comment', string: 'string', number: 'number',
-  regexp: 'string.special', operator: 'operator', decorator: 'attribute', label: 'label',
-};

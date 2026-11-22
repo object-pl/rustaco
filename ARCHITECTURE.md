@@ -9,7 +9,7 @@
 | `rustaco-web` | v0 | `wasm-bindgen` frontend, without tree-sitter. Frames are painted through a `Painter` trait (`src/paint.rs`) with two backends: WebGL2, the default, where Rust turns the whole frame (rectangles and glyphs from an atlas texture, back to front) into one buffer that JS reads from WASM memory and draws with one call, and the 2D canvas, used without WebGL2 or after the context is lost. `web/rustaco.js` forwards DOM events (keyboard through a hidden `textarea`, so IME and dead keys work), loads language modules and passes edits and highlights between them and the editor. |
 | `rustaco-syntax` | v0 | Language catalog (detection, comment and bracket configuration) and themes in the TextMate scope model, always available. Behind the `engine` feature: incremental tree-sitter parsing driven by `EditEvent`, resumable parsing within a time budget, highlighting of requested lines, 18 grammars. |
 | `rustaco-syntax-wasm` | v0 | Browser language module: one WASM file per language pack, loaded on first use. Keeps its own copy of the text, takes edits and returns highlights as plain data. |
-| `rustaco-lsp` | v0 | LSP client over any byte streams (a server's stdio): handshake with position encoding negotiation, incremental sync from edit events, every editor feature's request mapped to char offsets. The browser has its own client in `web/lsp.js` over WebSocket. The server side: the `LanguageService` trait (every feature in char offsets, defaults answering nothing) and `LspServer`, which serves an implementation without doing I/O itself (`handle_json` for a worker, `serve_stdio` for a program). |
+| `rustaco-lsp` | v0 | LSP client over any byte streams (a server's stdio): handshake with position encoding negotiation, incremental sync from edit events, every editor feature's request mapped to char offsets. The client's protocol is `Session` (no I/O); `LspClient` runs it over a blocking connection on the desktop, and the browser runs it in the editor's wasm (`LspSession`), with `web/lsp.js` carrying the strings and registering providers. The server side: the `LanguageService` trait (every feature in char offsets, defaults answering nothing) and `LspServer`, which serves an implementation without doing I/O itself (`handle_json` for a worker, `serve_stdio` for a program). |
 | diff | v0 | `rustaco_core::diff` (Myers line diff with a char-level pass, moves, a time budget) and `web/diff.js` (side-by-side and inline views). |
 | `rustaco-markdown` | later | Markdown rendering, postponed until after the first release. |
 | `rustaco-desktop` | v0 | Native frontend: `winit` events, the same `Frame` drawn in software into a pixel buffer with glyphs from a system monospace font (`fontdb`, `fontdue`), clipboard through `arboard`, IME through winit, highlighting on a background thread. `examples/editor.rs` opens and saves files and talks to an LSP server. |
@@ -31,7 +31,7 @@
 
 ## Syntax highlighting in the browser
 
-The editor module contains no parser. Each language pack is a separate WASM module with the tree-sitter runtime and its grammars (`web/pkg/syntax-<pack>/`), loaded the first time a model uses one of its languages; a page that edits only Rust never downloads the C++ grammar. Measured gzipped sizes: editor 230 KB, language modules 290 to 690 KB (JSON smallest, C# largest). Twenty grammars in one module would be about 2 MB.
+The editor module contains no parser. Each language pack is a separate WASM module with the tree-sitter runtime and its grammars (`web/pkg/syntax-<pack>/`), loaded the first time a model uses one of its languages; a page that edits only Rust never downloads the C++ grammar. Measured gzipped sizes: editor 345 KB, language modules 290 to 690 KB (JSON smallest, C# largest). Twenty grammars in one module would be about 2 MB.
 
 The language module receives edits as data (`Model.editsSince`: nine numbers per edit plus the inserted text) and returns highlights as data (quads of line, start column, end column, style id). No shared memory and no callbacks.
 
@@ -50,7 +50,7 @@ Measured in Chromium with the release WASM build on a 1,000,000-line file (54 MB
 - with highlighting in the worker, a keystroke in a 10 MB Rust file while a search for a word with 20,000 matches stays active: 0.7 ms in Chromium, 0.8 ms in WebKit, 1.3 ms in Firefox (median of batches; nearly all of it is drawing the frame);
 - a scroll frame: under 0.1 ms.
 
-Budgets (checked by `scripts/check-size.sh`): the editor module under 1 MB gzipped (now 230 KB), each language module under 700 KB gzipped. SQL's tree-sitter grammar compiles to 1.2 MB and is left out of the browser build.
+Budgets (checked by `scripts/check-size.sh`): the editor module under 1 MB gzipped (now 345 KB with the LSP client), each language module under 700 KB gzipped. SQL's tree-sitter grammar compiles to 1.2 MB and is left out of the browser build.
 
 LSP will run outside the input path.
 

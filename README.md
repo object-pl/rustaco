@@ -4,7 +4,7 @@
 
 A code editor component written in Rust, MIT-licensed. It runs in the browser (WASM) and in native applications on one shared text core. Its feature scope matches Monaco: multiple cursors, syntax highlighting, LSP.
 
-Status: early. Version 0.2.0 is on crates.io (`rustaco-core`, `rustaco-view`, `rustaco-syntax`, `rustaco-lsp`, `rustaco-desktop`) and npm (`rustaco`). The browser editor draws with WebGL2 (2D canvas as fallback) and works: highlighting for 20 languages (17 through tree-sitter, 3 through TextMate grammars), multiple cursors, folding, word wrap, minimap, sticky scroll, find and replace, decorations, IME input, a screen reader mirror, parsing and search in a Web Worker, snippets, and language features from JS providers (completion, hover, parameter hints, go to definition, references, rename, formatting, code actions, code lens, semantic tokens, inlay hints; `web/providers.html` shows a toy language built only from them). An LSP client works through `rustaco-lsp` (Rust, stdio) and `web/lsp.js` (browser, WebSocket); a diff editor works side by side and inline (`web/diff.html`); a native frontend draws the same frames in a winit window (`cargo run -p rustaco-desktop --example editor --release -- <file>`); the plan is in ROADMAP.md.
+Status: early. Version 0.2.0 is on crates.io (`rustaco-core`, `rustaco-view`, `rustaco-syntax`, `rustaco-lsp`, `rustaco-desktop`) and npm (`rustaco`). The browser editor draws with WebGL2 (2D canvas as fallback) and works: highlighting for 20 languages (17 through tree-sitter, 3 through TextMate grammars), multiple cursors, folding, word wrap, minimap, sticky scroll, find and replace, decorations, IME input, a screen reader mirror, parsing and search in a Web Worker, snippets, and language features from JS providers (completion, hover, parameter hints, go to definition, references, rename, formatting, code actions, code lens, semantic tokens, inlay hints; `web/providers.html` shows a toy language built only from them). An LSP client in Rust (`rustaco-lsp`) works over stdio on the desktop and inside the editor's wasm in the browser (`web/lsp.js` carries it over a WebSocket); a diff editor works side by side and inline (`web/diff.html`); a native frontend draws the same frames in a winit window (`cargo run -p rustaco-desktop --example editor --release -- <file>`); the plan is in ROADMAP.md.
 
 In a web page, from npm (`npm install rustaco`) or after `./scripts/pack-web.sh` (the package lands in `target/npm/`):
 
@@ -21,7 +21,7 @@ const editor = await createEditor(document.getElementById('editor'), {
 editor.onDidChangeContent(() => console.log(editor.getValue()));
 ```
 
-The editor module is about 230 KB gzipped; each language module (290 to 690 KB) loads the first time a model uses that language. The page needs `'wasm-unsafe-eval'` in `script-src` when it sets a Content Security Policy; inline scripts and styles are not needed. Types for the API are in `web/rustaco.d.ts`.
+The editor module is about 345 KB gzipped; each language module (290 to 690 KB) loads the first time a model uses that language. The page needs `'wasm-unsafe-eval'` in `script-src` when it sets a Content Security Policy; inline scripts and styles are not needed. Types for the API are in `web/rustaco.d.ts`.
 
 ```
 cargo test

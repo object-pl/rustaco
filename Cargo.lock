@@ -1673,8 +1673,10 @@ version = "0.2.0"
 dependencies = [
  "js-sys",
  "rustaco-core",
+ "rustaco-lsp",
  "rustaco-syntax",
  "rustaco-view",
+ "serde_json",
  "wasm-bindgen",
  "web-sys",
 ]
