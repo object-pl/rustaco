@@ -56,6 +56,18 @@ Measured on DESKTOP-MZ1 (GeForce GTX 1660) with `tests/bench-monaco/run.mjs`, th
 
 WebGL was the fastest or level with the fastest in both browsers, and it became the default; the DOM layer (one `div` per row, rows matched by their HTML so a keystroke rewrites one) was no faster than the canvas and was dropped. Runs vary by about 1 ms (Monaco ranged from 4.9 to 9.2 ms in Chromium), so smaller differences mean nothing. Playwright's WebKit on Windows gave no usable numbers: its probe baseline was noisier than the typing, and its frame latency is quantised to whole frames. Safari needs a Mac.
 
+After the text layer, the whole frame moved to WebGL (backgrounds, selections, gutter, minimap, scrollbars: one buffer, one draw call). Same machine and method, three runs, medians:
+
+| Main thread per keystroke | Rustaco, WebGL frame | Rustaco, canvas | Monaco |
+|---|---|---|---|
+| Chromium task time, 5,000 lines | 5.3 ms | 8.0 ms | 6.2 ms |
+| Chromium task time, 100,000 lines | 5.4 ms | 8.5 ms | 7.4 ms |
+| Firefox probe, 5,000 lines | 5.8 ms | 7.1 ms | 12.2 ms |
+| Firefox probe, 100,000 lines | 2.8 ms | 5.4 ms | 10.3 ms |
+| Chromium, keydown to end of frame, 100,000 lines | 7.6 ms | 16.1 ms | 14.0 ms |
+
+The section below is the earlier comparison, with the canvas renderer.
+
 ## Against Monaco
 
 Measured on a second machine (DESKTOP-MZ1, Windows) with `tests/bench-monaco/run.mjs`: Monaco 0.x from npm and Rustaco, each in its own page in the same headless Chromium 159, on the same synthetic Rust files, with the caret in the middle and 60 keystrokes 40 ms apart. Rustaco parses in its worker; Monaco tokenizes with its Monarch grammar on the main thread. Two runs:
