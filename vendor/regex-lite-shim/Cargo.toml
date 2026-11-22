@@ -1,0 +1,19 @@
+[package]
+# Stands in for `regex` in this workspace (see vendor/README.md): tree-sitter uses it only to
+# evaluate `#match?` predicates in queries, and the full crate's Unicode tables made up most
+# of every browser language module.
+name = "regex"
+version = "1.13.2"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[dependencies]
+regex-lite = "0.1"
+
+[features]
+# The features tree-sitter asks for; none changes anything here.
+default = ["std"]
+std = []
+perf = []
+unicode = []

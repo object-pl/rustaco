@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# Patched copies of dependencies, built through [patch.crates-io] below.
+exclude = ["vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -28,3 +30,4 @@ strip = true
 
 [patch.crates-io]
 tree-sitter-language = { path = "vendor/tree-sitter-language" }
+regex = { path = "vendor/regex-lite-shim" }
