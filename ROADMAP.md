@@ -82,6 +82,7 @@ Phase 2 summary:
 | D3 | Background work in the browser: Web Workers with message passing, or WASM threads? | Workers with message passing. WASM threads need `SharedArrayBuffer`, so the host page must be cross-origin isolated, which many embedders cannot do. | Phases 2, 7, 10 |
 | D4 | Right-to-left text and mobile (touch, virtual keyboards): in scope for the first release? | Out of scope. The text measurement layer from phase 5 is designed so bidi can be added later. | Phases 5, 6 |
 | D5 | Desktop text stack | `winit` + `wgpu` + `parley` (shaping, font fallback, bidi) + glyph atlas, AccessKit for accessibility. | Phase 11 |
+| D6 | Browser text renderer | Decided 2026-11-22: WebGL2 with a glyph atlas, the 2D canvas as fallback. Measured against the canvas and DOM rows (`docs/performance.md`, text layer section). | Phase 6 |
 
 Markdown rendering is postponed; see "Later" at the end.
 

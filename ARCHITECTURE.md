@@ -6,7 +6,7 @@
 |---|---|---|
 | `rustaco-core` | v0 | `TextModel` (rope buffer, version, undo history, change log) shared by several editors, per-editor `Cursors`, editing commands through `Editor`, `Document` for the single-editor case. Multi-cursor selections, change sets, undo grouping, word movement, clipboard, edit events. No UI, no I/O, builds for `wasm32-unknown-unknown`. |
 | `rustaco-view` | v0 | Renderer-agnostic layout: viewport, scrolling, visual columns with tabs and wide chars, hit testing, display list (text runs, carets, selection rects). Lays out visible lines and visible columns only. |
-| `rustaco-web` | v0 | `wasm-bindgen` frontend drawing on a 2D canvas, without tree-sitter. `web/rustaco.js` forwards DOM events (keyboard through a hidden `textarea`, so IME and dead keys work), loads language modules and passes edits and highlights between them and the editor. |
+| `rustaco-web` | v0 | `wasm-bindgen` frontend, without tree-sitter. Text is drawn with WebGL2 (glyph atlas, instances laid out in Rust and read by JS from WASM memory, one draw call), between a 2D canvas for what lies under the text and a 2D overlay canvas for carets, gutter and scrollbars; without WebGL2 the text goes on the base canvas. `web/rustaco.js` forwards DOM events (keyboard through a hidden `textarea`, so IME and dead keys work), loads language modules and passes edits and highlights between them and the editor. |
 | `rustaco-syntax` | v0 | Language catalog (detection, comment and bracket configuration) and themes in the TextMate scope model, always available. Behind the `engine` feature: incremental tree-sitter parsing driven by `EditEvent`, resumable parsing within a time budget, highlighting of requested lines, 18 grammars. |
 | `rustaco-syntax-wasm` | v0 | Browser language module: one WASM file per language pack, loaded on first use. Keeps its own copy of the text, takes edits and returns highlights as plain data. |
 | `rustaco-lsp` | v0 | LSP client over any byte streams (a server's stdio): handshake with position encoding negotiation, incremental sync from edit events, every editor feature's request mapped to char offsets. The browser has its own client in `web/lsp.js` over WebSocket. |
@@ -58,7 +58,8 @@ LSP will run outside the input path.
 
 - Cursor movement steps by Unicode scalar, not grapheme cluster. Emoji with ZWJ and combining marks need `unicode-segmentation`.
 - Goal columns for vertical movement count chars, not visual cells.
-- Wide chars are positioned at two cells, but the canvas draws them with the font's own advance, so a run containing CJK text can drift.
+- Wide chars are positioned at two cells; a glyph wider or narrower than its cells overlaps or leaves a gap, but the text after it stays on the grid.
+- WebGL glyphs are rasterised white and tinted, so dark text on a light theme comes out slightly bolder than the canvas draws it (browsers tune text masks per colour).
 - Missing editing features: line operations (move, duplicate, comment), find/replace, auto-closing brackets, outdent (Shift+Tab), word wrap, folding.
 - The web frontend has no draggable scrollbar, no mouse auto-scroll outside the canvas and no accessibility layer for screen readers yet.
 

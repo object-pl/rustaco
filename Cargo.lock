@@ -1680,7 +1680,6 @@ dependencies = [
  "rustaco-core",
  "rustaco-syntax",
  "rustaco-view",
- "unicode-width",
  "wasm-bindgen",
  "web-sys",
 ]

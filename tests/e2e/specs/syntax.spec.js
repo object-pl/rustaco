@@ -29,7 +29,7 @@ async function colorAt(page, offset) {
     e.core.render(false);
     const x = e.core.caret_x(), y = e.core.caret_y(), h = e.core.line_height();
     e.setSelections(sels);
-    const ctx = e.canvas.getContext('2d');
+    const ctx = e.snapshot().getContext('2d');
     const dpr = window.devicePixelRatio || 1;
     let best = -1, color = null;
     for (let dx = 1; dx < 14; dx++) for (let dy = 3; dy < h - 3; dy++) {
@@ -171,7 +171,7 @@ test('themes change the editor surface and token colours', async ({ page }) => {
   const background = () => page.evaluate(() => {
     const e = window.editor;
     e.core.render(false);
-    const d = e.canvas.getContext('2d').getImageData(e.canvas.width - 40, e.canvas.height - 40, 1, 1).data;
+    const d = e.snapshot().getContext('2d').getImageData(e.canvas.width - 40, e.canvas.height - 40, 1, 1).data;
     return `${d[0]},${d[1]},${d[2]}`;
   });
   expect(await background()).toBe('30,30,30');
@@ -185,7 +185,10 @@ test('themes change the editor surface and token colours', async ({ page }) => {
     tokenColors: [{ scope: 'keyword', settings: { foreground: '#ff0000' } }],
   }));
   expect(await background()).toBe('16,32,48');
-  expect(await colorAt(page, 0)).toBe('255,0,0');
+  // Glyph coverage from the WebGL atlas tops out a step below full, so allow one or two.
+  const [r, g, b] = (await colorAt(page, 0)).split(',').map(Number);
+  expect(r).toBeGreaterThanOrEqual(252);
+  expect(g + b).toBeLessThanOrEqual(4);
   await page.evaluate(() => window.rustacoSetTheme('dark'));
 });
 
@@ -240,7 +243,7 @@ test('rulers and indentation guides are drawn', async ({ page }) => {
     const gutter = e.core.caret_x(); // caret at offset 0 sits at the start of the text area
     const cw = (() => { e.setSelections([{ anchor: 1, head: 1 }]); e.core.render(false); return e.core.caret_x() - gutter; })();
     const x = Math.floor((gutter + 20 * cw) * dpr);
-    const d = e.canvas.getContext('2d').getImageData(x, Math.round(200 * dpr), 1, 1).data;
+    const d = e.snapshot().getContext('2d').getImageData(x, Math.round(200 * dpr), 1, 1).data;
     return `${d[0]},${d[1]},${d[2]}`;
   });
   expect(pixel).toBe('90,90,90');

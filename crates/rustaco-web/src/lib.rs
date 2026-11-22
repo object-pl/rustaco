@@ -23,7 +23,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
 mod layers;
-use layers::{DomLayer, GlLayer, TextLayer};
+use layers::GlLayer;
 
 /// Editor surface colours as CSS strings, from the current theme.
 #[derive(Clone)]
@@ -709,8 +709,8 @@ pub struct Editor {
     text_drag: Option<(std::ops::Range<usize>, Option<usize>, f64, f64)>,
     /// View zones of the last frame: id and rectangle.
     zone_rects: Vec<(u32, Rect)>,
-    /// What draws the text; with a DOM or WebGL layer, `overlay` takes what goes over it.
-    text_layer: TextLayer,
+    /// The WebGL text layer, when JS set one up; `overlay` then takes what goes over the text.
+    gl: Option<GlLayer>,
     overlay: Option<(HtmlCanvasElement, CanvasRenderingContext2d)>,
 }
 
@@ -776,66 +776,40 @@ impl Editor {
             scrollbar_drag: None,
             text_drag: None,
             zone_rects: Vec::new(),
-            text_layer: TextLayer::Canvas,
+            gl: None,
             overlay: None,
         })
     }
 
-    /// Picks the text layer: `"canvas"` (the default), `"dom"` or `"webgl"`. The last two need
-    /// an overlay canvas, stacked over the text layer, for carets, gutter and scrollbars.
+    /// Draws the text with WebGL (`"webgl"`) or on the canvas (`"canvas"`, the default).
+    /// WebGL needs an overlay canvas, stacked over the WebGL canvas, for what goes over the
+    /// text: carets, gutter, scrollbars.
     #[wasm_bindgen(js_name = setTextLayer)]
     pub fn set_text_layer(&mut self, kind: &str, overlay: Option<HtmlCanvasElement>) -> Result<(), JsValue> {
-        self.text_layer = match kind {
-            "dom" => TextLayer::Dom(DomLayer::default()),
-            "webgl" => TextLayer::Gl(GlLayer::default()),
-            _ => TextLayer::Canvas,
-        };
-        self.overlay = match (&self.text_layer, overlay) {
-            (TextLayer::Canvas, _) | (_, None) => None,
-            (_, Some(c)) => {
+        match (kind, overlay) {
+            ("webgl", Some(c)) => {
                 let ctx: CanvasRenderingContext2d =
                     c.get_context("2d")?.ok_or_else(|| JsValue::from_str("canvas has no 2d context"))?.dyn_into()?;
                 c.set_width(self.canvas.width());
                 c.set_height(self.canvas.height());
-                Some((c, ctx))
+                self.overlay = Some((c, ctx));
+                self.gl = Some(GlLayer::default());
             }
-        };
+            _ => {
+                self.overlay = None;
+                self.gl = None;
+            }
+        }
         Ok(())
     }
 
-    /// DOM layer changes of the last frame: op, row id, x, y per row (see `layers::DomLayer`).
-    #[wasm_bindgen(js_name = domOps)]
-    pub fn dom_ops(&self) -> Vec<f64> {
-        match &self.text_layer {
-            TextLayer::Dom(d) => d.ops.clone(),
-            _ => Vec::new(),
-        }
-    }
-
-    /// HTML of the rows the last frame's op-1 entries set, each ended by a NUL.
-    #[wasm_bindgen(js_name = domHtml)]
-    pub fn dom_html(&self) -> String {
-        match &self.text_layer {
-            TextLayer::Dom(d) => d.html.clone(),
-            _ => String::new(),
-        }
-    }
-
-    /// Makes the next frame set every DOM row again.
-    #[wasm_bindgen(js_name = domReset)]
-    pub fn dom_reset(&mut self) {
-        if let TextLayer::Dom(d) = &mut self.text_layer {
-            d.reset();
-        }
-    }
-
-    /// WebGL layer of the last frame: pointer into WASM memory and number of glyph instances
-    /// (four 32-bit words each: x, y as f32, slot, RGBA).
+    /// Glyph instances of the last frame: pointer into WASM memory and count (six 32-bit
+    /// words each: x, y, width, height as f32 device pixels, atlas slot, RGBA).
     #[wasm_bindgen(js_name = glInstances)]
     pub fn gl_instances(&self) -> Vec<u32> {
-        match &self.text_layer {
-            TextLayer::Gl(g) => vec![g.instances.as_ptr() as u32, (g.instances.len() / 4) as u32],
-            _ => vec![0, 0],
+        match &self.gl {
+            Some(g) => vec![g.instances.as_ptr() as u32, (g.instances.len() / layers::INSTANCE_WORDS) as u32],
+            None => vec![0, 0],
         }
     }
 
@@ -843,30 +817,35 @@ impl Editor {
     /// when the atlas was cleared this frame.
     #[wasm_bindgen(js_name = glGeometry)]
     pub fn gl_geometry(&self) -> Vec<u32> {
-        match &self.text_layer {
-            TextLayer::Gl(g) => {
+        match &self.gl {
+            Some(g) => {
                 let (w, h, pad, cols) = g.geometry;
                 vec![w, h, pad, cols, layers::ATLAS, g.reset as u32]
             }
-            _ => Vec::new(),
+            None => Vec::new(),
         }
     }
 
-    /// Glyphs to draw into the atlas: slot, font variant and quarter-pixel offset per glyph.
-    #[wasm_bindgen(js_name = glPending)]
-    pub fn gl_pending(&self) -> Vec<u32> {
-        match &self.text_layer {
-            TextLayer::Gl(g) => g.pending.clone(),
-            _ => Vec::new(),
-        }
+    /// Glyphs to draw into the atlas (slot, font variant and quarter-pixel offset per glyph),
+    /// taken: the next call returns only glyphs laid out since. Read [`Editor::gl_geometry`]
+    /// and [`Editor::gl_pending_chars`] first, as this clears the reset flag and the chars.
+    #[wasm_bindgen(js_name = glTakePending)]
+    pub fn gl_take_pending(&mut self) -> Vec<u32> {
+        self.gl.as_mut().map(GlLayer::take_pending).unwrap_or_default()
     }
 
-    /// The chars of [`Editor::gl_pending`], one per glyph.
+    /// The chars of the pending glyphs, one per glyph.
     #[wasm_bindgen(js_name = glPendingChars)]
     pub fn gl_pending_chars(&self) -> String {
-        match &self.text_layer {
-            TextLayer::Gl(g) => g.pending_chars.clone(),
-            _ => String::new(),
+        self.gl.as_ref().map(|g| g.pending_chars.clone()).unwrap_or_default()
+    }
+
+    /// Makes the next frame clear the atlas and draw its glyphs again (after the WebGL
+    /// context was restored).
+    #[wasm_bindgen(js_name = glForgetAtlas)]
+    pub fn gl_forget_atlas(&mut self) {
+        if let Some(g) = &mut self.gl {
+            g.forget_atlas();
         }
     }
 
@@ -2081,14 +2060,8 @@ impl Editor {
             ctx.fill_text("\u{22ef}", (r.x + r.width / 2.0) as f64, (r.y + r.height / 2.0) as f64)?;
         }
         let (cw32, lh32) = (self.view.metrics.char_width, self.view.metrics.line_height);
-        let ctx = match (&mut self.text_layer, &self.overlay) {
-            (TextLayer::Dom(d), Some((_, over))) => {
-                d.update(&frame.lines, cw32);
-                ctx.restore();
-                begin_overlay(over, self.dpr, w, h, gutter, minimap_width)?;
-                over
-            }
-            (TextLayer::Gl(g), Some((_, over))) => {
+        let ctx = match (&mut self.gl, &self.overlay) {
+            (Some(g), Some((_, over))) => {
                 g.update(&frame.lines, cw32, lh32, self.dpr);
                 ctx.restore();
                 begin_overlay(over, self.dpr, w, h, gutter, minimap_width)?;
@@ -2329,13 +2302,6 @@ fn begin_overlay(
     ctx.rect(gutter, 0.0, w - gutter - minimap, h);
     ctx.clip();
     Ok(())
-}
-
-/// The DOM layer's CSS, one class per style id (`rx-s<id>`, `rx-si` for inlay hints), for
-/// the current theme.
-#[wasm_bindgen(js_name = textLayerCss)]
-pub fn text_layer_css() -> String {
-    layers::dom_css()
 }
 
 /// Width of the minimap column in CSS pixels.

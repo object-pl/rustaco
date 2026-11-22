@@ -154,6 +154,12 @@ export interface EditorOptions extends ViewOptions {
   fontSize?: number;
   /** Label screen readers announce for the editor. */
   ariaLabel?: string;
+  /**
+   * What draws the text: `"webgl"` (the default; glyphs from an atlas texture, one draw
+   * call per frame) or `"canvas"` (the 2D canvas). Without WebGL2, or when the browser drops
+   * the WebGL context, the editor draws on the canvas.
+   */
+  textLayer?: 'webgl' | 'canvas';
 }
 
 export interface ViewOptions {
@@ -266,4 +272,6 @@ export class RustacoEditor {
   onDidChangeContent(fn: () => void): () => void;
   /** Detaches the editor from its model and removes its DOM. */
   dispose(): void;
+  /** The editor drawn now, without the caret, as one canvas at device resolution (for tests and screenshots). */
+  snapshot(): HTMLCanvasElement;
 }

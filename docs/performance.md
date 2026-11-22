@@ -33,6 +33,19 @@ Nearly all of the browser keystroke cost with the worker is drawing the frame on
 
 `scripts/check-size.sh` fails the build above 1 MB for the editor module and 700 KB for a language module.
 
+## Text layer: WebGL, canvas, DOM
+
+Measured on DESKTOP-MZ1 (GeForce GTX 1660) with `tests/bench-monaco/run.mjs`, three runs each, medians. Chromium ran with `--use-angle=d3d11 --enable-gpu`, because headless Chromium otherwise renders WebGL in software (SwiftShader), which made the WebGL layer look five times slower than it is. Two measures: Chromium's own task time per keystroke, and in every browser a probe that posts messages to itself back to back and sums the gaps over 2 ms (busy main thread), with an idle page subtracted. The two are not comparable with each other, only across columns.
+
+| Main thread per keystroke | canvas | DOM rows | WebGL | Monaco |
+|---|---|---|---|---|
+| Chromium task time, 5,000 lines | 8.2 ms | 7.4 ms | 4.8 ms | 7.9 ms |
+| Chromium task time, 100,000 lines | 8.1 ms | 10.1 ms | 6.4 ms | 5.6 ms |
+| Firefox probe, 5,000 lines | 7.1 ms | 7.4 ms | 6.5 ms | 11.9 ms |
+| Firefox probe, 100,000 lines | 5.4 ms | 6.5 ms | 5.5 ms | 11.0 ms |
+
+WebGL was the fastest or level with the fastest in both browsers, and it became the default; the DOM layer (one `div` per row, rows matched by their HTML so a keystroke rewrites one) was no faster than the canvas and was dropped. Runs vary by about 1 ms (Monaco ranged from 4.9 to 9.2 ms in Chromium), so smaller differences mean nothing. Playwright's WebKit on Windows gave no usable numbers: its probe baseline was noisier than the typing, and its frame latency is quantised to whole frames. Safari needs a Mac.
+
 ## Against Monaco
 
 Measured on a second machine (DESKTOP-MZ1, Windows) with `tests/bench-monaco/run.mjs`: Monaco 0.x from npm and Rustaco, each in its own page in the same headless Chromium 159, on the same synthetic Rust files, with the caret in the middle and 60 keystrokes 40 ms apart. Rustaco parses in its worker; Monaco tokenizes with its Monarch grammar on the main thread. Two runs:

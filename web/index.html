@@ -30,8 +30,8 @@ fn main() {
 
     const editor = await createEditor(document.getElementById("root"), {
       value: sample, language: 'rust',
-      // ?text=dom or ?text=webgl draws the text in that layer instead of the canvas.
-      textLayer: new URLSearchParams(location.search).get('text') ?? 'canvas',
+      // ?text=canvas draws the text on the canvas instead of with WebGL.
+      textLayer: new URLSearchParams(location.search).get('text') ?? 'webgl',
     });
     editor.focus();
     window.editor = editor;

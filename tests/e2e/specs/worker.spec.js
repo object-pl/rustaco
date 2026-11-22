@@ -23,7 +23,7 @@ function colorAt(page, offset) {
     e.core.render(false);
     const x = e.core.caret_x(), y = e.core.caret_y(), h = e.core.line_height();
     e.setSelections(sels);
-    const ctx = e.canvas.getContext('2d');
+    const ctx = e.snapshot().getContext('2d');
     const dpr = window.devicePixelRatio || 1;
     let best = -1, color = null;
     for (let dx = 1; dx < 14; dx++) for (let dy = 3; dy < h - 3; dy++) {

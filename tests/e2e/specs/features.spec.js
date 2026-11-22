@@ -147,7 +147,7 @@ test('semantic tokens colour a language without a grammar; inlay hints push text
     const e = window.editor;
     e.core.render(false);
     const p = e.core.positionOf(o);
-    const ctx = e.canvas.getContext('2d');
+    const ctx = e.snapshot().getContext('2d');
     const dpr = window.devicePixelRatio || 1;
     let best = -1, color = null;
     for (let dx = 1; dx < 14; dx++) for (let dy = 3; dy < p[2] - 3; dy++) {

@@ -74,7 +74,7 @@ test('word navigation and deletion', async ({ page }) => {
 
 test('click places the caret, double-click selects a word, shift-click extends', async ({ page }) => {
   await open(page, 'alpha beta gamma\nsecond line');
-  const canvas = page.locator('canvas');
+  const canvas = page.locator('canvas').first();
   const at7 = await caretPoint(page, 7);
   const at2 = await caretPoint(page, 2);
   const at20 = await caretPoint(page, 20);
@@ -92,7 +92,7 @@ test('click places the caret, double-click selects a word, shift-click extends',
 
 test('drag selects text', async ({ page }) => {
   await open(page, 'alpha beta gamma');
-  const box = await page.locator('canvas').boundingBox();
+  const box = await page.locator('canvas').first().boundingBox();
   const from = await caretPoint(page, 1);
   const to = await caretPoint(page, 9);
   await page.mouse.move(box.x + from.x, box.y + from.y);
@@ -214,7 +214,7 @@ test('find highlights matches, F3 moves between them, replace works with regex g
 
 test('shift+alt drag selects a column, ctrl+u undoes cursor changes', async ({ page }) => {
   await open(page, 'abcdef\nab\nabcdef');
-  const box = await page.locator('canvas').boundingBox();
+  const box = await page.locator('canvas').first().boundingBox();
   const from = await caretPoint(page, 1);
   const to = await caretPoint(page, 14); // third line, column 4
   await page.keyboard.down('Shift');
@@ -289,7 +289,7 @@ test('decorations draw backgrounds, gutter bars and overview marks, and move wit
     const e = window.editor;
     e.core.render(false);
     const dpr = window.devicePixelRatio || 1;
-    const d = e.canvas.getContext('2d').getImageData(Math.round(x * dpr), Math.round(y * dpr), 1, 1).data;
+    const d = e.snapshot().getContext('2d').getImageData(Math.round(x * dpr), Math.round(y * dpr), 1, 1).data;
     return [d[0], d[1], d[2]];
   }, [x, y]);
   const { start, lh } = await page.evaluate(async () => {
@@ -311,7 +311,7 @@ test('decorations draw backgrounds, gutter bars and overview marks, and move wit
     e.core.render(false);
     const dpr = window.devicePixelRatio || 1;
     const x = Math.round((e.canvas.clientWidth - 5) * dpr);
-    const d = e.canvas.getContext('2d').getImageData(x, 0, 1, e.canvas.height).data;
+    const d = e.snapshot().getContext('2d').getImageData(x, 0, 1, e.canvas.height).data;
     let n = 0;
     for (let i = 0; i < d.length; i += 4) if (d[i] === 0 && d[i + 1] === 0 && d[i + 2] === 255) n++;
     window.decorations.set([{ start: 6, end: 10, type: window.decorationType }]);

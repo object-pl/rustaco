@@ -18,9 +18,9 @@ const server = createServer(async (req, res) => {
   else res.writeHead(404).end();
 }).listen(47900, '127.0.0.1');
 
-// SIZES=5000 EDITORS=rustaco,rustaco?text=dom BROWSER=firefox node run.mjs
+// SIZES=5000 EDITORS=rustaco,rustaco?text=canvas BROWSER=firefox node run.mjs
 const SIZES = (process.env.SIZES ?? '5000,100000').split(',').map(Number);
-const EDITORS = (process.env.EDITORS ?? 'rustaco,rustaco?text=dom,rustaco?text=webgl,monaco').split(',');
+const EDITORS = (process.env.EDITORS ?? 'rustaco,rustaco?text=canvas,monaco').split(',');
 const BROWSER = process.env.BROWSER ?? 'chromium';
 // Runs per editor and size; the report keeps every run, the summary the median.
 const REPEAT = Number(process.env.REPEAT ?? 1);

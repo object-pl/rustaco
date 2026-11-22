@@ -5,7 +5,7 @@ import init, {
 import { SuggestController } from './suggest.js';
 import { Features } from './features.js';
 import { onDidChangeProviders, providersFor } from './languages.js';
-import { DomTextLayer, GlTextLayer, refreshTextLayerCss } from './text-layers.js';
+import { WebGLText } from './webgl-text.js';
 
 export { languages, CompletionItemKind, SymbolKind, fuzzyScore } from './languages.js';
 
@@ -310,7 +310,6 @@ export async function setTheme(theme) {
     setThemeRules(base, selectors.join('\n'), Uint32Array.from(foregrounds), Uint8Array.from(flags),
       colorKeys.join('\n'), Uint32Array.from(colorValues));
   }
-  refreshTextLayerCss();
   for (const e of editors) e.schedule();
 }
 
@@ -570,7 +569,7 @@ export class RustacoEditor {
     fontFamily = '"Cascadia Code", Consolas, "Courier New", monospace',
     fontSize = 14,
     ariaLabel = 'Editor content',
-    textLayer = 'canvas',
+    textLayer = 'webgl',
   } = {}) {
     this.container = container;
     this.canvas = document.createElement('canvas');
@@ -945,18 +944,18 @@ export class RustacoEditor {
   }
 
   /**
-   * With `"dom"` or `"webgl"`, the text goes in its own layer between the canvas (what lies
-   * under the text) and an overlay canvas (carets, gutter, scrollbars).
+   * With `"webgl"` (the default) the text is drawn by WebGL on its own canvas, between the
+   * base canvas (what lies under the text) and an overlay canvas (carets, gutter,
+   * scrollbars). Without WebGL2, or after the browser drops the context, the text goes back
+   * on the base canvas.
    */
   #setupTextLayer(kind, fontFamily, fontSize) {
-    if (kind !== 'dom' && kind !== 'webgl') return;
+    if (kind !== 'webgl') return;
     let layer;
     try {
-      layer = kind === 'dom'
-        ? new DomTextLayer(this.container, this.font, this.core.line_height(), this.core.charWidth())
-        : new GlTextLayer(wasm.memory, fontFamily, fontSize);
+      layer = new WebGLText(wasm.memory, fontFamily, fontSize, () => this.#dropTextLayer());
     } catch (e) {
-      console.warn(`rustaco: ${kind} text layer unavailable, drawing on the canvas`, e);
+      console.warn('rustaco: WebGL2 unavailable, drawing text on the canvas', e);
       return;
     }
     this.overCanvas = document.createElement('canvas');
@@ -964,6 +963,32 @@ export class RustacoEditor {
     this.canvas.after(layer.el, this.overCanvas);
     this.textLayer = layer;
     this.core.setTextLayer(kind, this.overCanvas);
+  }
+
+  #dropTextLayer() {
+    this.core.setTextLayer('canvas', null);
+    this.textLayer?.dispose();
+    this.overCanvas?.remove();
+    this.textLayer = null;
+    this.overCanvas = null;
+    this.schedule();
+  }
+
+  /**
+   * The editor drawn now, without the caret, all layers in one canvas at device resolution.
+   * Drawing and reading happen in one task, while the WebGL canvas still holds the frame.
+   * For tests and screenshots.
+   */
+  snapshot() {
+    if (this.frame) cancelAnimationFrame(this.frame);
+    this.frame = 0;
+    this.#drawFrame(false);
+    const out = document.createElement('canvas');
+    out.width = this.canvas.width;
+    out.height = this.canvas.height;
+    const ctx = out.getContext('2d', { willReadFrequently: true });
+    for (const layer of [this.canvas, this.textLayer?.toCanvas(), this.overCanvas]) if (layer) ctx.drawImage(layer, 0, 0);
+    return out;
   }
 
   #resize() {
@@ -1358,49 +1383,53 @@ export class RustacoEditor {
     if (this.frame) return;
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
-      const { model, core } = this;
-      const h = model.highlighter;
-      const s = model.syntax;
-      if (s) {
-        // Ask the worker for this frame's highlights once per change of text, view or caret;
-        // until they arrive the last ones (moved with the edits) are drawn.
-        const runs = Array.from(core.visibleLines());
-        const caret = core.primaryRange()[0];
-        const colorize = !!this.options.bracketPairColorization;
-        const key = `${model.core.version()}|${runs.join(',')}|${caret}|${colorize}`;
-        if (key !== this.frameKey) {
-          this.frameKey = key;
-          s.frame(this, runs, colorize, caret);
-        }
-      } else if (h) {
-        const parsed = model.updateHighlighter();
-        // One run of lines per stretch between folds, so folded lines are never highlighted.
-        const runs = core.visibleLines();
-        const colorize = !!this.options.bracketPairColorization;
-        for (let i = 0; i < runs.length; i += 2) {
-          const quads = h.highlight(runs[i], runs[i + 1], colorize);
-          if (i === 0) core.setHighlights(runs[i], runs[i + 1], quads);
-          else core.addHighlights(runs[i], runs[i + 1], quads);
-        }
-        if (h.hasTree()) core.setTreeBrackets(h.matchingBracket(core.primaryRange()[0]));
-        else core.clearTreeBrackets();
-        if (!parsed) this.schedule();
-      } else {
-        core.clearHighlights();
-        core.clearTreeBrackets();
-      }
-      core.render(this.focused && this.caretOn);
-      this.textLayer?.apply(core, window.devicePixelRatio || 1);
-      const top = core.scrollTop();
-      if (top !== this.lastScrollTop) {
-        this.lastScrollTop = top;
-        for (const fn of this.scrollListeners ?? []) fn(top);
-      }
-      if (!this.inputCovering) {
-        this.input.style.transform = `translate(${this.core.caret_x()}px, ${this.core.caret_y()}px)`;
-      }
-      this.#layoutOverlays();
+      this.#drawFrame();
     });
+  }
+
+  #drawFrame(caret = this.focused && this.caretOn) {
+    const { model, core } = this;
+    const h = model.highlighter;
+    const s = model.syntax;
+    if (s) {
+      // Ask the worker for this frame's highlights once per change of text, view or caret;
+      // until they arrive the last ones (moved with the edits) are drawn.
+      const runs = Array.from(core.visibleLines());
+      const caret = core.primaryRange()[0];
+      const colorize = !!this.options.bracketPairColorization;
+      const key = `${model.core.version()}|${runs.join(',')}|${caret}|${colorize}`;
+      if (key !== this.frameKey) {
+        this.frameKey = key;
+        s.frame(this, runs, colorize, caret);
+      }
+    } else if (h) {
+      const parsed = model.updateHighlighter();
+      // One run of lines per stretch between folds, so folded lines are never highlighted.
+      const runs = core.visibleLines();
+      const colorize = !!this.options.bracketPairColorization;
+      for (let i = 0; i < runs.length; i += 2) {
+        const quads = h.highlight(runs[i], runs[i + 1], colorize);
+        if (i === 0) core.setHighlights(runs[i], runs[i + 1], quads);
+        else core.addHighlights(runs[i], runs[i + 1], quads);
+      }
+      if (h.hasTree()) core.setTreeBrackets(h.matchingBracket(core.primaryRange()[0]));
+      else core.clearTreeBrackets();
+      if (!parsed) this.schedule();
+    } else {
+      core.clearHighlights();
+      core.clearTreeBrackets();
+    }
+    core.render(caret);
+    this.textLayer?.draw(core, window.devicePixelRatio || 1);
+    const top = core.scrollTop();
+    if (top !== this.lastScrollTop) {
+      this.lastScrollTop = top;
+      for (const fn of this.scrollListeners ?? []) fn(top);
+    }
+    if (!this.inputCovering) {
+      this.input.style.transform = `translate(${this.core.caret_x()}px, ${this.core.caret_y()}px)`;
+    }
+    this.#layoutOverlays();
   }
 }
 

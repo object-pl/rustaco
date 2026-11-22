@@ -14,4 +14,10 @@ cp -r ../../web rustaco        # after ./scripts/build-web.sh
 node run.mjs
 ```
 
+Variables: `EDITORS` (default `rustaco,rustaco?text=canvas,monaco`), `SIZES`, `BROWSER`
+(`chromium`, `firefox`, `webkit`), `REPEAT` (runs per editor and size), `ARGS` (browser
+flags). Headless Chromium renders WebGL in software unless told otherwise, so measure the
+WebGL text layer with `ARGS="--use-angle=d3d11 --enable-gpu --ignore-gpu-blocklist"` on
+Windows. Only Chromium reports task time; every browser reports the probe (`blockedMsPerKey`).
+
 Results are in `docs/performance.md`.

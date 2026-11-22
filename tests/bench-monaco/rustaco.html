@@ -10,10 +10,10 @@
     import { createEditor, createModel } from './rustaco/rustaco.js';
     const editor = await createEditor(document.getElementById('root'), {
       value: '', language: 'rust', fontSize: 14,
-      textLayer: new URLSearchParams(location.search).get('text') ?? 'canvas',
+      textLayer: new URLSearchParams(location.search).get('text') ?? 'webgl',
     });
     window.bench = {
-      name: 'rustaco-' + (new URLSearchParams(location.search).get('text') ?? 'canvas'),
+      name: 'rustaco-' + (new URLSearchParams(location.search).get('text') ?? 'webgl'),
       async load(text) {
         const t = performance.now();
         editor.setValue(text);
