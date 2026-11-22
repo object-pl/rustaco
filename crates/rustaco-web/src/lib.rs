@@ -384,38 +384,29 @@ pub struct Model {
     words: RefCell<Option<(usize, f64, Vec<String>)>>,
 }
 
-#[wasm_bindgen]
 impl Model {
-    #[wasm_bindgen(constructor)]
-    pub fn new(text: &str) -> Model {
-        Model { inner: Rc::new(RefCell::new(TextModel::new(text))), words: RefCell::new(None) }
-    }
-
     /// Distinct words from `radius` lines on each side of `line`, at most `max`, without
-    /// `exclude` (the word being typed), newline-separated. They are kept for five seconds
-    /// while the line stays within a quarter of the radius: collecting reads thousands of
-    /// lines and the words change little between keystrokes.
-    #[wasm_bindgen(js_name = wordsNear)]
-    pub fn words_near(&self, line: u32, radius: u32, max: u32, exclude: &str) -> String {
-        let (line, radius) = (line as usize, radius as usize);
+    /// `exclude` (the word being typed). They are kept for five seconds while the line stays
+    /// within a quarter of the radius: collecting reads thousands of lines and the words
+    /// change little between keystrokes.
+    fn words_near(&self, line: usize, radius: usize, max: usize, exclude: &str) -> Vec<String> {
         let now = js_sys::Date::now();
         let mut cache = self.words.borrow_mut();
         let fresh = cache.as_ref().is_some_and(|(at, t, _)| at.abs_diff(line) < radius / 4 && now - t < 5000.0);
         if !fresh {
             let model = self.inner.borrow();
-            let words =
-                rustaco_core::collect_words(model.rope(), line.saturating_sub(radius)..line + radius + 1, max as usize);
+            let words = rustaco_core::collect_words(model.rope(), line.saturating_sub(radius)..line + radius + 1, max);
             *cache = Some((line, now, words));
         }
-        let words = &cache.as_ref().expect("filled above").2;
-        let mut out = String::new();
-        for w in words.iter().filter(|w| *w != exclude) {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str(w);
-        }
-        out
+        cache.as_ref().expect("filled above").2.iter().filter(|w| *w != exclude).cloned().collect()
+    }
+}
+
+#[wasm_bindgen]
+impl Model {
+    #[wasm_bindgen(constructor)]
+    pub fn new(text: &str) -> Model {
+        Model { inner: Rc::new(RefCell::new(TextModel::new(text))), words: RefCell::new(None) }
     }
 
     /// Diffs this model (the original) against `modified` on the calling thread; the result
@@ -1585,19 +1576,38 @@ impl Editor {
     }
 
     /// Filters and ranks the completion items by what was typed, best first (in the given
-    /// order with `keep_order`, for snippet choices). Per match: item index, number of
-    /// matched chars, then their char indices.
+    /// order with `keep_order`, for snippet choices). The number of matches, then for at most
+    /// `limit` of them: item index, number of matched chars, then their char indices.
     #[wasm_bindgen(js_name = rankCompletions)]
-    pub fn rank_completions(&self, typed: &str, keep_order: bool) -> Vec<u32> {
+    pub fn rank_completions(&self, typed: &str, keep_order: bool, limit: u32) -> Vec<u32> {
         let (texts, sorts) = &self.completion_items;
         let sorts = if sorts.len() == texts.len() { sorts } else { texts };
-        let mut out = Vec::new();
-        for (i, m) in rustaco_core::rank_completions(typed, texts, sorts, keep_order) {
+        let ranked = rustaco_core::rank_completions(typed, texts, sorts, keep_order);
+        let mut out = vec![ranked.len() as u32];
+        for (i, m) in ranked.into_iter().take(limit as usize) {
             out.push(i as u32);
             out.push(m.matches.len() as u32);
             out.extend(m.matches.iter().map(|&c| c as u32));
         }
         out
+    }
+
+    /// Makes the words around `line` the completion items (for languages without a
+    /// completion provider), without `exclude`; they stay in Rust, and the list asks for the
+    /// texts of the few it shows with [`Editor::completion_texts`]. Returns their number.
+    #[wasm_bindgen(js_name = setWordCompletions)]
+    pub fn set_word_completions(&mut self, model: &Model, line: u32, radius: u32, max: u32, exclude: &str) -> u32 {
+        let words = model.words_near(line as usize, radius as usize, max as usize, exclude);
+        let n = words.len() as u32;
+        self.completion_items = (words, Vec::new());
+        n
+    }
+
+    /// The filter texts of the completion items at `indices`, NUL-separated.
+    #[wasm_bindgen(js_name = completionTexts)]
+    pub fn completion_texts(&self, indices: &[u32]) -> String {
+        let texts = &self.completion_items.0;
+        indices.iter().filter_map(|&i| texts.get(i as usize).map(String::as_str)).collect::<Vec<_>>().join("\0")
     }
 
     /// Accepts a completion at every cursor: replaces `before` chars ahead of each caret and

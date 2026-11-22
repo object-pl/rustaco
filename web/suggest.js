@@ -78,9 +78,16 @@ export class SuggestController {
       }
     }));
     if (asked !== this.request) return;
-    let items = results.flat().map((item) => normalize(item, ws, head));
-    if (items.length === 0) items = wordItems(model, ws, head);
-    this.#setItems(items);
+    const items = results.flat().map((item) => normalize(item, ws, head));
+    if (items.length) {
+      this.#setItems(items);
+    } else {
+      // Word completion: the words stay in Rust; items are made only for the rows shown.
+      const [line] = model.core.positionAt(head);
+      e.core.setWordCompletions(model.core, line, WORD_LINES, 5000, model.getTextRange(ws, head));
+      this.items = null;
+      this.wordRange = { start: ws, end: head };
+    }
     this.start = ws;
     this.explicit = explicit;
     this.refilter();
@@ -113,17 +120,20 @@ export class SuggestController {
     const prefix = this.choiceMode ? '' : e.getModel().getTextRange(this.start, head);
     if ([...prefix].some((c) => !isWordChar(c))) { this.close(); return; }
     // Rust filters and ranks; choices keep the snippet's order.
-    const ranked = e.core.rankCompletions(prefix, !!this.choiceMode);
-    const scored = [];
-    for (let i = 0; i < ranked.length;) {
-      const item = this.items[ranked[i]];
-      const n = ranked[i + 1];
-      const matches = (item.filterText ?? item.label) === item.label ? Array.from(ranked.subarray(i + 2, i + 2 + n)) : [];
-      scored.push({ item, matches });
-      i += 2 + n;
-    }
+    const ranked = e.core.rankCompletions(prefix, !!this.choiceMode, MAX_ROWS);
+    const total = ranked[0];
+    const picks = [];
+    for (let i = 1; i < ranked.length; i += 2 + ranked[i + 1]) picks.push(i);
+    const words = this.items ? null : e.core.completionTexts(Uint32Array.from(picks, (i) => ranked[i])).split('\0');
+    const scored = picks.map((i, k) => {
+      const item = this.items ? this.items[ranked[i]] : {
+        label: words[k], kind: CompletionItemKind.Text, insertText: words[k], range: this.wordRange,
+      };
+      const matches = (item.filterText ?? item.label) === item.label ? Array.from(ranked.subarray(i + 2, i + 2 + ranked[i + 1])) : [];
+      return { item, matches };
+    });
     // An exact match of the only item is already typed: nothing to offer.
-    if (scored.length === 0 || (!this.explicit && scored.length === 1 && scored[0].item.label === prefix)) {
+    if (total === 0 || (!this.explicit && total === 1 && scored[0].item.label === prefix)) {
       this.close();
       return;
     }
@@ -258,15 +268,4 @@ function normalize(item, wordStart, head) {
     isSnippet: !!(item.isSnippet || item.insertTextRules === 4),
     range: item.range ?? { start: wordStart, end: head },
   };
-}
-
-/** Words of the text around the caret, for languages without a completion provider. */
-function wordItems(model, wordStart, head) {
-  const [line] = model.core.positionAt(head);
-  // Collected and cached in Rust (see Model.wordsNear).
-  const words = model.core.wordsNear(line, WORD_LINES, 5000, model.getTextRange(wordStart, head));
-  if (!words) return [];
-  return words.split('\n').map((w) => ({
-    label: w, kind: CompletionItemKind.Text, insertText: w, range: { start: wordStart, end: head },
-  }));
 }

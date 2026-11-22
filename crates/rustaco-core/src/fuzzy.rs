@@ -28,9 +28,15 @@ pub fn fuzzy_score(pattern: &str, word: &str) -> Option<FuzzyMatch> {
     if pattern.is_empty() {
         return Some(FuzzyMatch { score: 0.0, matches: Vec::new() });
     }
+    let lower = |c: char| c.to_lowercase().next().unwrap_or(c);
+    // Most words in a list do not contain the pattern at all: reject those without
+    // allocating.
+    let mut rest = word.chars().map(lower);
+    if !pattern.chars().map(lower).all(|p| rest.any(|w| w == p)) {
+        return None;
+    }
     let pat: Vec<char> = pattern.chars().collect();
     let wrd: Vec<char> = word.chars().collect();
-    let lower = |c: char| c.to_lowercase().next().unwrap_or(c);
     let p: Vec<char> = pat.iter().map(|&c| lower(c)).collect();
     let w: Vec<char> = wrd.iter().map(|&c| lower(c)).collect();
     let mut best: Option<FuzzyMatch> = None;
