@@ -1,6 +1,6 @@
 # API review before 1.0
 
-The public surface as of the end of phase 11, with what should change before it is frozen. Nothing here is published yet; the version is 0.1.0 everywhere.
+The public surface as of the end of phase 11, with what should change before it is frozen. Version 0.2.0 is published to crates.io and npm; the API may still change before 1.0.
 
 ## JavaScript (npm package `rustaco`)
 
