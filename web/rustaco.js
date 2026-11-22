@@ -13,6 +13,17 @@ const BLINK_MS = 530;
 /** Parsing time per frame; the rest of a long parse continues on later frames. */
 const PARSE_BUDGET_MS = 4;
 
+/**
+ * Event subscriptions are `onDid...(listener)` methods. They return a function that removes
+ * the listener, which is also a `Disposable` (`.dispose()`), as Monaco's are.
+ */
+function subscribe(set, fn) {
+  set.add(fn);
+  const off = () => { set.delete(fn); };
+  off.dispose = off;
+  return off;
+}
+
 let ready;
 let wasm;
 function load() {
@@ -529,11 +540,8 @@ export class RustacoModel {
     return collection;
   }
 
-  /** Calls `fn` after every text change. Returns a function that removes the listener. */
-  onDidChangeContent(fn) {
-    this.listeners.add(fn);
-    return () => this.listeners.delete(fn);
-  }
+  /** Calls `fn` after every text change. */
+  onDidChangeContent(fn) { return subscribe(this.listeners, fn); }
 
   /** Redraws every editor showing this model and fires listeners if the text changed. */
   changed() {
@@ -887,10 +895,13 @@ export class RustacoEditor {
   fontCss() { return this.font; }
 
   /** Calls `fn(scrollTop)` after a frame in which the vertical scroll position changed. */
-  onDidScrollChange(fn) {
-    (this.scrollListeners ??= new Set()).add(fn);
-    return () => this.scrollListeners.delete(fn);
-  }
+  onDidScrollChange(fn) { return subscribe(this.scrollListeners ??= new Set(), fn); }
+
+  /**
+   * Calls `fn(length)` when a paste longer than `maxPasteLength` is refused. (The older
+   * `onPasteTooLarge` property still works.)
+   */
+  onDidRefusePaste(fn) { return subscribe(this.refusedPasteListeners ??= new Set(), fn); }
 
   setScrollTop(top) {
     this.core.setScrollTop(top);
@@ -1191,6 +1202,7 @@ export class RustacoEditor {
       // A runaway clipboard (hundreds of megabytes) would freeze the page; it is refused.
       if (text.length > (this.options.maxPasteLength ?? MAX_PASTE_LENGTH)) {
         this.onPasteTooLarge?.(text.length);
+        for (const fn of this.refusedPasteListeners ?? []) fn(text.length);
         return;
       }
       let meta = null;

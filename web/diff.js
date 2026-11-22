@@ -63,6 +63,7 @@ export class RustacoDiffEditor {
     this.ignoreWhitespace = ignoreWhitespace;
     this.changes = [];
     this.zones = [];
+    this.diffListeners = new Set();
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
     if (inline) {
       this.modifiedPane = this.#pane('0', '0');
@@ -126,7 +127,7 @@ export class RustacoDiffEditor {
     this.changes = changes;
     this.complete = complete;
     await this.#render();
-    this.onDidUpdateDiff?.(changes);
+    for (const fn of this.diffListeners) fn(changes);
     return changes;
   }
 
@@ -204,6 +205,14 @@ export class RustacoDiffEditor {
       node.append(row);
     }
     return node;
+  }
+
+  /** Calls `fn(changes)` after every diff computation; returns a remover that is also a Disposable. */
+  onDidUpdateDiff(fn) {
+    this.diffListeners.add(fn);
+    const off = () => { this.diffListeners.delete(fn); };
+    off.dispose = off;
+    return off;
   }
 
   /** Moves the modified editor's caret to the next (or previous) change. */

@@ -16,7 +16,10 @@
       "types": "./lsp.d.ts",
       "default": "./lsp.js"
     },
-    "./diff": "./diff.js"
+    "./diff": {
+      "types": "./diff.d.ts",
+      "default": "./diff.js"
+    }
   },
   "files": [
     "rustaco.js",
@@ -26,8 +29,10 @@
     "features.js",
     "lsp.js",
     "diff.js",
+    "webgl-text.js",
     "rustaco.d.ts",
     "lsp.d.ts",
+    "diff.d.ts",
     "pkg/**/*.js",
     "pkg/**/*.wasm",
     "pkg/THIRD_PARTY.md",

@@ -23,6 +23,9 @@ export function createEditor(container: HTMLElement, options?: EditorOptions): P
 /** Language id for a file name and its first line, or `""`. */
 export function detectLanguage(path: string, firstLine?: string): Promise<string>;
 
+/** What `onDid...` methods return: call it, or call `dispose()`, to remove the listener. */
+export type Subscription = (() => void) & Disposable;
+
 /** A range of char offsets. */
 export interface Range {
   start: number;
@@ -155,7 +158,7 @@ export class RustacoModel {
   setWorkerEnabled(on: boolean): Promise<boolean>;
   createDecorationsCollection(decorations?: Decoration[]): DecorationsCollection;
   /** Calls `fn` after every text change; returns a function that removes the listener. */
-  onDidChangeContent(fn: () => void): () => void;
+  onDidChangeContent(fn: () => void): Subscription;
 }
 
 export interface EditorOptions extends ViewOptions {
@@ -268,7 +271,10 @@ export class RustacoEditor {
   /** Symbols from a provider, else from the syntax tree. */
   getDocumentSymbols(): Promise<DocumentSymbol[]>;
   /** Called with the length of a paste refused for exceeding `maxPasteLength`. */
+  /** @deprecated Use `onDidRefusePaste`. */
   onPasteTooLarge?: (length: number) => void;
+  /** Called with the length of a paste refused for exceeding `maxPasteLength`. */
+  onDidRefusePaste(fn: (length: number) => void): Subscription;
   /** Called when go to definition lands in another model; the host opens it. */
   onOpenLocation?: (location: { model: RustacoModel; range: Range }) => void;
 
@@ -284,7 +290,9 @@ export class RustacoEditor {
   removeOverlayWidget(widget: OverlayWidget): void;
 
   /** Calls `fn` after every text change, from this or any other editor on the model. */
-  onDidChangeContent(fn: () => void): () => void;
+  onDidChangeContent(fn: () => void): Subscription;
+  /** Calls `fn(scrollTop)` after a frame in which the vertical scroll position changed. */
+  onDidScrollChange(fn: (scrollTop: number) => void): Subscription;
   /**
    * Adds a command: `id` runs `handler`, from `runCommand(id)` and from `keybinding` (VS
    * Code's format, e.g. `'alt+f5'`) when given.

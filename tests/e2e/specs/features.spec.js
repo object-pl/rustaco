@@ -191,7 +191,7 @@ test('provider text never becomes HTML; oversized pastes are refused', async ({ 
     const e = window.editor;
     e.setOptions({ maxPasteLength: 10 });
     let seen = 0;
-    e.onPasteTooLarge = (n) => { seen = n; };
+    e.onDidRefusePaste((n) => { seen = n; });
     const input = document.querySelector('textarea');
     const data = new DataTransfer();
     data.setData('text/plain', 'x'.repeat(11));
