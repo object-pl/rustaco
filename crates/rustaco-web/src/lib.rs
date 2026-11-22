@@ -380,13 +380,42 @@ impl TextReplica {
 #[wasm_bindgen]
 pub struct Model {
     inner: Rc<RefCell<TextModel>>,
+    /// Words collected for word completion: caret line, time collected (ms) and the words.
+    words: RefCell<Option<(usize, f64, Vec<String>)>>,
 }
 
 #[wasm_bindgen]
 impl Model {
     #[wasm_bindgen(constructor)]
     pub fn new(text: &str) -> Model {
-        Model { inner: Rc::new(RefCell::new(TextModel::new(text))) }
+        Model { inner: Rc::new(RefCell::new(TextModel::new(text))), words: RefCell::new(None) }
+    }
+
+    /// Distinct words from `radius` lines on each side of `line`, at most `max`, without
+    /// `exclude` (the word being typed), newline-separated. They are kept for five seconds
+    /// while the line stays within a quarter of the radius: collecting reads thousands of
+    /// lines and the words change little between keystrokes.
+    #[wasm_bindgen(js_name = wordsNear)]
+    pub fn words_near(&self, line: u32, radius: u32, max: u32, exclude: &str) -> String {
+        let (line, radius) = (line as usize, radius as usize);
+        let now = js_sys::Date::now();
+        let mut cache = self.words.borrow_mut();
+        let fresh = cache.as_ref().is_some_and(|(at, t, _)| at.abs_diff(line) < radius / 4 && now - t < 5000.0);
+        if !fresh {
+            let model = self.inner.borrow();
+            let words =
+                rustaco_core::collect_words(model.rope(), line.saturating_sub(radius)..line + radius + 1, max as usize);
+            *cache = Some((line, now, words));
+        }
+        let words = &cache.as_ref().expect("filled above").2;
+        let mut out = String::new();
+        for w in words.iter().filter(|w| *w != exclude) {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str(w);
+        }
+        out
     }
 
     /// Diffs this model (the original) against `modified` on the calling thread; the result
@@ -587,6 +616,9 @@ struct ExternalHighlights {
     semantic: std::collections::BTreeMap<usize, Vec<StyleSpan>>,
     /// Model version the line numbers refer to.
     version: u64,
+    /// Set when new highlights or a new bracket pair differ from what is drawn; the JS side
+    /// skips the frame otherwise.
+    changed: bool,
 }
 
 impl ExternalHighlights {
@@ -602,6 +634,19 @@ impl ExternalHighlights {
                     let old = e.old_end_point.row - a;
                     let new = e.new_end_point.row - a;
                     if old == 0 && new == 0 {
+                        // An edit inside one line: move its spans by the chars added or
+                        // removed, so they match what the language module will send for
+                        // the new text (and the frame for that reply can be skipped). The
+                        // UTF-16 column stands in for the char column; they differ only
+                        // after chars outside the BMP, and the reply corrects that.
+                        let col = e.start_utf16.character;
+                        let removed = e.old_end - e.start;
+                        let added = e.new_end - e.start;
+                        for map in [&mut self.lines, &mut self.semantic] {
+                            if let Some(spans) = map.get_mut(&a) {
+                                shift_spans(spans, col, removed, added);
+                            }
+                        }
                         continue;
                     }
                     for map in [&mut self.lines, &mut self.semantic] {
@@ -621,6 +666,35 @@ impl ExternalHighlights {
         }
         self.version = model.version();
     }
+}
+
+/// Moves `spans` (sorted char columns of one line) through an edit at `col` that replaced
+/// `removed` chars with `added`: spans after it move, a span around it grows or shrinks,
+/// spans inside the removed text disappear.
+fn shift_spans(spans: &mut Vec<StyleSpan>, col: usize, removed: usize, added: usize) {
+    let end = col + removed;
+    let map = |x: usize| {
+        if x <= col {
+            x
+        } else if x >= end {
+            x - removed + added
+        } else {
+            col + added.min(x - col)
+        }
+    };
+    for s in spans.iter_mut() {
+        // An insertion at a span's end extends the span (typing at the end of a word).
+        let grow_end = removed == 0 && s.end == col && s.start < col;
+        s.start = if s.start < col {
+            s.start
+        } else if s.start >= end {
+            s.start - removed + added
+        } else {
+            col + added
+        };
+        s.end = if grow_end { s.end + added } else { map(s.end) };
+    }
+    spans.retain(|s| s.start < s.end);
 }
 
 impl Styler for ExternalHighlights {
@@ -709,6 +783,8 @@ pub struct Editor {
     text_drag: Option<(std::ops::Range<usize>, Option<usize>, f64, f64)>,
     /// View zones of the last frame: id and rectangle.
     zone_rects: Vec<(u32, Rect)>,
+    /// The open completion list: the text each item is filtered by and its sort text.
+    completion_items: (Vec<String>, Vec<String>),
     /// The WebGL layer, when JS set one up: frames are then painted as quads for WebGL
     /// instead of on the canvas.
     gl: Option<GlLayer>,
@@ -776,6 +852,7 @@ impl Editor {
             scrollbar_drag: None,
             text_drag: None,
             zone_rects: Vec::new(),
+            completion_items: (Vec::new(), Vec::new()),
             gl: None,
         })
     }
@@ -884,7 +961,11 @@ impl Editor {
     /// Replaces all highlights; [`Editor::add_highlights`] adds another run of lines.
     #[wasm_bindgen(js_name = setHighlights)]
     pub fn set_highlights(&mut self, first_line: u32, end_line: u32, quads: &[u32]) {
-        self.highlights.lines.clear();
+        // Lines outside the new run are off screen; dropping them changes nothing drawn.
+        self.highlights.sync(&self.model.borrow());
+        let kept =
+            self.highlights.lines.range(first_line as usize..end_line as usize).map(|(k, v)| (*k, v.clone())).collect();
+        self.highlights.lines = kept;
         self.add_highlights(first_line, end_line, quads);
     }
 
@@ -893,16 +974,29 @@ impl Editor {
     pub fn add_highlights(&mut self, first_line: u32, end_line: u32, quads: &[u32]) {
         // The quads describe the text as it is now; semantic tokens move there first.
         self.highlights.sync(&self.model.borrow());
-        let lines = &mut self.highlights.lines;
-        for line in first_line..end_line {
-            lines.insert(line as usize, Vec::new());
-        }
+        let mut fresh: std::collections::BTreeMap<usize, Vec<StyleSpan>> =
+            (first_line..end_line).map(|l| (l as usize, Vec::new())).collect();
         for q in quads.chunks_exact(4) {
-            if (first_line..end_line).contains(&q[0]) {
-                let spans = lines.entry(q[0] as usize).or_default();
+            if let Some(spans) = fresh.get_mut(&(q[0] as usize)) {
                 spans.push(StyleSpan { start: q[1] as usize, end: q[2] as usize, style: q[3] });
             }
         }
+        let lines = &mut self.highlights.lines;
+        for (line, spans) in fresh {
+            // A line without spans and a missing line draw the same.
+            let old = lines.get(&line).map_or(&[][..], Vec::as_slice);
+            if old != spans.as_slice() {
+                self.highlights.changed = true;
+            }
+            lines.insert(line, spans);
+        }
+    }
+
+    /// Whether highlights or the bracket pair set since the last call differ from what was
+    /// drawn; clears the flag. The JS side draws a frame for a worker reply only then.
+    #[wasm_bindgen(js_name = takeHighlightsChanged)]
+    pub fn take_highlights_changed(&mut self) -> bool {
+        std::mem::take(&mut self.highlights.changed)
     }
 
     /// Whether the primary caret sits inside a string or comment, judged from the highlight
@@ -1226,11 +1320,18 @@ impl Editor {
     /// for none). Without this call the editor matches brackets by scanning the text.
     #[wasm_bindgen(js_name = setTreeBrackets)]
     pub fn set_tree_brackets(&mut self, pair: &[u32]) {
-        self.tree_brackets = Some((pair.len() == 2).then(|| (pair[0] as usize, pair[1] as usize)));
+        let next = Some((pair.len() == 2).then(|| (pair[0] as usize, pair[1] as usize)));
+        if next != self.tree_brackets {
+            self.highlights.changed = true;
+        }
+        self.tree_brackets = next;
     }
 
     #[wasm_bindgen(js_name = clearTreeBrackets)]
     pub fn clear_tree_brackets(&mut self) {
+        if self.tree_brackets.is_some() {
+            self.highlights.changed = true;
+        }
         self.tree_brackets = None;
     }
 
@@ -1473,6 +1574,30 @@ impl Editor {
         let snippet = self.parse_snippet(source);
         self.edit(|ed| ed.insert_snippet(&snippet));
         self.reveal_primary();
+    }
+
+    /// Sets the items of the completion list, for [`Editor::rank_completions`]: per item the
+    /// text it is filtered by (filter text or label) and its sort text, NUL-separated.
+    #[wasm_bindgen(js_name = setCompletionItems)]
+    pub fn set_completion_items(&mut self, texts: &str, sort_texts: &str) {
+        let split = |s: &str| if s.is_empty() { Vec::new() } else { s.split('\0').map(str::to_owned).collect() };
+        self.completion_items = (split(texts), split(sort_texts));
+    }
+
+    /// Filters and ranks the completion items by what was typed, best first (in the given
+    /// order with `keep_order`, for snippet choices). Per match: item index, number of
+    /// matched chars, then their char indices.
+    #[wasm_bindgen(js_name = rankCompletions)]
+    pub fn rank_completions(&self, typed: &str, keep_order: bool) -> Vec<u32> {
+        let (texts, sorts) = &self.completion_items;
+        let sorts = if sorts.len() == texts.len() { sorts } else { texts };
+        let mut out = Vec::new();
+        for (i, m) in rustaco_core::rank_completions(typed, texts, sorts, keep_order) {
+            out.push(i as u32);
+            out.push(m.matches.len() as u32);
+            out.extend(m.matches.iter().map(|&c| c as u32));
+        }
+        out
     }
 
     /// Accepts a completion at every cursor: replaces `before` chars ahead of each caret and
@@ -2173,6 +2298,14 @@ impl Editor {
     }
 }
 
+/// Scores `word` against what was typed (see `rustaco_core::fuzzy_score`): the score
+/// followed by the matched char indices, or nothing when it does not match.
+#[wasm_bindgen(js_name = fuzzyScore)]
+pub fn fuzzy_score_js(pattern: &str, word: &str) -> Option<Vec<f64>> {
+    rustaco_core::fuzzy_score(pattern, word)
+        .map(|m| std::iter::once(m.score).chain(m.matches.iter().map(|&i| i as f64)).collect())
+}
+
 /// Width of the minimap column in CSS pixels.
 const MINIMAP_WIDTH: f32 = 90.0;
 
@@ -2435,5 +2568,34 @@ fn unit_range(rope: &Rope, unit: DragUnit, pos: usize) -> (usize, usize) {
             let line = rope.char_to_line(pos);
             (rope.line_to_char(line), rope.line_to_char(line + 1))
         }
+    }
+}
+
+#[cfg(test)]
+mod highlight_tests {
+    use super::{StyleSpan, shift_spans};
+
+    fn spans(v: &[(usize, usize)]) -> Vec<StyleSpan> {
+        v.iter().map(|&(start, end)| StyleSpan { start, end, style: 1 }).collect()
+    }
+
+    #[test]
+    fn spans_follow_edits_inside_a_line() {
+        // Typing inside a word grows it and moves the spans after it.
+        let mut s = spans(&[(0, 2), (3, 7), (8, 10)]);
+        shift_spans(&mut s, 5, 0, 1);
+        assert_eq!(s, spans(&[(0, 2), (3, 8), (9, 11)]));
+        // Typing at the end of a word extends it.
+        let mut s = spans(&[(3, 7), (8, 10)]);
+        shift_spans(&mut s, 7, 0, 1);
+        assert_eq!(s, spans(&[(3, 8), (9, 11)]));
+        // Typing before a span moves it.
+        let mut s = spans(&[(3, 7)]);
+        shift_spans(&mut s, 3, 0, 2);
+        assert_eq!(s, spans(&[(5, 9)]));
+        // Deleting across spans shrinks the one it starts in and drops the ones inside.
+        let mut s = spans(&[(0, 4), (5, 6), (7, 10)]);
+        shift_spans(&mut s, 2, 6, 0);
+        assert_eq!(s, spans(&[(0, 2), (2, 4)]));
     }
 }

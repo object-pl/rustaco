@@ -208,8 +208,9 @@ class WorkerLink {
     if (m.type === 'frame') {
       editorsById.get(m.editor)?.applyFrame(m);
     } else if (m.type === 'parsed') {
-      // The background parse caught up: frames get their final colours.
-      for (const e of this.model.editors) { e.frameKey = null; e.schedule(); }
+      // The background parse caught up: ask again for the final colours; the reply draws
+      // only if they differ.
+      for (const e of this.model.editors) { e.frameKey = null; e.requestHighlights(); }
     } else if (m.type === 'resync') {
       worker?.postMessage({ type: 'edit', id: this.id, version: this.model.core.version(), reset: this.model.getValue() });
       this.sent = this.model.core.version();
@@ -1370,7 +1371,9 @@ export class RustacoEditor {
     });
     if (this.model.syntax?.hasTree) this.core.setTreeBrackets(m.bracket);
     else this.core.clearTreeBrackets();
-    this.schedule();
+    // Most replies repeat what the edit already drew (the spans move with it); draw again
+    // only when the colours or the bracket pair changed.
+    if (this.core.takeHighlightsChanged()) this.schedule();
   }
 
   schedule() {
@@ -1381,21 +1384,31 @@ export class RustacoEditor {
     });
   }
 
+  /**
+   * Asks the worker for the visible lines' highlights, once per change of text, view or
+   * caret; until they arrive the last ones (moved with the edits) are drawn. The reply
+   * draws a frame only if it changes something (`applyFrame`).
+   */
+  requestHighlights() {
+    const s = this.model.syntax;
+    if (!s) return;
+    const { core } = this;
+    const runs = Array.from(core.visibleLines());
+    const caret = core.primaryRange()[0];
+    const colorize = !!this.options.bracketPairColorization;
+    const key = `${this.model.core.version()}|${runs.join(',')}|${caret}|${colorize}`;
+    if (key !== this.frameKey) {
+      this.frameKey = key;
+      s.frame(this, runs, colorize, caret);
+    }
+  }
+
   #drawFrame(caret = this.focused && this.caretOn) {
     const { model, core } = this;
     const h = model.highlighter;
     const s = model.syntax;
     if (s) {
-      // Ask the worker for this frame's highlights once per change of text, view or caret;
-      // until they arrive the last ones (moved with the edits) are drawn.
-      const runs = Array.from(core.visibleLines());
-      const caret = core.primaryRange()[0];
-      const colorize = !!this.options.bracketPairColorization;
-      const key = `${model.core.version()}|${runs.join(',')}|${caret}|${colorize}`;
-      if (key !== this.frameKey) {
-        this.frameKey = key;
-        s.frame(this, runs, colorize, caret);
-      }
+      this.requestHighlights();
     } else if (h) {
       const parsed = model.updateHighlighter();
       // One run of lines per stretch between folds, so folded lines are never highlighted.

@@ -1,7 +1,7 @@
 // The completion list: asks the completion providers, filters fuzzily as the word grows,
 // shows a documentation pane for the selected item, and inserts plain text or snippets.
 
-import { CompletionItemKind, fuzzyScore, providersFor } from './languages.js';
+import { CompletionItemKind, providersFor } from './languages.js';
 
 /** Icons for item kinds: one letter in a small box. */
 const KIND_ICON = {
@@ -80,16 +80,25 @@ export class SuggestController {
     if (asked !== this.request) return;
     let items = results.flat().map((item) => normalize(item, ws, head));
     if (items.length === 0) items = wordItems(model, ws, head);
-    this.items = items;
+    this.#setItems(items);
     this.start = ws;
     this.explicit = explicit;
     this.refilter();
   }
 
+  /** Keeps the items here for the list and hands their filter texts to Rust for ranking. */
+  #setItems(items) {
+    this.items = items;
+    this.editor.core.setCompletionItems(
+      items.map((i) => i.filterText ?? i.label).join('\0'),
+      items.map((i) => i.sortText ?? i.label).join('\0'),
+    );
+  }
+
   /** Shows the options of a snippet's choice stop. */
   showChoices(choices) {
     const [start, end] = this.editor.core.primaryRange();
-    this.items = choices.map((label) => ({ label, kind: CompletionItemKind.Value, insertText: label, range: { start, end }, choice: true }));
+    this.#setItems(choices.map((label) => ({ label, kind: CompletionItemKind.Value, insertText: label, range: { start, end }, choice: true })));
     this.start = start;
     this.explicit = true;
     this.choiceMode = true;
@@ -103,14 +112,15 @@ export class SuggestController {
     if (head < this.start) { this.close(); return; }
     const prefix = this.choiceMode ? '' : e.getModel().getTextRange(this.start, head);
     if ([...prefix].some((c) => !isWordChar(c))) { this.close(); return; }
+    // Rust filters and ranks; choices keep the snippet's order.
+    const ranked = e.core.rankCompletions(prefix, !!this.choiceMode);
     const scored = [];
-    for (const item of this.items) {
-      const m = fuzzyScore(prefix, item.filterText ?? item.label);
-      if (m) scored.push({ item, score: m.score, matches: (item.filterText ?? item.label) === item.label ? m.matches : [] });
-    }
-    // Choices keep the snippet's order; completions sort by score, then sort text.
-    if (!this.choiceMode) {
-      scored.sort((a, b) => b.score - a.score || (a.item.sortText ?? a.item.label).localeCompare(b.item.sortText ?? b.item.label));
+    for (let i = 0; i < ranked.length;) {
+      const item = this.items[ranked[i]];
+      const n = ranked[i + 1];
+      const matches = (item.filterText ?? item.label) === item.label ? Array.from(ranked.subarray(i + 2, i + 2 + n)) : [];
+      scored.push({ item, matches });
+      i += 2 + n;
     }
     // An exact match of the only item is already typed: nothing to offer.
     if (scored.length === 0 || (!this.explicit && scored.length === 1 && scored[0].item.label === prefix)) {
@@ -253,23 +263,10 @@ function normalize(item, wordStart, head) {
 /** Words of the text around the caret, for languages without a completion provider. */
 function wordItems(model, wordStart, head) {
   const [line] = model.core.positionAt(head);
-  // The words change little between keystrokes; collecting them reads thousands of lines,
-  // so they are kept for a few seconds while the caret stays nearby.
-  const cached = wordCache.get(model);
-  let words;
-  if (cached && Math.abs(cached.line - line) < WORD_LINES / 4 && performance.now() - cached.at < 5000) {
-    words = cached.words;
-  } else {
-    const from = model.core.offsetAt(Math.max(0, line - WORD_LINES), 0);
-    const to = model.core.offsetAt(line + WORD_LINES, 1 << 30);
-    words = [...new Set(model.getTextRange(from, to).match(/[\p{L}_][\p{L}\p{N}_]*/gu) ?? [])].slice(0, 5000);
-    wordCache.set(model, { line, at: performance.now(), words });
-  }
-  const current = model.getTextRange(wordStart, head);
-  return words.filter((w) => w !== current).map((w) => ({
+  // Collected and cached in Rust (see Model.wordsNear).
+  const words = model.core.wordsNear(line, WORD_LINES, 5000, model.getTextRange(wordStart, head));
+  if (!words) return [];
+  return words.split('\n').map((w) => ({
     label: w, kind: CompletionItemKind.Text, insertText: w, range: { start: wordStart, end: head },
   }));
 }
-
-/** Words collected per model: `{ line, at, words }`. */
-const wordCache = new WeakMap();

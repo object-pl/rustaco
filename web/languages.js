@@ -1,6 +1,8 @@
 // Language feature providers: a host registers them per language id, the editor asks them.
 // Positions are char offsets into the model's text; ranges are `{ start, end }` offsets.
 
+import { fuzzyScore as fuzzyScoreWasm } from './pkg/rustaco_web.js';
+
 const registries = new Map();
 
 function register(kind, languageId, provider) {
@@ -103,31 +105,10 @@ export const languages = Object.freeze({
  * Fuzzy match of `pattern` in `word`, case-insensitive, as completion filters: every pattern
  * char must appear in order. Matches at the word start, after `_`, `-`, `.` or at a lower to
  * upper case step score higher, and so do runs of consecutive chars. Returns
- * `{ score, matches }` (indexes of the matched chars) or null.
+ * `{ score, matches }` (indexes of the matched chars) or null. Computed in Rust: call it
+ * after the editor module has loaded (after the first `createEditor` or `createModel`).
  */
 export function fuzzyScore(pattern, word) {
-  if (!pattern) return { score: 0, matches: [] };
-  const p = pattern.toLowerCase();
-  const w = word.toLowerCase();
-  const boundary = (i) => i === 0 || '_-. /:'.includes(word[i - 1])
-    || (word[i] !== word[i].toLowerCase() && word[i - 1] === word[i - 1].toLowerCase());
-  // The first char must match at the start or at a boundary, as VS Code requires.
-  let best = null;
-  for (let first = 0; first < w.length; first++) {
-    if (w[first] !== p[0] || !boundary(first)) continue;
-    const matches = [first];
-    let score = (first === 0 ? 8 : 5) + (word[first] === pattern[0] ? 1 : 0);
-    let wi = first + 1;
-    for (let pi = 1; pi < p.length; pi++) {
-      while (wi < w.length && w[wi] !== p[pi]) wi++;
-      if (wi >= w.length) { score = -1; break; }
-      const consecutive = matches[matches.length - 1] === wi - 1;
-      score += 1 + (consecutive ? 3 : 0) + (boundary(wi) ? 4 : 0) + (word[wi] === pattern[pi] ? 1 : 0);
-      matches.push(wi);
-      wi++;
-    }
-    if (score >= 0 && (!best || score > best.score)) best = { score: score - first * 0.1, matches };
-    if (first === 0 && best) break;
-  }
-  return best;
+  const r = fuzzyScoreWasm(pattern, word);
+  return r ? { score: r[0], matches: Array.from(r.subarray(1)) } : null;
 }
