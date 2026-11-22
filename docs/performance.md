@@ -66,6 +66,16 @@ After the text layer, the whole frame moved to WebGL (backgrounds, selections, g
 | Firefox probe, 100,000 lines | 2.8 ms | 5.4 ms | 10.3 ms |
 | Chromium, keydown to end of frame, 100,000 lines | 7.6 ms | 16.1 ms | 14.0 ms |
 
+Then a keystroke went from two or three frames to one (highlights move with in-line edits, and a worker reply that changes nothing draws nothing), and completion ranking and word collection moved to Rust:
+
+| Main thread per keystroke | Rustaco | Monaco |
+|---|---|---|
+| Chromium task time, 5,000 lines | 4.2 ms | 9.8 ms |
+| Chromium task time, 100,000 lines | 3.8 ms | 6.0 ms |
+| Firefox probe, 5,000 lines | 3.6 ms | 10.0 ms |
+| Firefox probe, 100,000 lines | 2.5 ms | 13.8 ms |
+| Chromium, keydown to end of frame, 100,000 lines | 2.8 ms | 15.3 ms |
+
 The section below is the earlier comparison, with the canvas renderer.
 
 ## Against Monaco
