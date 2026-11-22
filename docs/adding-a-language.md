@@ -62,3 +62,13 @@ When a tree-sitter grammar is too large for the browser (SQL's is 1.2 MB), keep 
 ## TextMate grammar instead
 
 Put the VS Code grammar JSON in `crates/rustaco-syntax/textmate/` (record it in that directory's README and in `THIRD_PARTY.md`) and add it to the grammar table in `crates/rustaco-syntax/src/textmate.rs`, next to the SQL, Kotlin and Dockerfile entries. Set the catalog entry's pack to `"textmate"`. TextMate languages highlight but have no syntax tree, so bracket matching falls back to a text scan and folding to indentation.
+
+## Language services come with the grammar
+
+A tree-sitter language gets more than colours. Its pack runs as a language server in the browser's worker (`rustaco_syntax::SyntaxService`), and the editor registers completion, definition, references and rename for it. These work from the grammar alone: keywords are the grammar's anonymous word tokens, names are the nodes whose kind ends in `identifier`, and declarations are found by the field they sit in (`name`, `pattern`, `declarator`). A grammar that names identifiers differently (`word`, `symbol`) gets keyword completion only, until `is_name` in `crates/rustaco-syntax/src/locals.rs` learns its kind.
+
+The same service runs anywhere `rustaco-lsp` runs: `cargo run -p rustaco-syntax --example server` is a language server on stdio for any editor.
+
+## A hand-written engine instead
+
+A language without a grammar can be tokenized by hand, as Mermaid is (`crates/rustaco-syntax/src/mermaid.rs`): a function from a line to (char range, highlight name) pairs, a variant in `rustaco_syntax::Engine`, and completion in `SyntaxService::completion`. The `mermaid` feature of `rustaco-syntax-wasm` builds a pack with nothing else in it (121 KB gzipped).

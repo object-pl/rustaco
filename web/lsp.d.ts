@@ -23,11 +23,23 @@ export interface ConnectOptions {
 export class LspClient {
   /** The capabilities the server announced. */
   capabilities: Record<string, unknown>;
-  /** Opens `model` on the server as `uri` and keeps it in sync; returns a detach function. */
-  attach(model: RustacoModel, uri: string): () => void;
+  /**
+   * Opens `model` on the server as `uri` (in `languageId`, by default the client's) and
+   * keeps it in sync; returns a detach function.
+   */
+  attach(model: RustacoModel, uri: string, languageId?: string): () => void;
   detach(model: RustacoModel): void;
-  request(method: string, params: unknown): Promise<unknown>;
+  /** Any request; resolves to the result as the server sent it. */
+  request(method: string, params: unknown, token?: unknown): Promise<unknown>;
   notify(method: string, params: unknown): void;
+  /** Asks about an attached model by editor feature (`'foldingRange'`, `'documentSymbol'`, ...). */
+  ask(kind: string, model: RustacoModel, a?: number, b?: number, text?: string): Promise<unknown>;
+  /** Registers providers for `languageId`, limited to the capability names in `only`. */
+  registerProviders(languageId?: string, only?: Set<string> | null): void;
+  /** Called for notifications the client does not handle itself. */
+  onNotification: ((method: string, params: unknown) => void) | null;
+  /** Rejects every waiting request. */
+  abort(reason?: string): void;
   /** `shutdown`, `exit`, and the providers go away. */
   dispose(): Promise<void>;
 }

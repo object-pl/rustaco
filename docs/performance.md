@@ -41,6 +41,8 @@ What a page loads to show a Rust file, measured with Playwright on the benchmark
 
 The Rust language module was 435 KB of Rustaco's 768 KB. Most of the part every module repeats was the Unicode tables of the `regex` crate, which tree-sitter uses only for `#match?` predicates; a shim on `regex-lite` (`vendor/README.md`) took about 160 KB off each module, so the Rust module is now 270 KB. A second language adds its own module. Monaco's Monarch grammars are a few KB each, but its language services load workers when used: TypeScript 1,507 KB gzipped (6.9 MB raw), CSS 233 KB, HTML 184 KB, JSON 118 KB.
 
+Since the language modules became language servers (roadmap, phase 13) each carries the LSP server and `serde_json`: 60 to 80 KB gzipped more per module, the Rust module 346 KB.
+
 `scripts/check-size.sh` fails the build above 1 MB for the editor module and 700 KB for a language module.
 
 ## Text layer: WebGL, canvas, DOM

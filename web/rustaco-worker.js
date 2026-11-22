@@ -1,20 +1,34 @@
-// Work off the main thread: parsing, highlighting, bracket and fold queries, search.
+// Work off the main thread: the language servers of the language modules, and search and
+// diff on text replicas.
 //
-// The page sends each model's edits as they happen and asks for what a frame needs; every
-// reply carries the model version it was computed for, so the page can drop stale ones.
-// Parsing runs in slices between messages, so a request never waits for a long parse:
-// until the parse finishes, highlights come from the previous tree shifted by the edits.
+// Each language module (pack) runs as one language server here. The page talks to it in
+// JSON-RPC (`{ type: 'lsp', pack, messages }` both ways): documents open and change with
+// `didOpen` and `didChange`, a frame's highlights come from `rustaco/highlight`, the rest
+// through the standard requests. Between messages the servers parse in slices, so a request
+// never waits for a long parse; until a parse finishes, highlights come from the previous
+// tree shifted by the edits, and `rustaco/parsed` tells the page when it caught up.
+//
+// Search and diff work on text replicas that follow the page's edits (`openText`, `edit`);
+// every reply carries the model version it was computed for.
 
 const SLICE_MS = 20;
 
-const packs = new Map();
-/** Loads the language module for `pack` once; resolves to the module or null. */
-function loadPack(pack) {
-  if (!packs.has(pack)) {
+/** Language servers by pack: a promise of the server, or null when the module is missing. */
+const servers = new Map();
+/** Servers that loaded, for the parse loop. */
+const live = new Map();
+
+function loadServer(pack) {
+  if (!servers.has(pack)) {
     const url = new URL(`./pkg/syntax-${pack}/rustaco_syntax_wasm.js`, import.meta.url);
-    packs.set(pack, import(url.href).then(async (m) => { await m.default(); return m; }).catch(() => null));
+    servers.set(pack, import(url.href).then(async (m) => {
+      await m.default();
+      const server = new m.LanguageServer();
+      live.set(pack, server);
+      return server;
+    }).catch(() => null));
   }
-  return packs.get(pack);
+  return servers.get(pack);
 }
 
 let editorModule = null;
@@ -24,17 +38,14 @@ function loadEditor() {
   return editorModule;
 }
 
-/**
- * Models by id: the language module (`h`) and a text replica for search (`text`), each
- * present once asked for, the model version both are at, and whether `h` has parsed it.
- */
+/** Text replicas by model id, with the model version each is at. */
 const docs = new Map();
 const queue = [];
 let pumping = false;
 let parseTimer = 0;
 
 function doc(id) {
-  if (!docs.has(id)) docs.set(id, { h: null, text: null, version: 0, parsed: true });
+  if (!docs.has(id)) docs.set(id, { text: null, version: 0 });
   return docs.get(id);
 }
 
@@ -58,30 +69,39 @@ async function pump() {
   scheduleParse();
 }
 
+/** An error answer for each request among `messages`. */
+function failed(messages, reason) {
+  const out = [];
+  for (const text of messages) {
+    let m = null;
+    try { m = JSON.parse(text); } catch { /* not JSON: nothing to answer */ }
+    if (m && m.id !== undefined && m.method) {
+      out.push(JSON.stringify({ jsonrpc: '2.0', id: m.id, error: { code: -32603, message: reason } }));
+    }
+  }
+  return out;
+}
+
 async function handle(msg) {
+  if (msg.type === 'lsp') {
+    const server = await loadServer(msg.pack);
+    let out = [];
+    if (!server) {
+      out = failed(msg.messages, `no language module for ${msg.pack}`);
+    } else {
+      for (const text of msg.messages) {
+        try {
+          out.push(...server.handle(text));
+        } catch (err) {
+          out.push(...failed([text], String(err)));
+        }
+      }
+    }
+    if (out.length) self.postMessage({ type: 'lsp', pack: msg.pack, messages: out });
+    return;
+  }
   const d = doc(msg.id);
   switch (msg.type) {
-    case 'open': {
-      d.h?.free();
-      d.h = null;
-      const module = await loadPack(msg.pack);
-      let ok = false;
-      if (module) {
-        try {
-          d.h = new module.Highlighter(msg.language, msg.text);
-          d.version = msg.version;
-          d.parsed = false;
-          ok = true;
-        } catch { ok = false; }
-      }
-      self.postMessage({ type: 'reply', req: msg.req, ok, hasTree: ok && d.h.hasTree() });
-      break;
-    }
-    case 'closeSyntax':
-      d.h?.free();
-      d.h = null;
-      d.parsed = true;
-      break;
     case 'openText': {
       const m = await loadEditor();
       d.text?.free();
@@ -90,54 +110,19 @@ async function handle(msg) {
       break;
     }
     case 'close':
-      d.h?.free();
       d.text?.free();
       docs.delete(msg.id);
       break;
     case 'edit':
       try {
-        if (msg.reset !== undefined) {
-          d.h?.reset(msg.reset);
-          d.text?.reset(msg.reset);
-        } else {
-          d.h?.edit(msg.numbers, msg.text);
-          d.text?.edit(msg.numbers, msg.text);
-        }
+        if (msg.reset !== undefined) d.text?.reset(msg.reset);
+        else d.text?.edit(msg.numbers, msg.text);
       } catch {
         // Out of step with the page: ask for the whole text.
         self.postMessage({ type: 'resync', id: msg.id });
       }
       d.version = msg.version;
-      if (d.h) d.parsed = false;
       break;
-    case 'frame': {
-      if (!d.h) break;
-      // A short parse first, so small edits show with their final colours at once.
-      if (!d.parsed) d.parsed = d.h.parse(4);
-      const segments = [];
-      for (let i = 0; i < msg.runs.length; i += 2) {
-        segments.push([msg.runs[i], msg.runs[i + 1], d.h.highlight(msg.runs[i], msg.runs[i + 1], msg.colorize)]);
-      }
-      const bracket = d.h.matchingBracket(msg.caret);
-      self.postMessage({ type: 'frame', id: msg.id, editor: msg.editor, version: d.version, segments, bracket, parsed: d.parsed });
-      break;
-    }
-    case 'enclosing':
-    case 'folding':
-    case 'symbols': {
-      if (!d.h) { self.postMessage({ type: 'reply', req: msg.req, version: d.version, result: [] }); break; }
-      // These need the tree for the current text: finish the parse.
-      while (!d.parsed) d.parsed = d.h.parse(1000);
-      const result = msg.type === 'enclosing' ? d.h.enclosingRanges(msg.start, msg.end)
-        : msg.type === 'folding' ? d.h.foldingRanges() : d.h.documentSymbols();
-      self.postMessage({ type: 'reply', req: msg.req, version: d.version, result });
-      break;
-    }
-    case 'highlight': {
-      if (d.h) while (!d.parsed) d.parsed = d.h.parse(1000);
-      self.postMessage({ type: 'reply', req: msg.req, result: d.h ? d.h.highlight(msg.start, msg.end, false) : [] });
-      break;
-    }
     case 'diff': {
       // The original's text against the modified model's, both kept here.
       const other = doc(msg.other);
@@ -155,16 +140,16 @@ async function handle(msg) {
   }
 }
 
-/** Parses unparsed models a slice at a time, yielding to messages in between. */
+/** Parses pending documents a slice at a time, yielding to messages in between. */
 function scheduleParse() {
-  if (parseTimer || ![...docs.values()].some((d) => d.h && !d.parsed)) return;
+  if (parseTimer || ![...live.values()].some((s) => s.busy())) return;
   parseTimer = setTimeout(() => {
     parseTimer = 0;
     if (pumping) return;
-    for (const [id, d] of docs) {
-      if (!d.h || d.parsed) continue;
-      d.parsed = d.h.parse(SLICE_MS);
-      if (d.parsed) self.postMessage({ type: 'parsed', id, version: d.version });
+    for (const [pack, server] of live) {
+      if (!server.busy()) continue;
+      const messages = server.idle(SLICE_MS);
+      if (messages.length) self.postMessage({ type: 'lsp', pack, messages });
     }
     scheduleParse();
   }, 0);

@@ -1626,6 +1626,7 @@ dependencies = [
  "proptest",
  "ropey",
  "rustaco-core",
+ "rustaco-lsp",
  "rustaco-view",
  "serde_json",
  "tree-sitter",
@@ -1654,7 +1655,9 @@ version = "0.2.0"
 dependencies = [
  "js-sys",
  "rustaco-core",
+ "rustaco-lsp",
  "rustaco-syntax",
+ "serde_json",
  "wasm-bindgen",
 ]
 

@@ -30,6 +30,8 @@ Several editors can show one model (a split view): create the model with `create
 
 A language module downloads the first time a model uses one of its languages; `detectLanguage(fileName, firstLine)` picks an id. Parsing, highlighting, bracket and fold queries, search re-runs and diffs run in a Web Worker started on first use. Where workers cannot start (a CSP without `worker-src` for the page's origin, or `setWorkersEnabled(false)` before creating models), the same work runs on the main thread in 4 ms slices per frame.
 
+In the worker each language module is a language server. Besides highlighting it answers completion (the grammar's keywords and the file's names), definition, references and rename within the file, and the editor registers those as providers for the module's languages; `setLanguageServicesEnabled(false)` before opening a language keeps them out. Providers the page registers for the same language are asked too, and their completion items are merged with these. Mermaid (`mermaid`, `.mmd`) has its own small module with colours and completion of diagram types, directions, shapes and node ids.
+
 Under a Content Security Policy the page needs `'wasm-unsafe-eval'` in `script-src`. The editor uses no inline scripts and sets styles only through the CSSOM, so `style-src 'self'` is enough. The editor also works inside Shadow DOM.
 
 ## Language features from providers
@@ -94,4 +96,4 @@ Both sides stay editable and the diff recomputes 200 ms after an edit. `diff.cha
 
 ## Size and limits
 
-The editor module is about 230 KB gzipped; language modules are 290 to 690 KB each. Pastes longer than `maxPasteLength` (50,000,000 UTF-16 units by default) are refused and reported through `editor.onDidRefusePaste(fn)`.
+The editor module is about 350 KB gzipped; language modules are 235 to 630 KB each. Pastes longer than `maxPasteLength` (50,000,000 UTF-16 units by default) are refused and reported through `editor.onDidRefusePaste(fn)`.

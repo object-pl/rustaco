@@ -90,6 +90,9 @@ pub struct Features {
     pub document_symbols: bool,
     /// [`LanguageService::diagnostics`] is asked after every change.
     pub diagnostics: bool,
+    /// Methods outside the protocol that [`LanguageService::request`] answers, advertised
+    /// under `experimental` in the capabilities (`"rustaco/highlight"`).
+    pub methods: Vec<String>,
 }
 
 impl Features {
@@ -187,5 +190,12 @@ pub trait LanguageService {
 
     fn document_symbols(&mut self, cx: &Context) -> Vec<Symbol> {
         Vec::new()
+    }
+
+    /// A request outside the protocol (one of [`Features::methods`]) about the document in
+    /// `params.textDocument`. The params and the answer are the service's own JSON; None
+    /// answers "method not found".
+    fn request(&mut self, cx: &Context, method: &str, params: &Value) -> Option<Value> {
+        None
     }
 }

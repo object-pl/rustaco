@@ -79,6 +79,16 @@ impl<S: LanguageService> LspServer<S> {
         self.docs.get(uri).map(|d| &d.model)
     }
 
+    /// Calls `f` with the service and each open document, for work between messages (a
+    /// parse continued in slices).
+    pub fn each_document(&mut self, mut f: impl FnMut(&mut S, &Context)) {
+        let cancel = Cancel::default();
+        for (uri, open) in &self.docs {
+            let cx = Context { uri, language: &open.language, model: &open.model, cancel: &cancel };
+            f(&mut self.service, &cx);
+        }
+    }
+
     /// True after the client sent `exit`.
     pub fn exited(&self) -> bool {
         self.exited
@@ -216,7 +226,8 @@ impl<S: LanguageService> LspServer<S> {
         }
     }
 
-    fn notify(&mut self, method: &str, params: Value) {
+    /// Queues a notification for the client, for a service that has news between requests.
+    pub fn notify(&mut self, method: &str, params: Value) {
         self.out.push(json!({ "jsonrpc": "2.0", "method": method, "params": params }));
     }
 
@@ -281,6 +292,10 @@ impl<S: LanguageService> LspServer<S> {
         }
         if f.code_lens {
             c.insert("codeLensProvider".into(), json!({}));
+        }
+        if !f.methods.is_empty() {
+            let methods: Map<String, Value> = f.methods.iter().map(|m| (m.clone(), json!(true))).collect();
+            c.insert("experimental".into(), Value::Object(methods));
         }
         Value::Object(c)
     }
@@ -450,7 +465,10 @@ impl<S: LanguageService> LspServer<S> {
             "textDocument/documentSymbol" => {
                 json!(service.document_symbols(&cx).iter().map(|s| symbol_json(s, &r)).collect::<Vec<_>>())
             }
-            _ => return Err((METHOD_NOT_FOUND, format!("{method} is not supported"))),
+            _ => match service.request(&cx, method, params) {
+                Some(v) => v,
+                None => return Err((METHOD_NOT_FOUND, format!("{method} is not supported"))),
+            },
         })
     }
 }

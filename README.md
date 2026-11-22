@@ -21,7 +21,7 @@ const editor = await createEditor(document.getElementById('editor'), {
 editor.onDidChangeContent(() => console.log(editor.getValue()));
 ```
 
-The editor module is about 345 KB gzipped; each language module (290 to 690 KB) loads the first time a model uses that language. The page needs `'wasm-unsafe-eval'` in `script-src` when it sets a Content Security Policy; inline scripts and styles are not needed. Types for the API are in `web/rustaco.d.ts`.
+The editor module is about 350 KB gzipped; each language module (235 to 630 KB) loads the first time a model uses that language and runs as a language server in a worker: highlighting, folding, outline, and completion, definition, references and rename within the file for every bundled grammar. The page needs `'wasm-unsafe-eval'` in `script-src` when it sets a Content Security Policy; inline scripts and styles are not needed. Types for the API are in `web/rustaco.d.ts`.
 
 ```
 cargo test

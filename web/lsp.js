@@ -71,6 +71,11 @@ export class LspClient {
     this.docs = new Map();
     this.byUri = new Map();
     this.disposables = [];
+    /** Raw requests (`request`), answered here without the session: id -> { resolve, reject }. */
+    this.raw = new Map();
+    this.nextRaw = 1;
+    /** Called with (method, params) for notifications the client does not handle itself. */
+    this.onNotification = null;
     transport.onMessage((text) => this.#receive(text));
   }
 
@@ -105,9 +110,38 @@ export class LspClient {
     return this.#wait(this.session.request(kind, doc.handle, model.core, a, b, text), model, token);
   }
 
-  /** Sends any request; resolves to the result as the server sent it. */
+  /**
+   * Asks about an attached model by editor feature (`'foldingRange'`, `'documentSymbol'`,
+   * ...; see `LspSession.request`); resolves to the decoded answer.
+   */
+  ask(kind, model, a = 0, b = 0, text = undefined) {
+    return this.#ask(kind, model, null, a, b, text);
+  }
+
+  /** Rejects every waiting request, for a transport that is gone. */
+  abort(reason = 'the connection closed') {
+    for (const p of [...this.pending.values(), ...this.raw.values()]) p.reject(new Error(reason));
+    this.pending.clear();
+    this.raw.clear();
+  }
+
+  /**
+   * Sends any request; resolves to the result as the server sent it. Its answer skips the
+   * session: JS parses it once, which matters for the editor's frame highlights.
+   */
   request(method, params, token) {
-    return this.#wait(this.session.requestRaw(method, JSON.stringify(params ?? null)), null, token);
+    const id = `r${this.nextRaw++}`;
+    return new Promise((resolve, reject) => {
+      this.raw.set(id, { resolve, reject });
+      // Queued edits go first, so the server answers about the current text.
+      this.#flush();
+      this.transport.send(JSON.stringify({ jsonrpc: '2.0', id, method, params: params ?? null }));
+      token?.onCancellationRequested(() => {
+        if (!this.raw.delete(id)) return;
+        this.notify('$/cancelRequest', { id });
+        resolve(null);
+      });
+    });
   }
 
   notify(method, params) {
@@ -116,6 +150,16 @@ export class LspClient {
   }
 
   #receive(text) {
+    if (this.raw.size) {
+      const m = JSON.parse(text);
+      const p = typeof m.id === 'string' && !m.method ? this.raw.get(m.id) : undefined;
+      if (p) {
+        this.raw.delete(m.id);
+        if (m.error) p.reject(new Error(m.error.message ?? 'error'));
+        else p.resolve(m.result ?? null);
+        return;
+      }
+    }
     const r = JSON.parse(this.session.receive(text));
     if (r.type === 'response') {
       const p = this.pending.get(r.id);
@@ -128,6 +172,8 @@ export class LspClient {
       }
     } else if (r.type === 'diagnostics') {
       this.#diagnostics(r.uri);
+    } else if (r.type === 'notification') {
+      this.onNotification?.(r.method, r.params);
     } else if (r.type === 'applyEdit') {
       const applied = this.applyWorkspaceEdit(r.edit);
       this.session.respond(JSON.stringify(r.id), JSON.stringify({ applied }));
@@ -140,9 +186,9 @@ export class LspClient {
     return this.capabilities;
   }
 
-  /** Opens `model` on the server as `uri` and keeps it in sync. */
-  attach(model, uri) {
-    const handle = this.session.open(model.core, uri, this.languageId);
+  /** Opens `model` on the server as `uri` (in `languageId`) and keeps it in sync. */
+  attach(model, uri, languageId = this.languageId) {
+    const handle = this.session.open(model.core, uri, languageId);
     const doc = { uri, handle, collection: model.createDecorationsCollection() };
     this.docs.set(model, doc);
     this.byUri.set(uri, model);
@@ -224,11 +270,14 @@ export class LspClient {
     if (command) this.request('workspace/executeCommand', { command: command.command, arguments: command.arguments ?? [] });
   }
 
-  /** Registers the editor providers the server's capabilities allow. */
-  registerProviders() {
+  /**
+   * Registers the editor providers the server's capabilities allow, for `languageId`;
+   * `only` (a set of capability names such as `'renameProvider'`) limits them.
+   */
+  registerProviders(languageId = this.languageId, only = null) {
     const c = this.capabilities;
-    const id = this.languageId;
-    const reg = (cap, register) => { if (c[cap]) this.disposables.push(register()); };
+    const id = languageId;
+    const reg = (cap, register) => { if (c[cap] && (!only || only.has(cap))) this.disposables.push(register()); };
     const diagnosticsAt = (model, start, end) => (this.docs.get(model)?.diagnostics ?? [])
       .filter((d) => d.offsets.start <= end && start <= d.offsets.end);
 

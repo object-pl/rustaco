@@ -116,6 +116,14 @@ export function knownLanguages(): Promise<string[]>;
  */
 export function setWorkersEnabled(on: boolean): void;
 
+/**
+ * Whether the language modules also act as providers (on by default): completion from the
+ * grammar's keywords and the file's names, definition, references and rename within the
+ * file; for Mermaid, completion of diagram types, directions, shapes and node ids. Affects
+ * languages opened afterwards.
+ */
+export function setLanguageServicesEnabled(on: boolean): void;
+
 export interface DecorationTypeOptions {
   /** CSS colour behind the decorated text, or behind whole lines with `wholeLine`. */
   background?: string;

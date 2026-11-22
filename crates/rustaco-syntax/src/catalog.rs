@@ -106,6 +106,8 @@ static CATALOG: &[LanguageInfo] = &[
         LanguageConfig { line_comment: None, block_comment: None, brackets: BRACKETS, auto_closing: CLOSE_C, indent_after: &[] }),
     lang!("dockerfile", "Dockerfile", "textmate", ext: &["dockerfile"], files: &["Dockerfile", "Containerfile"],
         shebangs: &[], HASH_STYLE),
+    lang!("mermaid", "Mermaid", "mermaid", ext: &["mmd", "mermaid"], files: &[], shebangs: &[],
+        LanguageConfig { line_comment: Some("%%"), block_comment: None, brackets: BRACKETS, auto_closing: CLOSE_C, indent_after: &[] }),
 ];
 
 pub fn catalog() -> &'static [LanguageInfo] {

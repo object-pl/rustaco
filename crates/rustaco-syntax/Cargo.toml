@@ -10,6 +10,7 @@ rust-version.workspace = true
 [dependencies]
 rustaco-core.workspace = true
 rustaco-view = { workspace = true, optional = true }
+rustaco-lsp = { workspace = true, optional = true }
 tree-sitter = { version = "0.27", default-features = false, optional = true }
 fancy-regex = { version = "0.20", optional = true }
 serde_json = { version = "1", optional = true }
@@ -33,16 +34,20 @@ tree-sitter-sequel = { version = "0.3", optional = true }
 tree-sitter-md = { version = "0.5", optional = true }
 
 [features]
-default = ["all-languages"]
+default = ["all-languages", "service"]
 all-languages = [
     "textmate", "rust", "javascript", "typescript", "json", "python", "c", "cpp", "go", "java", "csharp",
     "html", "css", "bash", "toml", "yaml", "sql", "markdown",
 ]
 # The parser and highlighter. Without it the crate provides only themes and highlight names,
 # which is all the browser editor bundle needs; parsing runs in separate language modules.
-engine = ["dep:tree-sitter", "dep:rustaco-view", "dep:ropey"]
+engine = ["highlighting", "dep:tree-sitter", "dep:ropey"]
+# Highlight spans, the `Engine` interface and the Mermaid tokenizer, which needs no grammar.
+highlighting = ["dep:rustaco-view"]
+# `SyntaxService`: the languages compiled in, served as a language server.
+service = ["highlighting", "dep:rustaco-lsp", "dep:serde_json"]
 # The TextMate tokenizer and bundled TextMate grammars (SQL, Kotlin, Dockerfile).
-textmate = ["dep:fancy-regex", "dep:serde_json", "dep:rustaco-view", "dep:ropey"]
+textmate = ["highlighting", "dep:fancy-regex", "dep:serde_json", "dep:ropey"]
 rust = ["engine", "dep:tree-sitter-rust"]
 javascript = ["engine", "dep:tree-sitter-javascript"]
 json = ["engine", "dep:tree-sitter-json"]
@@ -63,3 +68,7 @@ markdown = ["engine", "dep:tree-sitter-md"]
 
 [dev-dependencies]
 proptest = "1"
+
+[[example]]
+name = "server"
+required-features = ["service", "all-languages"]

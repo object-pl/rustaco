@@ -6,6 +6,7 @@ import { SuggestController } from './suggest.js';
 import { Features } from './features.js';
 import { onDidChangeProviders, providersFor } from './languages.js';
 import { WebGLText } from './webgl-text.js';
+import { LspClient } from './lsp.js';
 
 export { languages, CompletionItemKind, SymbolKind, fuzzyScore, CancellationTokenSource } from './languages.js';
 
@@ -94,7 +95,9 @@ function syntaxWorker() {
   }
   worker.onmessage = (e) => {
     const m = e.data;
-    if (m.type === 'reply') {
+    if (m.type === 'lsp') {
+      packTransports.get(m.pack)?.(m.messages);
+    } else if (m.type === 'reply') {
       pending.get(m.req)?.(m);
       pending.delete(m.req);
     } else {
@@ -108,6 +111,8 @@ function syntaxWorker() {
     worker = null;
     for (const resolve of pending.values()) resolve({ ok: false });
     pending.clear();
+    for (const server of packServers.values()) server.then((c) => c?.abort('the worker failed'));
+    packServers.clear();
     for (const s of workerModels.values()) s.model.workerFailed();
   };
   return worker;
@@ -123,9 +128,46 @@ function ask(message) {
   });
 }
 
+/** Language servers of the language modules in the worker: pack -> Promise<LspClient|null>. */
+const packServers = new Map();
+/** Delivery of the worker's messages to each pack's client: pack -> fn(messages). */
+const packTransports = new Map();
+/** Worker links by the uri their model is open under. */
+const linksByUri = new Map();
+/** Languages whose built-in providers (completion, definition, ...) are registered. */
+const servedLanguages = new Set();
+let languageServices = true;
+
 /**
- * A model's side in the worker: its language module and, once searched, a copy of its text.
- * Edits go over as they are made; replies come back tagged with the model version.
+ * Whether the language modules also act as providers: completion from keywords and the
+ * file's names, definition, references and rename within the file. On by default; turning
+ * it off affects languages opened afterwards.
+ */
+export function setLanguageServicesEnabled(on) { languageServices = !!on; }
+
+/** The client of `pack`'s language server in the worker, started on first use. */
+function packServer(pack) {
+  if (!packServers.has(pack)) {
+    if (!syntaxWorker()) return Promise.resolve(null);
+    const listeners = [];
+    packTransports.set(pack, (messages) => { for (const text of messages) for (const fn of listeners) fn(text); });
+    const transport = {
+      send(text) { worker?.postMessage({ type: 'lsp', pack, messages: [text] }); },
+      onMessage(fn) { listeners.push(fn); },
+    };
+    const client = new LspClient(transport, '', null, lspSessionNow());
+    client.onNotification = (method, params) => {
+      if (method === 'rustaco/parsed') linksByUri.get(params?.textDocument?.uri)?.receive({ type: 'parsed' });
+    };
+    packServers.set(pack, client.initialize(null).then(() => client, () => null));
+  }
+  return packServers.get(pack);
+}
+
+/**
+ * A model's side in the worker: its document on the language server of its pack and, once
+ * searched, a copy of its text. Edits go over as they are made; answers are matched to the
+ * model version they were asked for.
  */
 class WorkerLink {
   constructor(model) {
@@ -135,30 +177,53 @@ class WorkerLink {
     this.syntax = false;
     this.text = false;
     this.hasTree = false;
+    /** The pack's language server client while the model is open on it. */
+    this.client = null;
+    this.uri = `rustaco:model/${this.id}`;
     workerModels.set(this.id, this);
   }
 
-  /** Opens the language module for `language` (in `pack`); resolves to whether it loaded. */
+  /** Opens the model on the language server of `pack`; resolves to whether it has `language`. */
   async openSyntax(language, pack) {
-    this.sync();
     this.syntax = true;
-    const r = await ask({ type: 'open', id: this.id, pack, language, text: this.model.getValue(), version: this.sent });
-    this.hasTree = !!r.hasTree;
-    if (!r.ok) this.closeSyntax();
-    return !!r.ok;
+    const client = await packServer(pack);
+    if (!client || !this.syntax) return false;
+    this.client = client;
+    linksByUri.set(this.uri, this);
+    client.attach(this.model, this.uri, language);
+    let status = null;
+    try {
+      status = await client.request('rustaco/status', { textDocument: { uri: this.uri } });
+    } catch {
+      status = null;
+    }
+    if (!status?.ok || this.client !== client) {
+      if (this.client === client) this.closeSyntax();
+      return false;
+    }
+    this.hasTree = !!status.tree;
+    if (languageServices && !servedLanguages.has(language)) {
+      servedLanguages.add(language);
+      client.registerProviders(language, new Set(['completionProvider', 'definitionProvider', 'referencesProvider', 'renameProvider']));
+    }
+    return true;
   }
 
   closeSyntax() {
-    if (this.syntax) worker?.postMessage({ type: 'closeSyntax', id: this.id });
+    if (this.client) {
+      this.client.detach(this.model);
+      linksByUri.delete(this.uri);
+    }
+    this.client = null;
     this.syntax = false;
     this.hasTree = false;
   }
 
-  /** Sends the edits made since the last call. */
+  /** Sends the edits made since the last call to the text replica. */
   sync() {
     const v = this.model.core.version();
     if (v === this.sent || !worker) return;
-    if (this.syntax || this.text) {
+    if (this.text) {
       const batch = this.model.core.editsSince(this.sent);
       if (batch.stale()) worker.postMessage({ type: 'edit', id: this.id, version: v, reset: this.model.getValue() });
       else worker.postMessage({ type: 'edit', id: this.id, version: v, numbers: batch.numbers(), text: batch.text() });
@@ -167,30 +232,39 @@ class WorkerLink {
     this.sent = v;
   }
 
+  /** Asks for a frame's highlights and bracket pair; the answer goes to `editor.applyFrame`. */
   frame(editor, runs, colorize, caret) {
-    this.sync();
-    worker?.postMessage({ type: 'frame', id: this.id, editor: editor.id, runs, colorize, caret });
+    const { client } = this;
+    if (!client) return;
+    const version = this.model.core.version();
+    client.sync(this.model);
+    client.request('rustaco/highlight', { textDocument: { uri: this.uri }, lines: runs, colorize, caret })
+      .then((r) => { if (r) editorsById.get(editor.id)?.applyFrame({ ...r, version }); }, () => {});
   }
 
+  /** Ranges of the syntax nodes around `start..end`, innermost first, as flat pairs. */
   async enclosing(start, end) {
-    this.sync();
-    return (await ask({ type: 'enclosing', id: this.id, start, end })).result ?? [];
+    const ranges = await this.client?.ask('selectionRange', this.model, start).catch(() => null);
+    return (ranges ?? []).filter((r) => r.start <= start && r.end >= end).flatMap((r) => [r.start, r.end]);
   }
 
+  /** Highlight quads of lines `start..end`, after the parse catches up. */
   async highlight(start, end) {
-    this.sync();
-    return (await ask({ type: 'highlight', id: this.id, start, end })).result ?? [];
+    const params = { textDocument: { uri: this.uri }, lines: [start, end], full: true };
+    const r = await this.client?.request('rustaco/highlight', params).catch(() => null);
+    return r?.segments?.[0]?.[2] ?? [];
   }
 
+  /** The outline from the syntax tree, as a tree of symbols. */
   async symbols() {
-    this.sync();
-    return (await ask({ type: 'symbols', id: this.id })).result ?? [];
+    return (await this.client?.ask('documentSymbol', this.model).catch(() => null)) ?? [];
   }
 
+  /** Fold regions as flat pairs (header line, last hidden line), with the version they are for. */
   async folding() {
-    this.sync();
-    const r = await ask({ type: 'folding', id: this.id });
-    return { ranges: r.result ?? [], version: r.version };
+    const version = this.model.core.version();
+    const ranges = await this.client?.ask('foldingRange', this.model).catch(() => null);
+    return { ranges: (ranges ?? []).flatMap((r) => [r.start, r.end]), version };
   }
 
   /** Keeps a copy of the text in the worker, for search and diff. */
@@ -221,9 +295,7 @@ class WorkerLink {
   }
 
   receive(m) {
-    if (m.type === 'frame') {
-      editorsById.get(m.editor)?.applyFrame(m);
-    } else if (m.type === 'parsed') {
+    if (m.type === 'parsed') {
       // The background parse caught up: ask again for the final colours; the reply draws
       // only if they differ.
       for (const e of this.model.editors) { e.frameKey = null; e.requestHighlights(); }
@@ -234,6 +306,7 @@ class WorkerLink {
   }
 
   close() {
+    this.closeSyntax();
     worker?.postMessage({ type: 'close', id: this.id });
     workerModels.delete(this.id);
   }
@@ -428,9 +501,9 @@ export class RustacoModel {
    * children }`; empty without a tree.
    */
   async builtinSymbols() {
+    if (this.syntax?.hasTree) return this.syntax.symbols();
     let flat = [];
-    if (this.syntax?.hasTree) flat = await this.syntax.symbols();
-    else if (this.highlighter?.hasTree()) { this.updateHighlighter(50); flat = this.highlighter.documentSymbols(); }
+    if (this.highlighter?.hasTree()) { this.updateHighlighter(50); flat = this.highlighter.documentSymbols(); }
     const roots = [];
     const stack = [];
     for (let i = 0; i + 5 < flat.length; i += 6) {

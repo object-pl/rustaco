@@ -1,6 +1,6 @@
 [package]
 name = "rustaco-syntax-wasm"
-description = "Language module for the Rustaco browser editor: tree-sitter parsing and highlighting in WASM"
+description = "Language module for the Rustaco browser editor: parsing, highlighting and language services in WASM"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -13,7 +13,9 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rustaco-core.workspace = true
-rustaco-syntax = { workspace = true, default-features = false }
+rustaco-syntax = { workspace = true, default-features = false, features = ["service"] }
+rustaco-lsp.workspace = true
+serde_json = "1"
 wasm-bindgen = "=0.2.130"
 js-sys = "0.3"
 
@@ -23,6 +25,8 @@ js-sys = "0.3"
 tree-sitter = ["rustaco-syntax/engine"]
 # SQL, Kotlin and Dockerfile through the TextMate engine (the browser has no SQL grammar module).
 textmate = ["rustaco-syntax/textmate"]
+# Mermaid through its own tokenizer, which every module carries; this pack carries nothing else.
+mermaid = []
 rust = ["tree-sitter", "rustaco-syntax/rust"]
 javascript = ["tree-sitter", "rustaco-syntax/javascript"]
 typescript = ["tree-sitter", "rustaco-syntax/typescript"]

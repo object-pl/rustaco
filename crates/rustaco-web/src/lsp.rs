@@ -394,7 +394,8 @@ impl LspSession {
 
     /// Takes in one message from the server and says what it was, as JSON:
     /// `{ type: "response", id, error? }` (the result waits for [`LspSession::result`]),
-    /// `{ type: "diagnostics", uri }`, `{ type: "applyEdit", id, edit }`, or
+    /// `{ type: "diagnostics", uri }`, `{ type: "applyEdit", id, edit }`,
+    /// `{ type: "notification", method, params }` for any other notification, or
     /// `{ type: "other" }`. Other server requests are answered with null here.
     pub fn receive(&mut self, text: &str) -> String {
         let Ok(msg) = serde_json::from_str::<Value>(text) else { return r#"{"type":"other"}"#.into() };
@@ -426,6 +427,7 @@ impl LspSession {
                 self.send(json!({ "jsonrpc": "2.0", "id": id, "result": null }));
                 json!({ "type": "other" })
             }
+            (Some(m), None) => json!({ "type": "notification", "method": m, "params": msg["params"] }),
             _ => json!({ "type": "other" }),
         };
         out.to_string()
