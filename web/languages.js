@@ -3,6 +3,36 @@
 
 import { fuzzyScore as fuzzyScoreWasm } from './pkg/rustaco_web.js';
 
+/**
+ * Cancellation for provider requests, as Monaco has it: every provider gets a token as its
+ * last argument; the editor cancels it when the answer is no longer wanted (the caret
+ * moved, a newer request of the same kind started). `token.isCancellationRequested` and
+ * `token.onCancellationRequested(fn)` (returns `{ dispose }`).
+ */
+export class CancellationTokenSource {
+  constructor() {
+    const listeners = new Set();
+    this.listeners = listeners;
+    this.token = {
+      isCancellationRequested: false,
+      onCancellationRequested(fn) {
+        if (this.isCancellationRequested) { fn(); return { dispose() {} }; }
+        listeners.add(fn);
+        return { dispose: () => listeners.delete(fn) };
+      },
+    };
+  }
+
+  cancel() {
+    if (this.token.isCancellationRequested) return;
+    this.token.isCancellationRequested = true;
+    for (const fn of this.listeners) {
+      try { fn(); } catch { /* a listener's failure is its own */ }
+    }
+    this.listeners.clear();
+  }
+}
+
 const registries = new Map();
 
 function register(kind, languageId, provider) {

@@ -9,7 +9,7 @@ The public surface as of the end of phase 11, with what should change before it 
 | Entry points | `createEditor`, `createModel`, `setTheme`, `detectLanguage`, `knownLanguages`, `defineDecorationType`, `setWorkersEnabled`, `languages`, `fuzzyScore`; `rustaco/lsp`; `rustaco/diff` | Decide whether `fuzzyScore` stays public. |
 | `RustacoEditor` | values, selections, options, keymaps, find, folding, snippets, view zones and widgets, scroll, events | `core`, `features`, `suggest` and `model.core` are reachable from outside but internal; hide them behind private fields or document them as unstable. Event names follow Monaco only partly (`onDidChangeContent`, `onDidScrollChange`, `onPasteTooLarge`); settle one naming scheme. |
 | Positions | char offsets (Unicode scalar values) | Monaco uses 1-based line and column. Offsets are simpler and survive edits better; keep them, and keep `positionAt` and `offsetAt` as the bridge. |
-| Providers | Monaco's function names, offsets instead of ranges | Cancellation tokens are not passed; add them before 1.0 so long requests can be dropped. |
+| Providers | Monaco's function names, offsets instead of ranges; a `CancellationToken` comes last in every call, and the LSP client turns it into `$/cancelRequest` | Done for 1.0. |
 | Diff editor | `createDiffEditor`, `RustacoDiffEditor` | Add keyboard commands for next and previous change. |
 
 ## Rust crates

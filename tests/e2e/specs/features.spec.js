@@ -202,3 +202,33 @@ test('provider text never becomes HTML; oversized pastes are refused', async ({ 
   if (refused.seen) expect(refused.seen).toBe(11);
   expect(refused.value).toBe('word');
 });
+
+test('a newer request cancels the token of the one before; its late answer is dropped', async ({ page }) => {
+  await page.goto('/');
+  await page.waitForFunction(() => window.editor?.ready);
+  const result = await page.evaluate(async () => {
+    const { languages } = await import('/rustaco.js');
+    const tokens = [];
+    languages.registerHoverProvider('slow-probe', {
+      provideHover: async (model, offset, token) => {
+        tokens.push(token);
+        const n = tokens.length;
+        await new Promise((r) => setTimeout(r, n === 1 ? 300 : 10));
+        return { contents: [`answer ${n}`] };
+      },
+    });
+    const e = window.editor;
+    e.setValue('word');
+    await e.getModel().setLanguage('slow-probe');
+    e.focus();
+    e.setSelections([{ anchor: 1, head: 1 }]);
+    e.runCommand('editor.action.showHover');
+    await new Promise((r) => setTimeout(r, 50));
+    e.runCommand('editor.action.showHover');
+    await new Promise((r) => setTimeout(r, 500));
+    return { first: tokens[0].isCancellationRequested, second: tokens[1].isCancellationRequested };
+  });
+  expect(result).toEqual({ first: true, second: false });
+  await expect(page.locator('[role="tooltip"][aria-label="Hover"]')).toContainText('answer 2');
+  await expect(page.locator('[role="tooltip"][aria-label="Hover"]')).not.toContainText('answer 1');
+});

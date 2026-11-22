@@ -1,7 +1,7 @@
 // The completion list: asks the completion providers, filters fuzzily as the word grows,
 // shows a documentation pane for the selected item, and inserts plain text or snippets.
 
-import { CompletionItemKind, providersFor } from './languages.js';
+import { CancellationTokenSource, CompletionItemKind, providersFor } from './languages.js';
 
 /** Icons for item kinds: one letter in a small box. */
 const KIND_ICON = {
@@ -68,16 +68,19 @@ export class SuggestController {
     const head = caret(e);
     const context = { triggerKind: explicit ? 'invoke' : character ? 'character' : 'automatic', triggerCharacter: character };
     const asked = ++this.request;
+    this.source?.cancel();
+    const source = new CancellationTokenSource();
+    this.source = source;
     const providers = providersFor('completion', model.getLanguage());
     const results = await Promise.all(providers.map(async (p) => {
       try {
-        const r = await p.provideCompletionItems(model, head, context);
+        const r = await p.provideCompletionItems(model, head, context, source.token);
         return Array.isArray(r) ? r : r?.suggestions ?? [];
       } catch {
         return [];
       }
     }));
-    if (asked !== this.request) return;
+    if (asked !== this.request || source.token.isCancellationRequested) return;
     const items = results.flat().map((item) => normalize(item, ws, head));
     if (items.length) {
       this.#setItems(items);

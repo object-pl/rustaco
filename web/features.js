@@ -3,23 +3,35 @@
 // highlights of a symbol's uses, quick outline and code lenses. Each asks the providers
 // registered for the model's language (see languages.js).
 
-import { providersFor } from './languages.js';
+import { CancellationTokenSource, providersFor } from './languages.js';
 
 const HOVER_DELAY_MS = 300;
 const CARET_DELAY_MS = 250;
 
-/** First non-empty answer of the providers of `kind`, called with `args`. */
-async function ask(kind, model, method, ...args) {
+/**
+ * First non-empty answer of the providers of `kind` to `method`, called with `args` and
+ * `token` last; null when none answers or the token was cancelled meanwhile.
+ */
+async function ask(kind, model, token, method, ...args) {
   for (const p of providersFor(kind, model.getLanguage())) {
     if (typeof p[method] !== 'function') continue;
     try {
-      const r = await p[method](model, ...args);
+      const r = await p[method](model, ...args, token);
+      if (token.isCancellationRequested) return null;
       if (r && (!Array.isArray(r) || r.length)) return r;
     } catch {
       // A failing provider gives no answer; the next one may.
     }
   }
   return null;
+}
+
+/** Every provider of `kind` that has `method`, asked at once; lists flattened, failures empty. */
+async function askAll(kind, model, token, method, ...args) {
+  const lists = await Promise.all(providersFor(kind, model.getLanguage()).map(async (p) => {
+    try { return (await p[method](model, ...args, token)) ?? []; } catch { return []; }
+  }));
+  return token.isCancellationRequested ? null : lists.flat();
 }
 
 /** A range from a provider result: `{ start, end }` itself or a `{ range }` wrapper. */
@@ -69,9 +81,24 @@ export class Features {
     this.hoverTimer = 0;
     this.caretTimer = 0;
     this.request = 0;
+    this.sources = new Map();
   }
 
   get model() { return this.editor.getModel(); }
+
+  /** A fresh cancellation token for a request of `kind`, cancelling the previous one. */
+  token(kind) {
+    this.sources.get(kind)?.cancel();
+    const source = new CancellationTokenSource();
+    this.sources.set(kind, source);
+    return source.token;
+  }
+
+  /** Cancels every request in flight (the model or the language changed). */
+  cancelAll() {
+    for (const source of this.sources.values()) source.cancel();
+    this.sources.clear();
+  }
 
   has(kind) { return providersFor(kind, this.model.getLanguage()).length > 0; }
 
@@ -130,7 +157,7 @@ export class Features {
 
   async showHover(offset) {
     const asked = ++this.request;
-    const result = await ask('hover', this.model, 'provideHover', offset);
+    const result = await ask('hover', this.model, this.token('hover'), 'provideHover', offset);
     if (asked !== this.request) return;
     this.hideHover();
     if (!result) return;
@@ -167,7 +194,7 @@ export class Features {
   async signatureHelp(explicit) {
     const offset = this.editor.core.selections()[1];
     const asked = ++this.request;
-    const help = await ask('signatureHelp', this.model, 'provideSignatureHelp', offset, { explicit });
+    const help = await ask('signatureHelp', this.model, this.token('signatureHelp'), 'provideSignatureHelp', offset, { explicit });
     if (asked !== this.request) return;
     this.closeSignature();
     const signature = help?.signatures?.[help.activeSignature ?? 0];
@@ -209,7 +236,7 @@ export class Features {
   // ---- definition, references ----
 
   async goToDefinition(offset) {
-    const result = await ask('definition', this.model, 'provideDefinition', offset);
+    const result = await ask('definition', this.model, this.token('definition'), 'provideDefinition', offset);
     const first = Array.isArray(result) ? result[0] : result;
     if (first && 'uri' in first && first.model !== this.model) {
       // Another document: the host opens it.
@@ -227,7 +254,7 @@ export class Features {
   async peekReferences() {
     const e = this.editor;
     const offset = e.core.selections()[1];
-    const result = await ask('references', this.model, 'provideReferences', offset, { includeDeclaration: true });
+    const result = await ask('references', this.model, this.token('references'), 'provideReferences', offset, { includeDeclaration: true });
     this.closePeek();
     if (!result) return;
     const ranges = result.map(rangeOf).filter(Boolean).sort((a, b) => a.start - b.start);
@@ -290,9 +317,11 @@ export class Features {
     const e = this.editor;
     const offset = e.core.selections()[1];
     let target = null;
+    const token = this.token('renameLocation');
     for (const p of providersFor('rename', this.model.getLanguage())) {
       if (p.resolveRenameLocation) {
-        const r = await p.resolveRenameLocation(this.model, offset);
+        const r = await p.resolveRenameLocation(this.model, offset, token);
+        if (token.isCancellationRequested) return;
         if (r?.rejectReason) { this.#flash(r.rejectReason, offset); return; }
         if (r) { target = { range: rangeOf(r), text: r.text }; break; }
       }
@@ -320,7 +349,7 @@ export class Features {
       e.removeContentWidget(widget);
       e.focus();
       if (!apply || input.value === target.text || !input.value) return;
-      const edits = await ask('rename', this.model, 'provideRenameEdits', offset, input.value);
+      const edits = await ask('rename', this.model, this.token('rename'), 'provideRenameEdits', offset, input.value);
       this.applyEdits(edits?.edits ?? edits);
     };
     input.addEventListener('keydown', (ev) => {
@@ -332,7 +361,7 @@ export class Features {
 
   async format() {
     const o = this.editor.getModel();
-    const edits = await ask('formatting', o, 'provideDocumentFormattingEdits', { tabSize: 4, insertSpaces: true });
+    const edits = await ask('formatting', o, this.token('formatting'), 'provideDocumentFormattingEdits', { tabSize: 4, insertSpaces: true });
     this.applyEdits(edits);
   }
 
@@ -358,10 +387,7 @@ export class Features {
 
   async #codeActions() {
     const [start, end] = this.editor.core.primaryRange();
-    const lists = await Promise.all(providersFor('codeAction', this.model.getLanguage()).map(async (p) => {
-      try { return (await p.provideCodeActions(this.model, { start, end })) ?? []; } catch { return []; }
-    }));
-    return lists.flat();
+    return (await askAll('codeAction', this.model, this.token('codeAction'), 'provideCodeActions', { start, end })) ?? [];
   }
 
   async #updateLightbulb() {
@@ -408,7 +434,7 @@ export class Features {
     const has = this.has('documentHighlight');
     e.setOccurrencesFromProvider(has);
     if (!has) { this.highlights?.clear(); return; }
-    const result = await ask('documentHighlight', this.model, 'provideDocumentHighlights', e.core.selections()[1]);
+    const result = await ask('documentHighlight', this.model, this.token('documentHighlight'), 'provideDocumentHighlights', e.core.selections()[1]);
     this.highlights ??= this.model.createDecorationsCollection();
     const type = await e.highlightDecorationType();
     this.highlights.set((result ?? []).map(rangeOf).filter(Boolean).map((r) => ({ start: r.start, end: r.end, type })));
@@ -512,11 +538,9 @@ export class Features {
       return;
     }
     const version = this.model.core.version();
-    const lists = await Promise.all(providers.map(async (p) => {
-      try { return (await p.provideSemanticTokens(this.model)) ?? []; } catch { return []; }
-    }));
-    if (version !== this.model.core.version()) return;
-    const tokens = lists.flat().sort((a, b) => a.start - b.start);
+    const list = await askAll('semanticTokens', this.model, this.token('semanticTokens'), 'provideSemanticTokens');
+    if (!list || version !== this.model.core.version()) return;
+    const tokens = list.sort((a, b) => a.start - b.start);
     this.editor.core.setSemanticTokens(Uint32Array.from(tokens.flatMap((t) => [t.start, t.end, styleId(t.style)])));
     this.hadSemantic = true;
     this.editor.schedule();
@@ -528,11 +552,8 @@ export class Features {
     if (!providers.length && !this.hadHints) return;
     const version = this.model.core.version();
     const range = { start: 0, end: this.model.getValue().length };
-    const lists = await Promise.all(providers.map(async (p) => {
-      try { return (await p.provideInlayHints(this.model, range)) ?? []; } catch { return []; }
-    }));
-    if (version !== this.model.core.version()) return;
-    const hints = lists.flat();
+    const hints = await askAll('inlayHints', this.model, this.token('inlayHints'), 'provideInlayHints', range);
+    if (!hints || version !== this.model.core.version()) return;
     this.editor.core.setInlayHints(Uint32Array.from(hints.map((h) => h.offset)), hints.map((h) => h.label?.label ?? h.label));
     this.hadHints = hints.length > 0;
     this.editor.schedule();
@@ -543,13 +564,12 @@ export class Features {
   /** Asks the code lens providers again and shows their titles above the lines. */
   async refreshCodeLens() {
     const e = this.editor;
-    const lists = await Promise.all(providersFor('codeLens', this.model.getLanguage()).map(async (p) => {
-      try { return (await p.provideCodeLenses(this.model)) ?? []; } catch { return []; }
-    }));
+    const lenses = await askAll('codeLens', this.model, this.token('codeLens'), 'provideCodeLenses');
+    if (!lenses) return;
     for (const id of this.lensZones ?? []) e.removeViewZone(id);
     this.lensZones = [];
     const byLine = new Map();
-    for (const lens of lists.flat()) {
+    for (const lens of lenses) {
       if (!byLine.has(lens.line)) byLine.set(lens.line, []);
       byLine.get(lens.line).push(lens);
     }

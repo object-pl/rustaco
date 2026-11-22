@@ -29,29 +29,44 @@ export interface Range {
   end: number;
 }
 
+/**
+ * Passed last to every provider method; cancelled when the editor no longer wants the
+ * answer (the caret moved, a newer request of the same kind started). A provider may stop
+ * work then; whatever it returns afterwards is ignored.
+ */
+export interface CancellationToken {
+  readonly isCancellationRequested: boolean;
+  onCancellationRequested(listener: () => void): Disposable;
+}
+
+export class CancellationTokenSource {
+  readonly token: CancellationToken;
+  cancel(): void;
+}
+
 /** Provider registration, named as in Monaco; see `languages.js` for each provider's shape. */
 export const languages: {
   registerCompletionItemProvider(languageId: string, provider: CompletionProvider): Disposable;
-  registerHoverProvider(languageId: string, provider: { provideHover(model: RustacoModel, offset: number): Awaitable<{ contents: string | string[]; range?: Range } | null> }): Disposable;
+  registerHoverProvider(languageId: string, provider: { provideHover(model: RustacoModel, offset: number, token: CancellationToken): Awaitable<{ contents: string | string[]; range?: Range } | null> }): Disposable;
   registerSignatureHelpProvider(languageId: string, provider: {
     signatureHelpTriggerCharacters?: string[];
-    provideSignatureHelp(model: RustacoModel, offset: number): Awaitable<{ signatures: Array<{ label: string; documentation?: string; parameters: Array<{ label: string; documentation?: string }> }>; activeSignature?: number; activeParameter?: number } | null>;
+    provideSignatureHelp(model: RustacoModel, offset: number, context: { explicit: boolean }, token: CancellationToken): Awaitable<{ signatures: Array<{ label: string; documentation?: string; parameters: Array<{ label: string; documentation?: string }> }>; activeSignature?: number; activeParameter?: number } | null>;
   }): Disposable;
-  registerDefinitionProvider(languageId: string, provider: { provideDefinition(model: RustacoModel, offset: number): Awaitable<Range | { range: Range } | Array<Range | { range: Range }> | null> }): Disposable;
-  registerReferenceProvider(languageId: string, provider: { provideReferences(model: RustacoModel, offset: number): Awaitable<Array<Range | { range: Range }> | null> }): Disposable;
+  registerDefinitionProvider(languageId: string, provider: { provideDefinition(model: RustacoModel, offset: number, token: CancellationToken): Awaitable<Range | { range: Range } | Array<Range | { range: Range }> | null> }): Disposable;
+  registerReferenceProvider(languageId: string, provider: { provideReferences(model: RustacoModel, offset: number, context: { includeDeclaration: boolean }, token: CancellationToken): Awaitable<Array<Range | { range: Range }> | null> }): Disposable;
   registerRenameProvider(languageId: string, provider: {
-    resolveRenameLocation?(model: RustacoModel, offset: number): Awaitable<{ range: Range; text: string } | { rejectReason: string } | null>;
-    provideRenameEdits(model: RustacoModel, offset: number, newName: string): Awaitable<TextEdit[]>;
+    resolveRenameLocation?(model: RustacoModel, offset: number, token: CancellationToken): Awaitable<{ range: Range; text: string } | { rejectReason: string } | null>;
+    provideRenameEdits(model: RustacoModel, offset: number, newName: string, token: CancellationToken): Awaitable<TextEdit[]>;
   }): Disposable;
-  registerDocumentFormattingEditProvider(languageId: string, provider: { provideDocumentFormattingEdits(model: RustacoModel, options: { tabSize: number; insertSpaces: boolean }): Awaitable<TextEdit[]> }): Disposable;
-  registerCodeActionProvider(languageId: string, provider: { provideCodeActions(model: RustacoModel, range: Range): Awaitable<Array<{ title: string; edits?: TextEdit[]; command?: (editor: RustacoEditor) => void }>> }): Disposable;
-  registerDocumentHighlightProvider(languageId: string, provider: { provideDocumentHighlights(model: RustacoModel, offset: number): Awaitable<Range[] | null> }): Disposable;
+  registerDocumentFormattingEditProvider(languageId: string, provider: { provideDocumentFormattingEdits(model: RustacoModel, options: { tabSize: number; insertSpaces: boolean }, token: CancellationToken): Awaitable<TextEdit[]> }): Disposable;
+  registerCodeActionProvider(languageId: string, provider: { provideCodeActions(model: RustacoModel, range: Range, token: CancellationToken): Awaitable<Array<{ title: string; edits?: TextEdit[]; command?: (editor: RustacoEditor) => void }>> }): Disposable;
+  registerDocumentHighlightProvider(languageId: string, provider: { provideDocumentHighlights(model: RustacoModel, offset: number, token: CancellationToken): Awaitable<Range[] | null> }): Disposable;
   registerFoldingRangeProvider(languageId: string, provider: { provideFoldingRanges(model: RustacoModel): Awaitable<Array<{ start: number; end: number }>> }): Disposable;
   registerSelectionRangeProvider(languageId: string, provider: { provideSelectionRanges(model: RustacoModel, offset: number): Awaitable<Range[]> }): Disposable;
   registerDocumentSymbolProvider(languageId: string, provider: { provideDocumentSymbols(model: RustacoModel): Awaitable<DocumentSymbol[]> }): Disposable;
-  registerCodeLensProvider(languageId: string, provider: { provideCodeLenses(model: RustacoModel): Awaitable<Array<{ line: number; title: string; command?: (editor: RustacoEditor) => void }>> }): Disposable;
-  registerDocumentSemanticTokensProvider(languageId: string, provider: { provideSemanticTokens(model: RustacoModel): Awaitable<Array<{ start: number; end: number; style: string }>> }): Disposable;
-  registerInlayHintsProvider(languageId: string, provider: { provideInlayHints(model: RustacoModel, range: Range): Awaitable<Array<{ offset: number; label: string }>> }): Disposable;
+  registerCodeLensProvider(languageId: string, provider: { provideCodeLenses(model: RustacoModel, token: CancellationToken): Awaitable<Array<{ line: number; title: string; command?: (editor: RustacoEditor) => void }>> }): Disposable;
+  registerDocumentSemanticTokensProvider(languageId: string, provider: { provideSemanticTokens(model: RustacoModel, token: CancellationToken): Awaitable<Array<{ start: number; end: number; style: string }>> }): Disposable;
+  registerInlayHintsProvider(languageId: string, provider: { provideInlayHints(model: RustacoModel, range: Range, token: CancellationToken): Awaitable<Array<{ offset: number; label: string }>> }): Disposable;
   CompletionItemKind: Record<string, number>;
   SymbolKind: Record<string, number>;
 };
@@ -77,7 +92,7 @@ export interface CompletionItem {
 
 export interface CompletionProvider {
   triggerCharacters?: string[];
-  provideCompletionItems(model: RustacoModel, offset: number, context: { triggerKind: 'invoke' | 'character' | 'automatic'; triggerCharacter: string | null }): Awaitable<CompletionItem[] | { suggestions: CompletionItem[] }>;
+  provideCompletionItems(model: RustacoModel, offset: number, context: { triggerKind: 'invoke' | 'character' | 'automatic'; triggerCharacter: string | null }, token: CancellationToken): Awaitable<CompletionItem[] | { suggestions: CompletionItem[] }>;
 }
 
 export interface DocumentSymbol {

@@ -97,11 +97,21 @@ export class LspClient {
     transport.onMessage((text) => this.#receive(JSON.parse(text)));
   }
 
-  request(method, params) {
+  /**
+   * Sends a request. When `token` (from the editor's provider call) is cancelled first, the
+   * server gets `$/cancelRequest` and the promise resolves to null.
+   */
+  request(method, params, token) {
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       this.pending.set(id, { resolve, reject });
       this.transport.send(JSON.stringify({ jsonrpc: '2.0', id, method, params }));
+      token?.onCancellationRequested(() => {
+        if (!this.pending.has(id)) return;
+        this.pending.delete(id);
+        this.notify('$/cancelRequest', { id });
+        resolve(null);
+      });
     });
   }
 
@@ -263,10 +273,10 @@ export class LspClient {
     };
 
     reg('hoverProvider', () => languages.registerHoverProvider(id, {
-      provideHover: async (model, offset) => {
+      provideHover: async (model, offset, token) => {
         const params = this.#at(model, offset);
         const diagnostics = (this.docs.get(model)?.diagnostics ?? []).filter((d) => d.offsets.start <= offset && offset <= d.offsets.end);
-        const result = params ? await this.request('textDocument/hover', params) : null;
+        const result = params ? await this.request('textDocument/hover', params, token) : null;
         const contents = [...diagnostics.map((d) => d.message)];
         if (result) contents.push(...(Array.isArray(result.contents) ? result.contents : [result.contents]).map(markup));
         if (!contents.length) return null;
@@ -275,11 +285,11 @@ export class LspClient {
     }));
     reg('completionProvider', () => languages.registerCompletionItemProvider(id, {
       triggerCharacters: c.completionProvider.triggerCharacters ?? [],
-      provideCompletionItems: async (model, offset, context) => {
+      provideCompletionItems: async (model, offset, context, token) => {
         const params = this.#at(model, offset);
         if (!params) return [];
         params.context = context.triggerCharacter ? { triggerKind: 2, triggerCharacter: context.triggerCharacter } : { triggerKind: 1 };
-        const result = await this.request('textDocument/completion', params);
+        const result = await this.request('textDocument/completion', params, token);
         const items = Array.isArray(result) ? result : result?.items ?? [];
         return items.map((item) => {
           const edit = item.textEdit;
@@ -300,9 +310,9 @@ export class LspClient {
     }));
     reg('signatureHelpProvider', () => languages.registerSignatureHelpProvider(id, {
       signatureHelpTriggerCharacters: c.signatureHelpProvider.triggerCharacters ?? ['(', ','],
-      provideSignatureHelp: async (model, offset) => {
+      provideSignatureHelp: async (model, offset, context, token) => {
         const params = this.#at(model, offset);
-        const result = params ? await this.request('textDocument/signatureHelp', params) : null;
+        const result = params ? await this.request('textDocument/signatureHelp', params, token) : null;
         if (!result?.signatures?.length) return null;
         return {
           signatures: result.signatures.map((s) => ({
@@ -316,23 +326,23 @@ export class LspClient {
       },
     }));
     reg('definitionProvider', () => languages.registerDefinitionProvider(id, {
-      provideDefinition: async (model, offset) => locations(model, await this.request('textDocument/definition', this.#at(model, offset))),
+      provideDefinition: async (model, offset, token) => locations(model, await this.request('textDocument/definition', this.#at(model, offset), token)),
     }));
     reg('referencesProvider', () => languages.registerReferenceProvider(id, {
-      provideReferences: async (model, offset) => {
+      provideReferences: async (model, offset, context, token) => {
         const params = { ...this.#at(model, offset), context: { includeDeclaration: true } };
-        return locations(model, await this.request('textDocument/references', params)).filter((r) => 'start' in r);
+        return locations(model, await this.request('textDocument/references', params, token)).filter((r) => 'start' in r);
       },
     }));
     reg('documentHighlightProvider', () => languages.registerDocumentHighlightProvider(id, {
-      provideDocumentHighlights: async (model, offset) => {
-        const result = await this.request('textDocument/documentHighlight', this.#at(model, offset));
+      provideDocumentHighlights: async (model, offset, token) => {
+        const result = await this.request('textDocument/documentHighlight', this.#at(model, offset), token);
         return (result ?? []).map((h) => toRange(model, h.range));
       },
     }));
     reg('renameProvider', () => languages.registerRenameProvider(id, {
-      provideRenameEdits: async (model, offset, newName) => {
-        const result = await this.request('textDocument/rename', { ...this.#at(model, offset), newName });
+      provideRenameEdits: async (model, offset, newName, token) => {
+        const result = await this.request('textDocument/rename', { ...this.#at(model, offset), newName }, token);
         // Edits to this model come back for the editor; other documents go to the host.
         const own = [];
         const others = { changes: {} };
@@ -347,17 +357,17 @@ export class LspClient {
       },
     }));
     reg('documentFormattingProvider', () => languages.registerDocumentFormattingEditProvider(id, {
-      provideDocumentFormattingEdits: async (model, options) => {
-        const result = await this.request('textDocument/formatting', { ...this.#doc(model), options });
+      provideDocumentFormattingEdits: async (model, options, token) => {
+        const result = await this.request('textDocument/formatting', { ...this.#doc(model), options }, token);
         return (result ?? []).map((e) => ({ range: toRange(model, e.range), text: e.newText }));
       },
     }));
     reg('codeActionProvider', () => languages.registerCodeActionProvider(id, {
-      provideCodeActions: async (model, range) => {
+      provideCodeActions: async (model, range, token) => {
         const diagnostics = (this.docs.get(model)?.diagnostics ?? []).filter((d) => d.offsets.start <= range.end && range.start <= d.offsets.end);
         const result = await this.request('textDocument/codeAction', {
           ...this.#doc(model), range: fromRange(model, range), context: { diagnostics: diagnostics.map(({ offsets, ...d }) => d) },
-        });
+        }, token);
         return (result ?? []).map((a) => ({
           title: a.title,
           edits: undefined,
@@ -398,8 +408,8 @@ export class LspClient {
       },
     }));
     reg('codeLensProvider', () => languages.registerCodeLensProvider(id, {
-      provideCodeLenses: async (model) => {
-        const result = await this.request('textDocument/codeLens', this.#doc(model));
+      provideCodeLenses: async (model, token) => {
+        const result = await this.request('textDocument/codeLens', this.#doc(model), token);
         return (result ?? []).filter((l) => l.command).map((l) => ({
           line: l.range.start.line,
           title: l.command.title,
@@ -408,8 +418,8 @@ export class LspClient {
       },
     }));
     reg('inlayHintProvider', () => languages.registerInlayHintsProvider(id, {
-      provideInlayHints: async (model, range) => {
-        const result = await this.request('textDocument/inlayHint', { ...this.#doc(model), range: fromRange(model, range) });
+      provideInlayHints: async (model, range, token) => {
+        const result = await this.request('textDocument/inlayHint', { ...this.#doc(model), range: fromRange(model, range) }, token);
         return (result ?? []).map((h) => ({
           offset: toOffset(model, h.position),
           label: typeof h.label === 'string' ? h.label : h.label.map((p) => p.value).join(''),
@@ -419,8 +429,8 @@ export class LspClient {
     reg('semanticTokensProvider', () => {
       const legend = c.semanticTokensProvider.legend ?? { tokenTypes: [] };
       return languages.registerDocumentSemanticTokensProvider(id, {
-        provideSemanticTokens: async (model) => {
-          const result = await this.request('textDocument/semanticTokens/full', this.#doc(model));
+        provideSemanticTokens: async (model, token) => {
+          const result = await this.request('textDocument/semanticTokens/full', this.#doc(model), token);
           const data = result?.data ?? [];
           const out = [];
           let line = 0;

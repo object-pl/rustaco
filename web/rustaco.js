@@ -7,7 +7,7 @@ import { Features } from './features.js';
 import { onDidChangeProviders, providersFor } from './languages.js';
 import { WebGLText } from './webgl-text.js';
 
-export { languages, CompletionItemKind, SymbolKind, fuzzyScore } from './languages.js';
+export { languages, CompletionItemKind, SymbolKind, fuzzyScore, CancellationTokenSource } from './languages.js';
 
 const BLINK_MS = 530;
 /** Parsing time per frame; the rest of a long parse continues on later frames. */
