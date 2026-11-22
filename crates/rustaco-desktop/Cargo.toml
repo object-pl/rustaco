@@ -23,4 +23,4 @@ unicode-width = "0.2"
 [dev-dependencies]
 # The example application presents frames with softbuffer and talks to LSP servers.
 softbuffer = "0.4"
-rustaco-lsp = { path = "../rustaco-lsp", version = "0.2.0" }
+rustaco-lsp = { path = "../rustaco-lsp", version = "0.3.0" }

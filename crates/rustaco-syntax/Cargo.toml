@@ -1,6 +1,6 @@
 [package]
 name = "rustaco-syntax"
-description = "Syntax highlighting for the Rustaco editor: incremental tree-sitter parsing and themes"
+description = "Syntax highlighting and language services for the Rustaco editor: incremental tree-sitter parsing, themes, a language server for the bundled grammars"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
