@@ -5,6 +5,7 @@ import init, {
 import { SuggestController } from './suggest.js';
 import { Features } from './features.js';
 import { onDidChangeProviders, providersFor } from './languages.js';
+import { DomTextLayer, GlTextLayer, refreshTextLayerCss } from './text-layers.js';
 
 export { languages, CompletionItemKind, SymbolKind, fuzzyScore } from './languages.js';
 
@@ -13,8 +14,9 @@ const BLINK_MS = 530;
 const PARSE_BUDGET_MS = 4;
 
 let ready;
+let wasm;
 function load() {
-  ready ??= init().then(() => document.fonts.ready);
+  ready ??= init().then((exports) => { wasm = exports; return document.fonts.ready; });
   return ready;
 }
 
@@ -308,6 +310,7 @@ export async function setTheme(theme) {
     setThemeRules(base, selectors.join('\n'), Uint32Array.from(foregrounds), Uint8Array.from(flags),
       colorKeys.join('\n'), Uint32Array.from(colorValues));
   }
+  refreshTextLayerCss();
   for (const e of editors) e.schedule();
 }
 
@@ -567,6 +570,7 @@ export class RustacoEditor {
     fontFamily = '"Cascadia Code", Consolas, "Courier New", monospace',
     fontSize = 14,
     ariaLabel = 'Editor content',
+    textLayer = 'canvas',
   } = {}) {
     this.container = container;
     this.canvas = document.createElement('canvas');
@@ -598,6 +602,7 @@ export class RustacoEditor {
     editorsById.set(this.id, this);
     this.core = new Editor(this.canvas, this.model.core, fontFamily, fontSize);
     this.font = `${fontSize}px ${fontFamily}`;
+    this.#setupTextLayer(textLayer, fontFamily, fontSize);
     this.setKeymap(keymap);
     this.options = {};
     this.setOptions({ rulers, renderWhitespace, guides, occurrencesHighlight, bracketPairColorization, wordWrap, minimap, stickyScroll });
@@ -932,9 +937,33 @@ export class RustacoEditor {
     editorsById.delete(this.id);
     clearInterval(this.blink);
     this.canvas.remove();
+    this.textLayer?.dispose();
+    this.overCanvas?.remove();
     this.input.remove();
     this.overlay.remove();
     this.core.free();
+  }
+
+  /**
+   * With `"dom"` or `"webgl"`, the text goes in its own layer between the canvas (what lies
+   * under the text) and an overlay canvas (carets, gutter, scrollbars).
+   */
+  #setupTextLayer(kind, fontFamily, fontSize) {
+    if (kind !== 'dom' && kind !== 'webgl') return;
+    let layer;
+    try {
+      layer = kind === 'dom'
+        ? new DomTextLayer(this.container, this.font, this.core.line_height(), this.core.charWidth())
+        : new GlTextLayer(wasm.memory, fontFamily, fontSize);
+    } catch (e) {
+      console.warn(`rustaco: ${kind} text layer unavailable, drawing on the canvas`, e);
+      return;
+    }
+    this.overCanvas = document.createElement('canvas');
+    this.overCanvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none';
+    this.canvas.after(layer.el, this.overCanvas);
+    this.textLayer = layer;
+    this.core.setTextLayer(kind, this.overCanvas);
   }
 
   #resize() {
@@ -1361,6 +1390,7 @@ export class RustacoEditor {
         core.clearTreeBrackets();
       }
       core.render(this.focused && this.caretOn);
+      this.textLayer?.apply(core, window.devicePixelRatio || 1);
       const top = core.scrollTop();
       if (top !== this.lastScrollTop) {
         this.lastScrollTop = top;

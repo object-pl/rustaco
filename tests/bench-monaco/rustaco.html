@@ -8,9 +8,12 @@
   <div id="root"></div>
   <script type="module">
     import { createEditor, createModel } from './rustaco/rustaco.js';
-    const editor = await createEditor(document.getElementById('root'), { value: '', language: 'rust', fontSize: 14 });
+    const editor = await createEditor(document.getElementById('root'), {
+      value: '', language: 'rust', fontSize: 14,
+      textLayer: new URLSearchParams(location.search).get('text') ?? 'canvas',
+    });
     window.bench = {
-      name: 'rustaco',
+      name: 'rustaco-' + (new URLSearchParams(location.search).get('text') ?? 'canvas'),
       async load(text) {
         const t = performance.now();
         editor.setValue(text);

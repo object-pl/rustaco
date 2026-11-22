@@ -9,7 +9,8 @@ const root = fileURLToPath(new URL('.', import.meta.url));
 const types = { '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.css': 'text/css' };
 const server = createServer(async (req, res) => {
   const file = join(root, normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^[/\\]+/, ''));
-  try { res.writeHead(200, { 'content-type': types[extname(file)] || 'application/octet-stream' }).end(await readFile(file)); } catch { res.writeHead(404).end(); }
+  const body = await readFile(file).catch(() => null);
+  if (body) res.writeHead(200, { 'content-type': types[extname(file)] || 'application/octet-stream' }).end(body); else res.writeHead(404).end();
 }).listen(47901, '127.0.0.1');
 
 const name = process.argv[2] || 'rustaco';

@@ -28,7 +28,11 @@ fn main() {
 }
 ` + Array.from({ length: 5000 }, (_, i) => `// filler line ${i + 1}`).join('\n');
 
-    const editor = await createEditor(document.getElementById("root"), { value: sample, language: 'rust' });
+    const editor = await createEditor(document.getElementById("root"), {
+      value: sample, language: 'rust',
+      // ?text=dom or ?text=webgl draws the text in that layer instead of the canvas.
+      textLayer: new URLSearchParams(location.search).get('text') ?? 'canvas',
+    });
     editor.focus();
     window.editor = editor;
   </script>
