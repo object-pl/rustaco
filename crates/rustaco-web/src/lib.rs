@@ -17,13 +17,13 @@ use rustaco_core::{
     Searcher, Selection, Selections, Stickiness, TextModel, default_keymap, jetbrains_keymap, next_match, word_at,
 };
 use rustaco_syntax::{Colors, Style, Theme, ThemeRule, themes};
-use rustaco_view::{FrameLine, INLAY_STYLE, Metrics, Rect, StyleSpan, Styler, View, indent_fold_ranges};
+use rustaco_view::{Metrics, Rect, StyleSpan, Styler, View, indent_fold_ranges};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
-mod layers;
-use layers::GlLayer;
+mod paint;
+use paint::{Align, CanvasPainter, GlLayer, GlPainter, Painter};
 
 /// Editor surface colours as CSS strings, from the current theme.
 #[derive(Clone)]
@@ -709,9 +709,9 @@ pub struct Editor {
     text_drag: Option<(std::ops::Range<usize>, Option<usize>, f64, f64)>,
     /// View zones of the last frame: id and rectangle.
     zone_rects: Vec<(u32, Rect)>,
-    /// The WebGL text layer, when JS set one up; `overlay` then takes what goes over the text.
+    /// The WebGL layer, when JS set one up: frames are then painted as quads for WebGL
+    /// instead of on the canvas.
     gl: Option<GlLayer>,
-    overlay: Option<(HtmlCanvasElement, CanvasRenderingContext2d)>,
 }
 
 /// Display options (Monaco's names in the JS API).
@@ -777,38 +777,22 @@ impl Editor {
             text_drag: None,
             zone_rects: Vec::new(),
             gl: None,
-            overlay: None,
         })
     }
 
-    /// Draws the text with WebGL (`"webgl"`) or on the canvas (`"canvas"`, the default).
-    /// WebGL needs an overlay canvas, stacked over the WebGL canvas, for what goes over the
-    /// text: carets, gutter, scrollbars.
+    /// Paints frames with WebGL (`"webgl"`) or on the canvas (`"canvas"`, the default). With
+    /// WebGL, JS draws each frame from [`Editor::gl_instances`] after [`Editor::render`].
     #[wasm_bindgen(js_name = setTextLayer)]
-    pub fn set_text_layer(&mut self, kind: &str, overlay: Option<HtmlCanvasElement>) -> Result<(), JsValue> {
-        match (kind, overlay) {
-            ("webgl", Some(c)) => {
-                let ctx: CanvasRenderingContext2d =
-                    c.get_context("2d")?.ok_or_else(|| JsValue::from_str("canvas has no 2d context"))?.dyn_into()?;
-                c.set_width(self.canvas.width());
-                c.set_height(self.canvas.height());
-                self.overlay = Some((c, ctx));
-                self.gl = Some(GlLayer::default());
-            }
-            _ => {
-                self.overlay = None;
-                self.gl = None;
-            }
-        }
-        Ok(())
+    pub fn set_text_layer(&mut self, kind: &str) {
+        self.gl = (kind == "webgl").then(GlLayer::default);
     }
 
-    /// Glyph instances of the last frame: pointer into WASM memory and count (six 32-bit
-    /// words each: x, y, width, height as f32 device pixels, atlas slot, RGBA).
+    /// Quads of the last frame: pointer into WASM memory and count (eight 32-bit words each:
+    /// x, y, width, height, slot origin x and y as f32 device pixels, atlas slot, RGBA).
     #[wasm_bindgen(js_name = glInstances)]
     pub fn gl_instances(&self) -> Vec<u32> {
         match &self.gl {
-            Some(g) => vec![g.instances.as_ptr() as u32, (g.instances.len() / layers::INSTANCE_WORDS) as u32],
+            Some(g) => vec![g.instances.as_ptr() as u32, (g.instances.len() / paint::INSTANCE_WORDS) as u32],
             None => vec![0, 0],
         }
     }
@@ -820,7 +804,7 @@ impl Editor {
         match &self.gl {
             Some(g) => {
                 let (w, h, pad, cols) = g.geometry;
-                vec![w, h, pad, cols, layers::ATLAS, g.reset as u32]
+                vec![w, h, pad, cols, paint::ATLAS, g.reset as u32]
             }
             None => Vec::new(),
         }
@@ -854,10 +838,6 @@ impl Editor {
         self.dpr = dpr;
         self.canvas.set_width((width * dpr).round() as u32);
         self.canvas.set_height((height * dpr).round() as u32);
-        if let Some((c, _)) = &self.overlay {
-            c.set_width(self.canvas.width());
-            c.set_height(self.canvas.height());
-        }
         self.view.resize(width as f32, height as f32);
         let (top, left) = (self.view.scroll_top(), self.view.scroll_left());
         self.view.scroll_to(self.model.borrow().rope(), top, left);
@@ -1982,27 +1962,47 @@ impl Editor {
     }
 
     pub fn render(&mut self, caret_visible: bool) -> Result<(), JsValue> {
+        let mut gl = self.gl.take();
+        let (cw, lh) = (self.view.metrics.char_width, self.view.metrics.line_height);
+        match gl.as_mut() {
+            Some(g) => {
+                let mut p = GlPainter::new(g, cw, lh, self.dpr);
+                self.paint(&mut p, caret_visible);
+            }
+            None => {
+                let (ctx, font) = (self.ctx.clone(), self.font.clone());
+                ctx.set_transform(self.dpr, 0.0, 0.0, self.dpr, 0.0, 0.0)?;
+                ctx.set_font(&font);
+                let mut p = CanvasPainter { ctx: &ctx, font: &font, line_height: lh, dpr: self.dpr };
+                self.paint(&mut p, caret_visible);
+            }
+        }
+        self.gl = gl;
+        Ok(())
+    }
+}
+
+impl Editor {
+    /// Paints a frame, back to front, through `p`.
+    fn paint(&mut self, p: &mut dyn Painter, caret_visible: bool) {
         let bracket_pair = self.current_bracket_pair();
         let model = self.model.borrow();
         self.cursors.sync(&model);
         let selections = self.cursors.selections();
         self.highlights.sync(&model);
         let frame = self.view.layout(&model, selections, &self.highlights);
-        let ctx = &self.ctx;
         let (w, h) = (self.view.width as f64, self.view.height as f64);
         let gutter = frame.gutter_width as f64;
         let cw = self.view.metrics.char_width as f64;
-        let fill = |color: &str, r: &Rect| {
-            ctx.set_fill_style_str(color);
-            ctx.fill_rect(r.x as f64, r.y as f64, r.width as f64, r.height as f64);
+        let lh = self.view.metrics.line_height as f64;
+        let fill = |p: &mut dyn Painter, color: &str, r: &Rect| {
+            p.rect(color, r.x as f64, r.y as f64, r.width as f64, r.height as f64)
         };
 
         let chrome = CHROME.with(|c| c.borrow().clone());
-        ctx.set_transform(self.dpr, 0.0, 0.0, self.dpr, 0.0, 0.0)?;
-        ctx.set_fill_style_str(&chrome.background);
-        ctx.fill_rect(0.0, 0.0, w, h);
+        p.rect(&chrome.background, 0.0, 0.0, w, h);
         if let Some(band) = &frame.current_line {
-            fill(&chrome.current_line, band);
+            fill(p, &chrome.current_line, band);
         }
         let types: Vec<DecorationType> = DECORATION_TYPES.with(|t| t.borrow().clone());
         let type_of = |kind: u32| kind.checked_sub(FIRST_DECORATION_TYPE).and_then(|i| types.get(i as usize));
@@ -2010,190 +2010,126 @@ impl Editor {
             self.view.line_bands(&model, |k| type_of(k).is_some_and(|t| t.whole_line && t.background.is_some()))
         {
             if let Some(bg) = type_of(kind).and_then(|t| t.background.as_ref()) {
-                fill(bg, &r);
+                fill(p, bg, &r);
             }
         }
 
-        ctx.save();
-        ctx.begin_path();
         let minimap_width = self.view.minimap_width() as f64;
-        ctx.rect(gutter, 0.0, w - gutter - minimap_width, h);
-        ctx.clip();
+        p.clip(gutter, 0.0, w - gutter - minimap_width, h);
         // 1px lines at whole device pixels, so they are not blurred across two.
-        let dpr = self.dpr;
+        let dpr = p.dpr();
         let snap = |x: f32| (x as f64 * dpr).floor() / dpr;
         let one_pixel = 1.0 / dpr;
         if self.options.guides {
             let cursor_line = model.rope().char_to_line(selections.primary().head);
             for g in self.view.indent_guides(&model, cursor_line) {
                 let color = if g.active { &chrome.indent_guide_active } else { &chrome.indent_guide };
-                ctx.set_fill_style_str(color);
-                ctx.fill_rect(snap(g.x), g.top as f64, one_pixel, (g.bottom - g.top) as f64);
+                p.rect(color, snap(g.x), g.top as f64, one_pixel, (g.bottom - g.top) as f64);
             }
         }
-        ctx.set_fill_style_str(&chrome.ruler);
         for x in self.view.ruler_positions(&model, &self.options.rulers) {
-            ctx.fill_rect(snap(x), 0.0, one_pixel, h);
+            p.rect(&chrome.ruler, snap(x), 0.0, one_pixel, h);
         }
         let decorations = self.view.decoration_rects(&model);
         for (r, kind) in &decorations {
             if *kind == FIND_MATCH {
-                fill(&chrome.find_match, r);
+                fill(p, &chrome.find_match, r);
             } else if let Some(bg) = type_of(*kind).filter(|t| !t.whole_line).and_then(|t| t.background.as_ref()) {
-                fill(bg, r);
+                fill(p, bg, r);
             }
         }
         if self.options.occurrences {
             for r in self.occurrence_rects(&model, selections) {
-                fill(&chrome.word_highlight, &r);
+                fill(p, &chrome.word_highlight, &r);
             }
         }
         for r in &frame.selections {
-            fill(&chrome.selection, r);
+            fill(p, &chrome.selection, r);
         }
         for r in &frame.fold_ellipses {
             let inset = Rect { y: r.y + 2.0, height: r.height - 4.0, ..*r };
-            fill(&chrome.word_highlight, &inset);
-            ctx.set_fill_style_str(&chrome.line_number);
-            ctx.set_text_align("center");
-            ctx.set_text_baseline("middle");
-            ctx.fill_text("\u{22ef}", (r.x + r.width / 2.0) as f64, (r.y + r.height / 2.0) as f64)?;
+            fill(p, &chrome.word_highlight, &inset);
+            let (x, y) = ((r.x + r.width / 2.0) as f64, (r.y + r.height / 2.0) as f64);
+            p.label("\u{22ef}", x, y, Align::Center, &chrome.line_number);
         }
-        let (cw32, lh32) = (self.view.metrics.char_width, self.view.metrics.line_height);
-        let ctx = match (&mut self.gl, &self.overlay) {
-            (Some(g), Some((_, over))) => {
-                g.update(&frame.lines, cw32, lh32, self.dpr);
-                ctx.restore();
-                begin_overlay(over, self.dpr, w, h, gutter, minimap_width)?;
-                over
-            }
-            _ => {
-                ctx.set_text_baseline("middle");
-                ctx.set_text_align("left");
-                draw_text(ctx, &frame.lines, &self.font, lh32);
-                ctx
-            }
-        };
-        let fill = |color: &str, r: &Rect| {
-            ctx.set_fill_style_str(color);
-            ctx.fill_rect(r.x as f64, r.y as f64, r.width as f64, r.height as f64);
-        };
-        ctx.set_font(&self.font);
-        ctx.set_text_baseline("middle");
+        p.text_runs(&frame.lines);
         if self.options.render_whitespace {
-            ctx.set_fill_style_str(&chrome.whitespace);
-            let lh = self.view.metrics.line_height as f64;
-            for (x, y, cells, tab) in self.view.whitespace_marks(&model) {
+            for (x, y, _cells, tab) in self.view.whitespace_marks(&model) {
                 let mark = if tab { "\u{2192}" } else { "\u{b7}" };
-                let _ = cells;
-                ctx.fill_text(mark, x as f64, y as f64 + lh / 2.0)?;
+                p.label(mark, x as f64, y as f64 + lh / 2.0, Align::Left, &chrome.whitespace);
             }
         }
         for (r, kind) in &decorations {
             if *kind == COMPOSITION {
-                draw_underline(ctx, r, 1, &chrome.caret);
+                p.underline(r, 1, &chrome.caret);
                 continue;
             }
             let Some(t) = type_of(*kind).filter(|t| t.underline != 0 && !t.whole_line) else { continue };
-            draw_underline(ctx, r, t.underline, &t.underline_color);
+            p.underline(r, t.underline, &t.underline_color);
         }
         if let Some((open, close)) = bracket_pair {
-            ctx.set_stroke_style_str(&chrome.bracket_match);
-            ctx.set_line_width(1.0);
             for at in [open, close] {
                 for r in self.view.char_rects(&model, at) {
-                    ctx.stroke_rect(r.x as f64 + 0.5, r.y as f64 + 0.5, r.width as f64 - 1.0, r.height as f64 - 1.0);
+                    p.outline(&chrome.bracket_match, &r);
                 }
             }
         }
         if caret_visible {
             for r in &frame.carets {
-                fill(&chrome.caret, r);
+                fill(p, &chrome.caret, r);
             }
         }
-        ctx.restore();
+        p.unclip();
         self.sticky = frame.sticky.iter().map(|l| (l.y, l.height, l.line)).collect();
         self.zone_rects = frame.zones.clone();
 
-        ctx.set_fill_style_str(&chrome.gutter);
-        ctx.fill_rect(0.0, 0.0, gutter, h);
+        p.rect(&chrome.gutter, 0.0, 0.0, gutter, h);
         for (y, height, kind) in self.view.gutter_marks(&model, |k| type_of(k).is_some_and(|t| t.gutter.is_some())) {
             if let Some(color) = type_of(kind).and_then(|t| t.gutter.as_ref()) {
-                ctx.set_fill_style_str(color);
-                ctx.fill_rect(2.0, y as f64, 3.0, height as f64);
+                p.rect(color, 2.0, y as f64, 3.0, height as f64);
             }
         }
-        ctx.set_text_align("right");
         let rope = model.rope();
         let primary_line = rope.char_to_line(selections.primary().head);
         for line in frame.lines.iter().filter(|l| l.row == 0) {
             let color = if line.line == primary_line { &chrome.line_number_active } else { &chrome.line_number };
-            ctx.set_fill_style_str(color);
             let y = (line.y + line.height / 2.0) as f64;
-            ctx.fill_text(&(line.line + 1).to_string(), gutter - 3.5 * cw, y)?;
+            p.label(&(line.line + 1).to_string(), gutter - 3.5 * cw, y, Align::Right, color);
         }
-        ctx.set_fill_style_str(&chrome.line_number);
         for m in &frame.fold_markers {
-            // A small triangle: pointing right when folded, down when open.
             let (cx, cy) = (gutter - 1.5 * cw, (m.y + m.height / 2.0) as f64);
-            let r = (cw * 0.35).max(3.0);
-            ctx.begin_path();
-            if m.folded {
-                ctx.move_to(cx - r * 0.6, cy - r);
-                ctx.line_to(cx + r * 0.6, cy);
-                ctx.line_to(cx - r * 0.6, cy + r);
-            } else {
-                ctx.move_to(cx - r, cy - r * 0.6);
-                ctx.line_to(cx + r, cy - r * 0.6);
-                ctx.line_to(cx, cy + r * 0.6);
-            }
-            ctx.close_path();
-            ctx.fill();
+            p.triangle(&chrome.line_number, cx, cy, (cw * 0.35).max(3.0), m.folded);
         }
 
         if !frame.sticky.is_empty() {
-            let text_right = w - self.view.minimap_width() as f64;
+            let text_right = w - minimap_width;
             let bottom = frame.sticky.iter().map(|l| l.y + l.height).fold(0.0f32, f32::max) as f64;
-            ctx.set_fill_style_str(&chrome.background);
-            ctx.fill_rect(0.0, 0.0, text_right, bottom);
-            ctx.save();
-            ctx.begin_path();
-            ctx.rect(gutter, 0.0, text_right - gutter, bottom);
-            ctx.clip();
-            ctx.set_text_baseline("middle");
-            ctx.set_text_align("left");
-            draw_text(ctx, &frame.sticky, &self.font, self.view.metrics.line_height);
-            ctx.restore();
-            ctx.set_font(&self.font);
-            ctx.set_text_align("right");
-            ctx.set_fill_style_str(&chrome.line_number);
+            p.rect(&chrome.background, 0.0, 0.0, text_right, bottom);
+            p.clip(gutter, 0.0, text_right - gutter, bottom);
+            p.text_runs(&frame.sticky);
+            p.unclip();
             for l in &frame.sticky {
-                ctx.fill_text(&(l.line + 1).to_string(), gutter - 3.5 * cw, (l.y + l.height / 2.0) as f64)?;
+                let y = (l.y + l.height / 2.0) as f64;
+                p.label(&(l.line + 1).to_string(), gutter - 3.5 * cw, y, Align::Right, &chrome.line_number);
             }
-            ctx.set_fill_style_str(&chrome.indent_guide);
-            ctx.fill_rect(0.0, bottom - 1.0, text_right, 1.0);
+            p.rect(&chrome.indent_guide, 0.0, bottom - 1.0, text_right, 1.0);
         }
         if let Some(m) = &frame.minimap {
-            ctx.set_fill_style_str(&chrome.background);
-            ctx.fill_rect(m.x as f64, 0.0, m.width as f64, h);
+            p.rect(&chrome.background, m.x as f64, 0.0, m.width as f64, h);
             STYLES.with(|styles| {
                 let styles = styles.borrow();
-                let mut colors: Vec<&str> = Vec::new();
-                let mut ops = Vec::with_capacity(m.blocks.len() * 5);
                 let row = (m.row_height - 0.5).max(1.0) as f64;
-                for b in &m.blocks {
-                    let color = &styles.get(b.style as usize).unwrap_or(&styles[0]).color;
-                    let index = colors.iter().position(|c| c == color).unwrap_or_else(|| {
-                        colors.push(color);
-                        colors.len() - 1
-                    });
-                    ops.extend([b.x as f64, b.y as f64, b.width as f64, row, index as f64]);
-                }
-                ctx.set_global_alpha(0.7);
-                draw_blocks(ctx, &ops, &colors.join("\n"));
-                ctx.set_global_alpha(1.0);
+                let blocks: Vec<(f64, f64, f64, f64, &str)> = m
+                    .blocks
+                    .iter()
+                    .map(|b| {
+                        let color = styles.get(b.style as usize).unwrap_or(&styles[0]).color.as_str();
+                        (b.x as f64, b.y as f64, b.width as f64, row, color)
+                    })
+                    .collect();
+                p.blocks(&blocks, 0.7);
             });
-            fill(&chrome.scrollbar, &m.slider);
+            fill(p, &chrome.scrollbar, &m.slider);
         }
         // The marks are recomputed when asked (refreshOverview), not on every keystroke: with
         // thousands of search matches that would cost milliseconds per key.
@@ -2210,19 +2146,17 @@ impl Editor {
                 type_of(kind).and_then(|t| t.overview.as_ref())
             };
             if let Some(color) = color {
-                ctx.set_fill_style_str(color);
-                ctx.fill_rect(w - 10.0, y as f64, 10.0, height as f64);
+                p.rect(color, w - 10.0, y as f64, 10.0, height as f64);
             }
         }
-        ctx.set_fill_style_str(&chrome.scrollbar);
         if let Some((top, thumb)) = self.vertical_thumb(rope) {
-            ctx.fill_rect(w - 10.0, top, 10.0, thumb);
+            p.rect(&chrome.scrollbar, w - 10.0, top, 10.0, thumb);
         }
         if let Some((left, thumb)) = self.horizontal_thumb(rope) {
-            ctx.fill_rect(left, h - 10.0, thumb, 10.0);
+            p.rect(&chrome.scrollbar, left, h - 10.0, thumb, 10.0);
         }
         if let Some(r) = self.text_drag.as_ref().and_then(|d| d.1).and_then(|p| self.view.position_rect(rope, p)) {
-            fill(&chrome.caret, &r);
+            fill(p, &chrome.caret, &r);
         }
 
         // Carets are laid out in selection order, but off-screen ones are skipped.
@@ -2236,108 +2170,11 @@ impl Editor {
         if let Some(c) = frame.carets.get(primary_caret) {
             self.caret = *c;
         }
-        Ok(())
     }
-}
-
-/// Draws the text runs of `lines`. All text goes to JS in one call: one string, one number
-/// array, one font change per font. Crossing into JS per run costs more than the drawing.
-fn draw_text(ctx: &CanvasRenderingContext2d, lines: &[FrameLine], font: &str, line_height: f32) {
-    STYLES.with(|styles| {
-        let styles = styles.borrow();
-        let inlay = CssStyle {
-            color: CHROME.with(|c| c.borrow().line_number.clone()),
-            font_prefix: "italic ",
-            underline: false,
-        };
-        let style_of = |id: u32| if id == INLAY_STYLE { &inlay } else { styles.get(id as usize).unwrap_or(&styles[0]) };
-        let mut runs: Vec<(&str, u32, f64, f64)> = lines
-            .iter()
-            .flat_map(|line| {
-                let y = (line.y + line.height / 2.0) as f64;
-                line.runs.iter().map(move |r| (r.text.as_str(), r.style, r.x as f64, y))
-            })
-            .collect();
-        runs.sort_by_key(|&(_, style, _, _)| (style_of(style).font_prefix, style));
-
-        let mut text = String::new();
-        let mut ops: Vec<f64> = Vec::with_capacity(runs.len() * 7);
-        let (mut colors, mut fonts): (Vec<&str>, Vec<String>) = (Vec::new(), Vec::new());
-        let mut utf16 = 0usize;
-        for (run_text, style, x, y) in runs {
-            let s = style_of(style);
-            let font = format!("{}{}", s.font_prefix, font);
-            let font_index = fonts.iter().position(|f| *f == font).unwrap_or_else(|| {
-                fonts.push(font);
-                fonts.len() - 1
-            });
-            let color_index = colors.iter().position(|c| *c == s.color).unwrap_or_else(|| {
-                colors.push(&s.color);
-                colors.len() - 1
-            });
-            let len: usize = run_text.chars().map(char::len_utf16).sum();
-            text.push_str(run_text);
-            let underline = if s.underline { (line_height * 0.35) as f64 } else { 0.0 };
-            ops.extend([x, y, utf16 as f64, (utf16 + len) as f64, color_index as f64, font_index as f64, underline]);
-            utf16 += len;
-        }
-        draw_runs(ctx, &text, &ops, &colors.join("\n"), &fonts.join("\n"));
-    });
-}
-
-/// Clears the overlay canvas and clips it to the text area, as the base canvas is at the
-/// point the text would be drawn.
-fn begin_overlay(
-    ctx: &CanvasRenderingContext2d,
-    dpr: f64,
-    w: f64,
-    h: f64,
-    gutter: f64,
-    minimap: f64,
-) -> Result<(), JsValue> {
-    ctx.set_transform(dpr, 0.0, 0.0, dpr, 0.0, 0.0)?;
-    ctx.clear_rect(0.0, 0.0, w, h);
-    ctx.save();
-    ctx.begin_path();
-    ctx.rect(gutter, 0.0, w - gutter - minimap, h);
-    ctx.clip();
-    Ok(())
 }
 
 /// Width of the minimap column in CSS pixels.
 const MINIMAP_WIDTH: f32 = 90.0;
-
-/// Draws an underline along the bottom of `r`: 1 solid, 2 wavy, 3 dotted.
-fn draw_underline(ctx: &CanvasRenderingContext2d, r: &Rect, style: u8, color: &str) {
-    let (x0, x1) = (r.x as f64, (r.x + r.width) as f64);
-    let y = (r.y + r.height) as f64 - 2.0;
-    ctx.set_stroke_style_str(color);
-    ctx.set_fill_style_str(color);
-    ctx.set_line_width(1.0);
-    match style {
-        2 => {
-            // A zigzag with a 4 px period, the usual squiggle under diagnostics.
-            ctx.begin_path();
-            ctx.move_to(x0, y);
-            let mut x = x0;
-            let mut up = true;
-            while x < x1 {
-                x = (x + 2.0).min(x1);
-                ctx.line_to(x, if up { y - 2.0 } else { y });
-                up = !up;
-            }
-            ctx.stroke();
-        }
-        3 => {
-            let mut x = x0;
-            while x < x1 {
-                ctx.fill_rect(x, y - 0.5, 1.0, 1.0);
-                x += 3.0;
-            }
-        }
-        _ => ctx.fill_rect(x0, y - 0.5, x1 - x0, 1.0),
-    }
-}
 
 impl Editor {
     /// Parses a snippet, resolving VS Code's variables from this editor's state.

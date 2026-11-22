@@ -1,11 +1,12 @@
-// The WebGL text layer. Rust decides what to draw (glyph instances in WASM memory, and the
-// glyphs it has not seen before); this file draws new glyphs into the atlas, uploads the
-// instances and issues one draw call per frame.
+// The WebGL renderer. Rust paints each frame as quads in WASM memory (rectangles and glyphs,
+// back to front) and lists the glyphs it has not seen before; this file draws new glyphs
+// into the atlas, uploads the quads and issues one draw call per frame.
 
 const VERTEX = `#version 300 es
 layout(location = 0) in vec4 a_rect;
-layout(location = 1) in uint a_slot;
-layout(location = 2) in vec4 a_color;
+layout(location = 1) in vec2 a_origin;
+layout(location = 2) in uint a_slot;
+layout(location = 3) in vec4 a_color;
 uniform vec2 u_view;
 uniform vec2 u_slot;
 uniform float u_cols;
@@ -20,8 +21,9 @@ void main() {
   gl_Position = vec4(pos.x / u_view.x * 2.0 - 1.0, 1.0 - pos.y / u_view.y * 2.0, 0.0, 1.0);
   float s = float(a_slot);
   vec2 cell = vec2(mod(s, u_cols), floor(s / u_cols));
-  // Slot 0 is solid: rectangles sample its middle.
-  v_uv = a_slot == 0u ? (vec2(0.5) * u_slot) / u_atlas : (cell + corner) * u_slot / u_atlas;
+  // Slot 0 is solid: rectangles sample its middle. A glyph quad may be cut by a clip, so
+  // its texture position follows the pixel's offset from the slot's origin.
+  v_uv = a_slot == 0u ? (vec2(0.5) * u_slot) / u_atlas : (cell * u_slot + pos - a_origin) / u_atlas;
   v_colored = texelFetch(u_flags, ivec2(cell), 0).r;
   v_color = a_color;
 }`;
@@ -40,7 +42,7 @@ void main() {
 }`;
 
 const VARIANTS = ['', 'italic ', 'bold ', 'italic bold '];
-const STRIDE = 24;
+const STRIDE = 32;
 
 export class WebGLText {
   /**
@@ -93,11 +95,14 @@ export class WebGLText {
     gl.vertexAttribPointer(0, 4, gl.FLOAT, false, STRIDE, 0);
     gl.vertexAttribDivisor(0, 1);
     gl.enableVertexAttribArray(1);
-    gl.vertexAttribIPointer(1, 1, gl.UNSIGNED_INT, STRIDE, 16);
+    gl.vertexAttribPointer(1, 2, gl.FLOAT, false, STRIDE, 16);
     gl.vertexAttribDivisor(1, 1);
     gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 4, gl.UNSIGNED_BYTE, true, STRIDE, 20);
+    gl.vertexAttribIPointer(2, 1, gl.UNSIGNED_INT, STRIDE, 24);
     gl.vertexAttribDivisor(2, 1);
+    gl.enableVertexAttribArray(3);
+    gl.vertexAttribPointer(3, 4, gl.UNSIGNED_BYTE, true, STRIDE, 28);
+    gl.vertexAttribDivisor(3, 1);
     const texture = () => {
       const t = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, t);
@@ -145,14 +150,15 @@ export class WebGLText {
     if (r.height < bandH) r.height = bandH;
     const ctx = this.rasterCtx;
     ctx.clearRect(0, 0, side, bandH);
-    ctx.fillStyle = '#fff';
     ctx.textBaseline = 'middle';
     let variant = -1;
     for (let i = 0, g = 0; i < pending.length; i += 3, g++) {
       const slot = pending[i];
       if (pending[i + 1] !== variant) {
         variant = pending[i + 1];
-        ctx.font = `${VARIANTS[variant]}${this.fontSize * dpr}px ${this.fontFamily}`;
+        ctx.font = `${VARIANTS[variant & 3]}${this.fontSize * dpr}px ${this.fontFamily}`;
+        // Dark text is drawn dark: browsers shape glyph coverage by the text's brightness.
+        ctx.fillStyle = variant & 4 ? '#000' : '#fff';
       }
       ctx.fillText(chars[g], (slot % cols) * w + pad + pending[i + 2] / 4, (Math.floor(slot / cols) - first) * h + h / 2);
     }
@@ -174,8 +180,28 @@ export class WebGLText {
       }
       if (colored) this.flags[slot] = 255;
     }
+    // Upload only the new slots, a run of neighbours in one atlas row at a time: the rest of
+    // a row may hold glyphs from earlier frames, which the scratch band does not have.
     gl.bindTexture(gl.TEXTURE_2D, this.texture);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, first * h, side, bandH, gl.RGBA, gl.UNSIGNED_BYTE, data);
+    const pixels = new Uint8Array(data.data.buffer);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, side);
+    for (let i = 0; i < pending.length;) {
+      const start = pending[i];
+      let end = start + 1;
+      i += 3;
+      while (i < pending.length && pending[i] === end && Math.floor(end / cols) === Math.floor(start / cols)) {
+        end++;
+        i += 3;
+      }
+      const row = Math.floor(start / cols);
+      const x0 = (start % cols) * w;
+      gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x0);
+      gl.pixelStorei(gl.UNPACK_SKIP_ROWS, (row - first) * h);
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, row * h, (end - start) * w, h, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+    }
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
     gl.bindTexture(gl.TEXTURE_2D, this.flagsTexture);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, this.flagsSize[0], this.flagsSize[1], gl.RED, gl.UNSIGNED_BYTE, this.flags);

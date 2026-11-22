@@ -28,8 +28,18 @@ Nearly all of the browser keystroke cost with the worker is drawing the frame on
 
 | What | Gzipped |
 |---|---|
-| Editor module (`rustaco_web_bg.wasm`) | about 230 KB |
-| Language modules | 290 to 690 KB each, loaded on first use |
+| Editor module (`rustaco_web_bg.wasm`) | about 280 KB |
+| JavaScript (`rustaco.js` and the modules it imports) | about 46 KB |
+| Language modules | 310 to 690 KB each, loaded on first use; about 300 KB of each is the tree-sitter runtime, repeated per module |
+
+What a page loads to show a Rust file, measured with Playwright on the benchmark pages (`tests/bench-monaco`), gzipped with level 9:
+
+| Editor | Files | Raw | Gzipped |
+|---|---|---|---|
+| Rustaco (editor, Rust language module, worker) | 12 | 2,978 KB | 768 KB |
+| Monaco 0.57 (editor, CSS, editor worker, Monarch Rust grammar) | 21 | 4,831 KB | 1,267 KB |
+
+The Rust language module is 435 KB of Rustaco's 768 KB. A second language adds its own module. Monaco's Monarch grammars are a few KB each, but its language services load workers when used: TypeScript 1,507 KB gzipped (6.9 MB raw), CSS 233 KB, HTML 184 KB, JSON 118 KB.
 
 `scripts/check-size.sh` fails the build above 1 MB for the editor module and 700 KB for a language module.
 

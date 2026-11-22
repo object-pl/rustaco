@@ -937,17 +937,15 @@ export class RustacoEditor {
     clearInterval(this.blink);
     this.canvas.remove();
     this.textLayer?.dispose();
-    this.overCanvas?.remove();
     this.input.remove();
     this.overlay.remove();
     this.core.free();
   }
 
   /**
-   * With `"webgl"` (the default) the text is drawn by WebGL on its own canvas, between the
-   * base canvas (what lies under the text) and an overlay canvas (carets, gutter,
-   * scrollbars). Without WebGL2, or after the browser drops the context, the text goes back
-   * on the base canvas.
+   * With `"webgl"` (the default) WebGL draws whole frames on a canvas over the base canvas,
+   * which stays underneath for pointer events. Without WebGL2, or after the browser drops
+   * the context, frames are drawn on the base canvas.
    */
   #setupTextLayer(kind, fontFamily, fontSize) {
     if (kind !== 'webgl') return;
@@ -958,24 +956,20 @@ export class RustacoEditor {
       console.warn('rustaco: WebGL2 unavailable, drawing text on the canvas', e);
       return;
     }
-    this.overCanvas = document.createElement('canvas');
-    this.overCanvas.style.cssText = 'position:absolute;inset:0;width:100%;height:100%;pointer-events:none';
-    this.canvas.after(layer.el, this.overCanvas);
+    this.canvas.after(layer.el);
     this.textLayer = layer;
-    this.core.setTextLayer(kind, this.overCanvas);
+    this.core.setTextLayer(kind);
   }
 
   #dropTextLayer() {
-    this.core.setTextLayer('canvas', null);
+    this.core.setTextLayer('canvas');
     this.textLayer?.dispose();
-    this.overCanvas?.remove();
     this.textLayer = null;
-    this.overCanvas = null;
     this.schedule();
   }
 
   /**
-   * The editor drawn now, without the caret, all layers in one canvas at device resolution.
+   * The editor drawn now, without the caret, as a 2D canvas at device resolution.
    * Drawing and reading happen in one task, while the WebGL canvas still holds the frame.
    * For tests and screenshots.
    */
@@ -987,7 +981,7 @@ export class RustacoEditor {
     out.width = this.canvas.width;
     out.height = this.canvas.height;
     const ctx = out.getContext('2d', { willReadFrequently: true });
-    for (const layer of [this.canvas, this.textLayer?.toCanvas(), this.overCanvas]) if (layer) ctx.drawImage(layer, 0, 0);
+    ctx.drawImage(this.textLayer?.toCanvas() ?? this.canvas, 0, 0);
     return out;
   }
 
