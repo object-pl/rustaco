@@ -22,6 +22,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 use web_sys::{CanvasRenderingContext2d, HtmlCanvasElement};
 
+mod lsp;
 mod paint;
 use paint::{Align, CanvasPainter, GlLayer, GlPainter, Painter};
 

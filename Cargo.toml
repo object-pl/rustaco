@@ -15,6 +15,7 @@ repository = "https://github.com/theObjectCo/rustaco"
 rustaco-core = { path = "crates/rustaco-core", version = "0.2.0" }
 rustaco-view = { path = "crates/rustaco-view", version = "0.2.0" }
 rustaco-syntax = { path = "crates/rustaco-syntax", version = "0.2.0" }
+rustaco-lsp = { path = "crates/rustaco-lsp", version = "0.2.0" }
 ropey = { version = "1.6", default-features = false, features = ["cr_lines", "simd"] }
 
 [profile.release]
