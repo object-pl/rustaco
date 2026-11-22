@@ -2,7 +2,7 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Done: phases 0 to 11 (all 2026-11-21). Phase 12 in progress.
+Done: phases 0 to 11 (all 2026-11-21). Phases 12 and 13 in progress.
 
 Phase 12 so far:
 - Done: guides for embedding in a web page and in a native application and for adding a language (`docs/`); a performance report from the repository's benchmarks (`docs/performance.md`); an API review with what to settle before 1.0 (`docs/api-review.md`); provider text is never parsed as HTML (tested), pastes above `maxPasteLength` are refused.
@@ -253,6 +253,16 @@ Check: the example application edits a 1M-line file at the same speed as the bro
 - Publishing to crates.io and npm.
 - Security: sanitising hover HTML, limits on pasted and loaded input sizes.
 - Final performance report against Monaco on the same files.
+
+## Phase 13: language services in Rust (M)
+
+Every language feature reaches the editor through LSP, and services written in Rust run the same code in three places: inside the editor, in a browser worker, as a program on stdio. Highlighting and per-keystroke reactions (brackets, indentation, auto-closing) stay local and synchronous with the frame; frame-synced highlighting from a worker becomes a custom method (`rustaco/highlight`) next to the standard ones.
+
+1. `LanguageService` trait and `LspServer` in `rustaco-lsp`. Done 2026-11-22: the server takes messages in and gives messages out without I/O, keeps open documents as `TextModel`s fed by `didChange`, hands the service char offsets and edit events, negotiates UTF-8 or UTF-16, drops queued requests on `$/cancelRequest` and flags the running one. `serve` and `serve_stdio` run it on a byte stream; `examples/keywords.rs` is a stdio server. Check: the crate's own client drives a test service through `serve` over pipes (`tests/server.rs`).
+2. The client's core without I/O (messages in, messages out), compiled into the editor's wasm; JS keeps only the transport (WebSocket, `postMessage`). `web/lsp.js` goes once it is replaced.
+3. The language modules served as `LanguageService`s in the worker: symbols, folding and selection ranges through the standard requests, highlighting through `rustaco/highlight`. Check: ms per keystroke within the noise of the current numbers.
+4. Mermaid as the first new service: colours and completion (keywords, directions, shapes, node ids).
+5. A tree-sitter layer for every language: completion from keywords and names in scope, definition and references within the file, local rename.
 
 ## Order and parallel work
 

@@ -1,4 +1,11 @@
-//! Language Server Protocol client for the Rustaco editor.
+//! Language Server Protocol for the Rustaco editor: the client, and the server side.
+//!
+//! The server side is [`LanguageService`], one trait for what a language service answers
+//! (completion, hover, definitions, symbols...) in char offsets, and [`LspServer`], which
+//! serves any implementation over the protocol: in a browser worker, or as a program on
+//! stdio ([`serve_stdio`]). The editor's own client talks to it like to any other server.
+//!
+//! The client:
 //!
 //! [`LspClient`] speaks JSON-RPC over any pair of byte streams: a server's stdio
 //! ([`LspClient::spawn`]) on the desktop, or a bridge the host provides. It negotiates the
@@ -10,6 +17,8 @@
 
 mod convert;
 mod rpc;
+mod server;
+mod service;
 
 use std::io;
 use std::ops::Range;
@@ -23,6 +32,8 @@ use rustaco_core::TextModel;
 /// JSON values as the protocol carries them (serde_json's).
 pub use serde_json::Value as JsonValue;
 use serde_json::{Value, json};
+pub use server::{LspServer, serve, serve_stdio};
+pub use service::{Cancel, Context, Diagnostic, Features, LanguageService, Severity};
 
 /// A hover answer.
 #[derive(Clone, Debug, PartialEq)]

@@ -161,6 +161,12 @@ impl TextModel {
         self.history = History::default();
     }
 
+    /// Applies `changes` outside the undo history, for a copy of a text kept in step with
+    /// another editor's (a language server's documents). The log records them as usual.
+    pub fn apply_changes(&mut self, changes: &ChangeSet) {
+        self.apply(changes);
+    }
+
     /// Change sets applied after `version`, oldest first.
     pub fn changes_since(&self, version: u64) -> Result<impl Iterator<Item = &ChangeSet>, Stale> {
         Ok(self.log_since(version)?.map(|e| &e.changes))

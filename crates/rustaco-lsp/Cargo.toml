@@ -1,6 +1,6 @@
 [package]
 name = "rustaco-lsp"
-description = "Language Server Protocol client for the Rustaco editor: JSON-RPC over any byte stream, document sync from edit events, requests mapped to char offsets"
+description = "Language Server Protocol for the Rustaco editor: a client mapping requests to char offsets, and a LanguageService trait with a server that runs it in a browser worker or over stdio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
