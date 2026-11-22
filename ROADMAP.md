@@ -2,14 +2,14 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Done: phases 0 to 11 (all 2026-11-21) and phase 13 (2026-11-22). Phase 12 in progress.
+Done: phases 0 to 11 (all 2026-11-21) and phase 13 (2026-11-22). Phase 12: everything except the npm publish, which waits for the maintainer's two-factor code, and the 1.0 freeze, which comes after the review.
 
 Phase 12 so far:
 - Done: guides for embedding in a web page and in a native application and for adding a language (`docs/`); a performance report from the repository's benchmarks (`docs/performance.md`); an API review with what to settle before 1.0 (`docs/api-review.md`); provider text is never parsed as HTML (tested), pastes above `maxPasteLength` are refused.
 - Repository: github.com/theObjectCo/rustaco (private for now), in every manifest. Version stays 0.1.0 without an API freeze.
 - Published to crates.io on 2026-11-21 as 0.1.0: rustaco-core, rustaco-view, rustaco-syntax, rustaco-lsp, rustaco-desktop. npm is postponed until the account is reachable. The crates package cleanly (`cargo publish --dry-run`). The browser packs depend on a patched `tree-sitter-language` that crates.io cannot carry, so they ship only in the npm package.
 - 2026-11-22, after phase 13: the API review (`docs/api-review.md`) is brought up to date; internal fields are declared internal in `rustaco.d.ts`; `rustaco-lsp`'s blocking requests are settled by `Session`; manifests carry `homepage`, `keywords` and `categories`. Phase 13 changed `rustaco-core`, `rustaco-syntax` and `rustaco-lsp`, so the next publish needs a new version; `rustaco-lsp` passes `cargo publish --dry-run` only once the new `rustaco-core` is on crates.io.
-- Open, decisions for the maintainer: freezing the API as 1.0 (or another 0.x first), whether `fuzzyScore` stays public, and running the npm and crates.io publishes, which need the accounts' two-factor codes.
+- Decided 2026-11-22: version 0.3.0 now, the 1.0 freeze after a review of phases 12 and 13; `fuzzyScore` stays public. The five crates are on crates.io as 0.3.0 (2026-11-22). The npm package is packed (`target/npm/rustaco-0.3.0.tgz`); publishing it needs the account's two-factor code. npm still has 0.1.0, because 0.2.0 was never published there.
 - Done: the comparison with Monaco on the same files (`docs/performance.md`, last section, harness in `tests/bench-monaco/`): Rustaco loads as fast and scales the same, but spends about 1.5 times Monaco's main-thread time per keystroke; the causes are listed there.
 
 Phase 11 summary:
