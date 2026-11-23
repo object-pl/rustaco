@@ -4,6 +4,7 @@
 // registered for the model's language (see languages.js).
 
 import { CancellationTokenSource, providersFor } from './languages.js';
+import { parseMarkdown } from './pkg/rustaco_web.js';
 
 const HOVER_DELAY_MS = 300;
 const CARET_DELAY_MS = 250;
@@ -39,39 +40,29 @@ const rangeOf = (r) => (r && 'range' in r ? r.range : r);
 
 /**
  * The markdown hover and completion documentation use, as DOM: ``` fences as code blocks,
- * and in text `code`, **bold** and *italic*. Other markdown shows as written.
+ * and in text `code`, **bold** and *italic*. Other markdown shows as written. Rust parses
+ * (`parseMarkdown`); this builds the nodes.
  */
 function renderMarkdown(parent, text, monoFont) {
-  const parts = String(text).split(/```[a-zA-Z]*\n?/);
-  parts.forEach((part, i) => {
-    if (!part) return;
-    if (i % 2) {
+  for (const [kind, content] of JSON.parse(parseMarkdown(String(text)))) {
+    if (kind === 'pre') {
       const pre = document.createElement('pre');
-      pre.textContent = part.replace(/\n$/, '');
+      pre.textContent = content;
       pre.style.cssText = `margin:4px 0;font:12px ${monoFont}`;
       parent.append(pre);
-      return;
+      continue;
     }
     const div = document.createElement('div');
     div.style.cssText = 'white-space:pre-wrap;margin:2px 0';
-    for (const piece of part.replace(/^\n+|\n+$/g, '').split(/(`[^`]+`|\*\*[^*]+\*\*|\*[^*\s][^*]*\*)/)) {
-      if (!piece) continue;
-      let el = null;
-      if (piece.startsWith('`')) {
-        el = document.createElement('code');
-        el.style.font = `12px ${monoFont}`;
-        el.textContent = piece.slice(1, -1);
-      } else if (piece.startsWith('**')) {
-        el = document.createElement('b');
-        el.textContent = piece.slice(2, -2);
-      } else if (piece.startsWith('*') && piece.length > 2) {
-        el = document.createElement('i');
-        el.textContent = piece.slice(1, -1);
-      }
-      div.append(el ?? piece);
+    for (const [piece, value] of content) {
+      if (piece === 'text') { div.append(value); continue; }
+      const el = document.createElement(piece);
+      if (piece === 'code') el.style.font = `12px ${monoFont}`;
+      el.textContent = value;
+      div.append(el);
     }
     parent.append(div);
-  });
+  }
 }
 
 export class Features {

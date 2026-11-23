@@ -16,7 +16,7 @@ use rustaco_core::{
     Cursors, Editor as Commands, EditorId, KeyPress, Keymap, Platform, Resolved, Rope, SearchQuery, Searcher,
     Selection, Selections, Stickiness, TextModel, default_keymap, jetbrains_keymap, next_match, word_at,
 };
-use rustaco_syntax::{Colors, Style, Theme, ThemeRule, themes};
+use rustaco_syntax::{Colors, Style, Theme, themes};
 use rustaco_view::{Metrics, Rect, StyleSpan, Styler, View, indent_fold_ranges};
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
@@ -227,6 +227,32 @@ pub fn style_id(name: &str) -> u32 {
     rustaco_syntax::style_for_capture(name)
 }
 
+/// Hover and documentation markdown as blocks (see `rustaco_view::markdown`), as JSON:
+/// `[["pre", text] | ["p", [[kind, text], ...]]]` with kind `text`, `code`, `b` or `i`.
+#[wasm_bindgen(js_name = parseMarkdown)]
+pub fn parse_markdown(text: &str) -> String {
+    use rustaco_view::markdown::{Block, Inline};
+    let blocks: Vec<serde_json::Value> = rustaco_view::markdown::parse(text)
+        .into_iter()
+        .map(|b| match b {
+            Block::Code(code) => serde_json::json!(["pre", code]),
+            Block::Paragraph(pieces) => {
+                let pieces: Vec<serde_json::Value> = pieces
+                    .into_iter()
+                    .map(|p| match p {
+                        Inline::Text(t) => serde_json::json!(["text", t]),
+                        Inline::Code(t) => serde_json::json!(["code", t]),
+                        Inline::Bold(t) => serde_json::json!(["b", t]),
+                        Inline::Italic(t) => serde_json::json!(["i", t]),
+                    })
+                    .collect();
+                serde_json::json!(["p", pieces])
+            }
+        })
+        .collect();
+    serde_json::Value::Array(blocks).to_string()
+}
+
 /// Selects a bundled theme: `"dark"`, `"light"` or `"high-contrast"`.
 #[wasm_bindgen(js_name = setBuiltinTheme)]
 pub fn set_builtin_theme(name: &str) -> bool {
@@ -240,50 +266,12 @@ pub fn set_builtin_theme(name: &str) -> bool {
     true
 }
 
-/// Sets a theme from a VS Code colour theme flattened by the JS side.
-///
-/// `base` (`"dark"`, `"light"` or `"high-contrast"`, from the theme's `type`) supplies the
-/// surface colours the theme leaves out. Token rules: one selector per line in `selectors`,
-/// a foreground `0xRRGGBBAA` per selector (0 = unset), font flags per selector (bit 0:
-/// fontStyle present, bit 1 bold, bit 2 italic, bit 3 underline). Surface colours: one VS Code
-/// `colors` key per line in `color_keys`, with its value in `color_values`.
-#[wasm_bindgen(js_name = setThemeRules)]
-pub fn set_theme_rules(
-    base: &str,
-    selectors: &str,
-    foregrounds: &[u32],
-    font_flags: &[u8],
-    color_keys: &str,
-    color_values: &[u32],
-) {
-    let rules = selectors
-        .split('\n')
-        .zip(foregrounds.iter().zip(font_flags))
-        .map(|(selector, (&fg, &flags))| {
-            let font = |bit: u8| (flags & 1 != 0).then_some(flags & bit != 0);
-            ThemeRule {
-                selector: selector.to_owned(),
-                style: Style {
-                    foreground: (fg != 0).then_some(fg),
-                    bold: font(2),
-                    italic: font(4),
-                    underline: font(8),
-                    ..Style::default()
-                },
-            }
-        })
-        .collect();
-    let mut colors = match base {
-        "light" => Colors::LIGHT,
-        "high-contrast" => Colors::HIGH_CONTRAST,
-        _ => Colors::DARK,
-    };
-    for (key, &value) in color_keys.split('\n').zip(color_values) {
-        if value != 0 {
-            colors.set(key, value);
-        }
-    }
-    apply_theme(&Theme { rules, colors });
+/// Sets a VS Code colour theme from its JSON text (see `rustaco_syntax::Theme::from_vscode`).
+#[wasm_bindgen(js_name = setVsCodeTheme)]
+pub fn set_vscode_theme(json: &str) -> Result<(), JsValue> {
+    let theme = Theme::from_vscode(json).map_err(|e| JsValue::from_str(&e))?;
+    apply_theme(&theme);
+    Ok(())
 }
 
 /// A text model that one or more editors can show.
@@ -2010,6 +1998,94 @@ impl Editor {
     pub fn paste(&mut self, text: &str) {
         self.edit(|ed| ed.paste(text));
         self.reveal_primary();
+    }
+
+    /// What a copy or cut puts on the clipboard next to the text so a paste can go back one
+    /// piece per cursor: JSON `{ pieces }` when there are several selections, else `""`.
+    #[wasm_bindgen(js_name = clipboardMeta)]
+    pub fn clipboard_meta(&mut self) -> String {
+        let pieces = self.selection_texts();
+        if pieces.len() > 1 { serde_json::json!({ "pieces": pieces }).to_string() } else { String::new() }
+    }
+
+    /// Pastes clipboard `text`. With `meta` from [`Editor::clipboard_meta`] whose pieces match
+    /// the text and the cursor count, each cursor gets its piece; otherwise every cursor gets
+    /// the whole text.
+    #[wasm_bindgen(js_name = pasteClipboard)]
+    pub fn paste_clipboard(&mut self, text: &str, meta: &str) {
+        let pieces: Vec<String> = serde_json::from_str::<serde_json::Value>(meta)
+            .ok()
+            .and_then(|v| {
+                v["pieces"].as_array().map(|a| a.iter().filter_map(|p| p.as_str().map(str::to_owned)).collect())
+            })
+            .unwrap_or_default();
+        let cursors = self.selections().len() / 2;
+        let same_text = pieces.join("\n") == text.replace("\r\n", "\n");
+        if pieces.len() > 1 && pieces.len() == cursors && same_text {
+            self.paste_each(pieces);
+        } else {
+            self.paste(text);
+        }
+    }
+
+    /// A wheel event: `mode` is the DOM's `deltaMode` (0 pixels, 1 lines, 2 pages). With
+    /// Shift and no horizontal delta, the vertical delta scrolls sideways.
+    #[wasm_bindgen(js_name = wheelEvent)]
+    pub fn wheel_event(&mut self, dx: f64, dy: f64, mode: u32, shift: bool) {
+        let unit = match mode {
+            1 => self.view.metrics.line_height as f64,
+            2 => self.view.height as f64,
+            _ => 1.0,
+        };
+        let (dx, dy) = if shift && dx == 0.0 { (dy, 0.0) } else { (dx, dy) };
+        self.wheel(dx * unit, dy * unit);
+    }
+
+    /// One step of scrolling while a drag selection is held past the top or bottom edge,
+    /// faster the further out the pointer is (at most 100 pixels a step); the selection
+    /// follows the pointer. False when the pointer is back inside, so the timer can stop.
+    #[wasm_bindgen(js_name = dragAutoscroll)]
+    pub fn drag_autoscroll(&mut self, x: f64, y: f64) -> bool {
+        let h = self.view.height as f64;
+        let over = if y < 0.0 {
+            y
+        } else if y > h {
+            y - h
+        } else {
+            0.0
+        };
+        if over == 0.0 {
+            return false;
+        }
+        self.wheel(0.0, over.signum() * over.abs().min(200.0) / 2.0);
+        self.mouse_move(x, y);
+        true
+    }
+
+    /// [`Editor::key_down`] for a DOM key event. With Shift a symbol key types another char
+    /// (`|` for `\` on US layouts), so it is named by its physical `code` instead, as VS Code
+    /// does; otherwise the produced char counts, which keeps bindings working on other layouts.
+    #[wasm_bindgen(js_name = keyDownEvent)]
+    pub fn key_down_event(&mut self, key: &str, code: &str, ctrl: bool, shift: bool, alt: bool, meta: bool) -> u8 {
+        let symbol = match code {
+            "Backslash" => Some("\\"),
+            "Slash" => Some("/"),
+            "BracketLeft" => Some("["),
+            "BracketRight" => Some("]"),
+            "Semicolon" => Some(";"),
+            "Quote" => Some("'"),
+            "Comma" => Some(","),
+            "Period" => Some("."),
+            "Minus" => Some("-"),
+            "Equal" => Some("="),
+            "Backquote" => Some("`"),
+            _ => None,
+        };
+        let key = match symbol {
+            Some(s) if shift => s,
+            _ => key,
+        };
+        self.key_down(key, ctrl, shift, alt, meta)
     }
 
     pub fn wheel(&mut self, dx: f64, dy: f64) {

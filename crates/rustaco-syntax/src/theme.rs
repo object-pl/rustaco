@@ -1,7 +1,7 @@
 //! Themes in the TextMate scope model that VS Code themes use.
 //!
-//! A frontend parses a theme file (the browser uses `JSON.parse` on a VS Code theme) into
-//! [`ThemeRule`]s and calls [`Theme::style_table`] to get one [`Style`] per highlight name.
+//! [`Theme::from_vscode`] (feature `vscode-theme`) reads a VS Code theme file; a frontend
+//! calls [`Theme::style_table`] to get one [`Style`] per highlight name.
 
 use crate::names::HIGHLIGHT_NAMES;
 
@@ -154,6 +154,74 @@ pub struct Theme {
     pub colors: Colors,
 }
 
+/// `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` as `0xRRGGBBAA`.
+pub fn parse_color(text: &str) -> Option<u32> {
+    let hex = text.strip_prefix('#')?;
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let full: String = match hex.len() {
+        3 | 4 => hex.chars().flat_map(|c| [c, c]).collect(),
+        6 | 8 => hex.to_owned(),
+        _ => return None,
+    };
+    let full = if full.len() == 6 { full + "ff" } else { full };
+    u32::from_str_radix(&full, 16).ok()
+}
+
+#[cfg(feature = "vscode-theme")]
+impl Theme {
+    /// A VS Code colour theme from its JSON (a `*-color-theme.json` file): token rules from
+    /// `tokenColors` (a scope given as a string with commas or as a list; `fontStyle` sets
+    /// bold, italic and underline, and an empty one clears them), surface colours from
+    /// `colors`, and the bundled dark, light or high-contrast theme's colours for what it
+    /// leaves out, by its `type`.
+    pub fn from_vscode(json: &str) -> Result<Theme, String> {
+        let v: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+        let mut rules = Vec::new();
+        for rule in v["tokenColors"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+            let settings = &rule["settings"];
+            let foreground = settings["foreground"].as_str().and_then(parse_color);
+            let font = settings["fontStyle"].as_str();
+            let has = |word: &str| font.map(|f| f.split_whitespace().any(|w| w == word));
+            let style = Style {
+                foreground,
+                bold: has("bold"),
+                italic: has("italic"),
+                underline: has("underline"),
+                ..Style::default()
+            };
+            let scopes: Vec<String> = match &rule["scope"] {
+                serde_json::Value::Array(list) => list.iter().filter_map(|s| s.as_str()).map(str::to_owned).collect(),
+                serde_json::Value::String(s) => s.split(',').map(str::to_owned).collect(),
+                _ => Vec::new(),
+            };
+            for scope in scopes {
+                let selector = scope.trim();
+                if !selector.is_empty() {
+                    rules.push(ThemeRule { selector: selector.to_owned(), style });
+                }
+            }
+        }
+        let kind = v["type"].as_str().unwrap_or("dark");
+        let mut colors = if kind.starts_with("hc") {
+            Colors::HIGH_CONTRAST
+        } else if kind == "light" {
+            Colors::LIGHT
+        } else {
+            Colors::DARK
+        };
+        if let Some(map) = v["colors"].as_object() {
+            for (key, value) in map {
+                if let Some(rgba) = value.as_str().and_then(parse_color) {
+                    colors.set(key, rgba);
+                }
+            }
+        }
+        Ok(Theme { rules, colors })
+    }
+}
+
 impl Theme {
     /// Style for the first scope in `scopes` that any rule matches, each property taken
     /// from the most specific rule that sets it. Selectors with descendant parts
@@ -210,6 +278,33 @@ mod tests {
 
     fn rule(selector: &str, fg: u32) -> ThemeRule {
         ThemeRule { selector: selector.into(), style: Style { foreground: Some(fg), ..Style::default() } }
+    }
+
+    #[cfg(feature = "vscode-theme")]
+    #[test]
+    fn reads_a_vscode_theme() {
+        let json = r##"{
+            "type": "light",
+            "colors": { "editor.background": "#fafafa", "editor.foreground": "#abc" },
+            "tokenColors": [
+                { "scope": "comment, string", "settings": { "foreground": "#808080cc", "fontStyle": "italic" } },
+                { "scope": ["keyword"], "settings": { "foreground": "#00f8", "fontStyle": "" } },
+                { "settings": { "foreground": "#000000" } }
+            ]
+        }"##;
+        let t = Theme::from_vscode(json).unwrap();
+        assert_eq!(t.rules.len(), 3);
+        assert_eq!(t.rules[1].selector, "string");
+        assert_eq!(t.rules[0].style.foreground, Some(0x808080cc));
+        assert_eq!(t.rules[0].style.italic, Some(true));
+        assert_eq!(t.rules[0].style.bold, Some(false));
+        // `#rgba` expands like `#rgb`; an empty fontStyle clears the inherited ones.
+        assert_eq!(t.rules[2].style.foreground, Some(0x0000ff88));
+        assert_eq!(t.rules[2].style.italic, Some(false));
+        assert_eq!(t.colors.background, 0xfafafaff);
+        assert!(Theme::from_vscode("{ not json").is_err());
+        assert_eq!(parse_color("red"), None);
+        assert_eq!(parse_color("#12345"), None);
     }
 
     #[test]

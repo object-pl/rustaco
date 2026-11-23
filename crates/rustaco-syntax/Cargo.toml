@@ -36,7 +36,7 @@ tree-sitter-sequel = { version = "0.3", optional = true }
 tree-sitter-md = { version = "0.5", optional = true }
 
 [features]
-default = ["all-languages", "service"]
+default = ["all-languages", "service", "vscode-theme"]
 all-languages = [
     "textmate", "rust", "javascript", "typescript", "json", "python", "c", "cpp", "go", "java", "csharp",
     "html", "css", "bash", "toml", "yaml", "sql", "markdown",
@@ -46,6 +46,8 @@ all-languages = [
 engine = ["highlighting", "dep:tree-sitter", "dep:ropey"]
 # Highlight spans, the `Engine` interface and the Mermaid tokenizer, which needs no grammar.
 highlighting = ["dep:rustaco-view"]
+# `Theme::from_vscode`: VS Code theme files.
+vscode-theme = ["dep:serde_json"]
 # `SyntaxService`: the languages compiled in, served as a language server.
 service = ["highlighting", "dep:rustaco-lsp", "dep:serde_json"]
 # The TextMate tokenizer and bundled TextMate grammars (SQL, Kotlin, Dockerfile).

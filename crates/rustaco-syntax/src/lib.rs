@@ -53,7 +53,7 @@ pub use service::SyntaxService;
 pub use spans::{Highlights, MAX_HIGHLIGHT_COLUMNS, TextContext};
 #[cfg(feature = "textmate")]
 pub use textmate::{Grammar, TextMateSyntax, grammar as textmate_grammar, textmate_languages};
-pub use theme::{Colors, Style, Theme, ThemeRule};
+pub use theme::{Colors, Style, Theme, ThemeRule, parse_color};
 
 /// Themes bundled with the editor.
 pub mod themes {

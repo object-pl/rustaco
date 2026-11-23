@@ -15,6 +15,7 @@
 
 mod folding;
 mod heights;
+pub mod markdown;
 mod wrap;
 
 pub use folding::{FoldMarker, indent_fold_ranges};

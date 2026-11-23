@@ -1,6 +1,6 @@
 // DOM glue for the Rustaco editor. Rust draws and edits; this file forwards browser events.
 import init, {
-  Editor, LspSession, Model, defineDecorationType as defineType, setBuiltinTheme, setThemeRules, widgetColors,
+  Editor, LspSession, Model, defineDecorationType as defineType, setBuiltinTheme, setVsCodeTheme, widgetColors,
 } from './pkg/rustaco_web.js';
 import { SuggestController } from './suggest.js';
 import { Features } from './features.js';
@@ -344,22 +344,6 @@ const MAX_PASTE_LENGTH = 50_000_000;
 /** Clipboard type of the per-cursor pieces of a multi-cursor copy. */
 const CLIPBOARD_META = 'application/x-rustaco-editor';
 
-/** Languages whose blocks are marked by indentation, so indentation adds fold regions. */
-
-/** Physical keys whose unshifted symbol names them in keybindings. */
-const SYMBOL_CODES = {
-  Backslash: '\\', Slash: '/', BracketLeft: '[', BracketRight: ']', Semicolon: ';', Quote: "'",
-  Comma: ',', Period: '.', Minus: '-', Equal: '=', Backquote: '`',
-};
-
-/**
- * The key name a keybinding matches. With Shift held a symbol key types a different char
- * (`|` for `\\` on US layouts), so it is named by its physical key, as VS Code does;
- * otherwise the produced char counts, which keeps bindings working on other layouts.
- */
-function bindingKey(e) {
-  return e.shiftKey && SYMBOL_CODES[e.code] ? SYMBOL_CODES[e.code] : e.key;
-}
 
 /** The keymap platform: Cmd-based bindings on Apple devices. */
 function platform() {
@@ -379,46 +363,9 @@ export async function setTheme(theme) {
   if (typeof theme === 'string') {
     if (!setBuiltinTheme(theme)) throw new Error(`unknown built-in theme: ${theme}`);
   } else {
-    const selectors = [];
-    const foregrounds = [];
-    const flags = [];
-    for (const rule of theme.tokenColors ?? []) {
-      const settings = rule.settings ?? {};
-      const scopes = Array.isArray(rule.scope) ? rule.scope : String(rule.scope ?? '').split(',');
-      const fg = parseColor(settings.foreground);
-      const fontStyle = settings.fontStyle;
-      let f = 0;
-      if (typeof fontStyle === 'string') {
-        f = 1;
-        if (fontStyle.includes('bold')) f |= 2;
-        if (fontStyle.includes('italic')) f |= 4;
-        if (fontStyle.includes('underline')) f |= 8;
-      }
-      for (const scope of scopes) {
-        const sel = scope.trim();
-        if (!sel) continue;
-        selectors.push(sel);
-        foregrounds.push(fg);
-        flags.push(f);
-      }
-    }
-    const type = String(theme.type ?? 'dark');
-    const base = type.startsWith('hc') ? 'high-contrast' : type === 'light' ? 'light' : 'dark';
-    const colorKeys = Object.keys(theme.colors ?? {});
-    const colorValues = colorKeys.map((k) => parseColor(theme.colors[k]));
-    setThemeRules(base, selectors.join('\n'), Uint32Array.from(foregrounds), Uint8Array.from(flags),
-      colorKeys.join('\n'), Uint32Array.from(colorValues));
+    setVsCodeTheme(JSON.stringify(theme));
   }
   for (const e of editors) e.schedule();
-}
-
-/** `#rgb`, `#rrggbb` or `#rrggbbaa` to 0xRRGGBBAA; 0 when absent or invalid. */
-function parseColor(c) {
-  if (typeof c !== 'string' || c[0] !== '#') return 0;
-  let hex = c.slice(1);
-  if (hex.length === 3) hex = [...hex].map((x) => x + x).join('');
-  if (hex.length === 6) hex += 'ff';
-  return hex.length === 8 && /^[0-9a-f]+$/i.test(hex) ? parseInt(hex, 16) >>> 0 : 0;
 }
 
 /**
@@ -1160,12 +1107,8 @@ export class RustacoEditor {
       let last = [x, y];
       let timer = 0;
       const step = () => {
-        // Past the top or bottom edge the view scrolls, faster the further out the pointer is.
-        const h = canvas.clientHeight;
-        const over = last[1] < 0 ? last[1] : last[1] > h ? last[1] - h : 0;
-        if (!over) { clearInterval(timer); timer = 0; return; }
-        core.wheel(0, Math.sign(over) * Math.min(Math.abs(over), 200) / 2);
-        core.mouse_move(...last);
+        // Past the top or bottom edge the view scrolls (Rust); back inside, the timer stops.
+        if (!core.dragAutoscroll(...last)) { clearInterval(timer); timer = 0; return; }
         this.#changed();
       };
       const move = (ev) => {
@@ -1195,9 +1138,7 @@ export class RustacoEditor {
 
     canvas.addEventListener('wheel', (e) => {
       e.preventDefault();
-      const unit = e.deltaMode === 1 ? core.line_height() : e.deltaMode === 2 ? canvas.clientHeight : 1;
-      const [dx, dy] = e.shiftKey && !e.deltaX ? [e.deltaY, 0] : [e.deltaX, e.deltaY];
-      core.wheel(dx * unit, dy * unit);
+      core.wheelEvent(e.deltaX, e.deltaY, e.deltaMode, e.shiftKey);
       this.schedule();
     }, { passive: false });
 
@@ -1205,7 +1146,7 @@ export class RustacoEditor {
       if (e.isComposing || e.keyCode === 229) return;
       if (this.suggest.handleKey(e)) { e.preventDefault(); return; }
       if (e.key === 'Escape' && this.features.escape()) { e.preventDefault(); return; }
-      const result = core.key_down(bindingKey(e), e.ctrlKey, e.shiftKey, e.altKey, e.metaKey);
+      const result = core.keyDownEvent(e.key, e.code, e.ctrlKey, e.shiftKey, e.altKey, e.metaKey);
       if (result === 0) return;
       e.preventDefault();
       if (result === 2) this.#frontendCommand(core.takeFrontendCommand());
@@ -1288,9 +1229,9 @@ export class RustacoEditor {
     });
     input.addEventListener('cut', (e) => {
       e.preventDefault();
-      const pieces = core.selectionTexts();
+      const meta = core.clipboardMeta();
       const html = core.copyHtml();
-      this.#writeClipboard(e.clipboardData, core.cut(), pieces, html);
+      this.#writeClipboard(e.clipboardData, core.cut(), meta, html);
       this.#changed();
     });
     input.addEventListener('paste', (e) => {
@@ -1302,14 +1243,8 @@ export class RustacoEditor {
         for (const fn of this.refusedPasteListeners ?? []) fn(text.length);
         return;
       }
-      let meta = null;
-      try { meta = JSON.parse(e.clipboardData.getData(CLIPBOARD_META) || 'null'); } catch { meta = null; }
-      const cursors = core.selections().length / 2;
-      if (meta?.pieces?.length > 1 && meta.pieces.length === cursors && meta.pieces.join('\n') === text.replace(/\r\n/g, '\n')) {
-        core.pasteEach(meta.pieces);
-      } else {
-        core.paste(text);
-      }
+      // One piece per cursor when the copy came from as many selections (Rust decides).
+      core.pasteClipboard(text, e.clipboardData.getData(CLIPBOARD_META));
       this.#changed();
     });
 
@@ -1491,10 +1426,10 @@ export class RustacoEditor {
   }
 
   /** Clipboard data for a copy or cut: plain text, the pieces per cursor and coloured HTML. */
-  #writeClipboard(data, text, pieces = this.core.selectionTexts(), html = this.core.copyHtml()) {
+  #writeClipboard(data, text, meta = this.core.clipboardMeta(), html = this.core.copyHtml()) {
     data.setData('text/plain', text);
-    if (pieces.length > 1) data.setData(CLIPBOARD_META, JSON.stringify({ pieces }));
-    if (pieces.length) data.setData('text/html', html);
+    if (meta) data.setData(CLIPBOARD_META, meta);
+    if (text) data.setData('text/html', html);
   }
 
   /** Takes a frame's highlights from the worker, unless the text has changed since. */
