@@ -1,12 +1,11 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Rustaco: a code editor for the browser, written in Rust</title>
   <meta name="description" content="Rustaco is an MIT-licensed code editor in Rust for web pages and native applications: tree-sitter highlighting for 21 languages, an LSP client, a diff editor, a 368 KB editor module." />
   <link rel="icon" href="editor/favicon.ico" />
-  <script src="https://themes.apps.object.pl/api/kit/theme/themeInit.js"></script>
   <link rel="stylesheet" href="https://themes.apps.object.pl/api/kit/kit.css" />
   <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/thin/style.css" />
   <link rel="stylesheet" href="site.css" />
@@ -25,7 +24,6 @@
         <a class="nav-link" href="#install">Install</a>
         <a class="nav-link" href="https://github.com/object-pl/rustaco">GitHub</a>
         <a class="nav-cta" href="https://github.com/sponsors/object-pl">Sponsor</a>
-        <button data-theme-toggle></button>
       </nav>
     </div>
   </header>
@@ -180,9 +178,7 @@ const editor = await createEditor(document.getElementById('editor'), {
   </footer>
 
   <script type="module">
-    import { mountThemeToggles } from 'https://themes.apps.object.pl/api/kit/theme/themeToggle.js';
     import { mountGridBlob } from 'https://themes.apps.object.pl/api/kit/layout/gridBlobCanvas.js';
-    mountThemeToggles();
     mountGridBlob();
   </script>
   <script type="module" src="site.js"></script>

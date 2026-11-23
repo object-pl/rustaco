@@ -1,4 +1,4 @@
-// The live demo: one Rustaco editor (or diff editor) under the tabs, in the page's theme.
+// The live demo: one Rustaco editor (or diff editor) under the tabs, in the dark theme.
 
 import { createEditor, setTheme } from './editor/rustaco.js';
 import { createDiffEditor } from './editor/diff.js';
@@ -75,10 +75,6 @@ const hint = document.getElementById('demo-hint');
 const font = { fontFamily: '"IBM Plex Mono", Consolas, monospace', fontSize: 14 };
 let current = null;
 
-function pageTheme() {
-  return document.documentElement.dataset.theme === 'light' ? 'light' : 'dark';
-}
-
 async function show(kind) {
   current?.dispose?.();
   current = null;
@@ -102,6 +98,6 @@ for (const tab of document.querySelectorAll('[data-demo]')) {
   });
 }
 
-await setTheme(pageTheme());
-new MutationObserver(() => setTheme(pageTheme())).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
+// The page has only the dark theme; the editor matches it.
+await setTheme('dark');
 show('rust');
