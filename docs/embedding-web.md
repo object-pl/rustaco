@@ -24,7 +24,7 @@ Several editors can show one model (a split view): create the model with `create
 
 ## Options
 
-`setOptions` takes Monaco's names: `rulers`, `renderWhitespace` (`'none'` or `'all'`), `guides`, `occurrencesHighlight`, `bracketPairColorization`, `wordWrap`, `minimap`, `stickyScroll`, `quickSuggestions`, `maxPasteLength`. `setKeymap('jetbrains')` switches the preset; `addKeybindings([{ key: 'ctrl+k ctrl+c', command: 'editor.action.commentLine', when: 'editorHasSelection' }])` adds or removes bindings (a command starting with `-` removes). `docs/keybindings.md` lists the default bindings and their status.
+`setOptions` takes Monaco's names: `fontFamily` and `fontSize` (the text is measured again once the font has loaded; only monospace fonts line up, since text sits on a grid of equal cells), `rulers`, `renderWhitespace` (`'none'` or `'all'`), `guides`, `occurrencesHighlight`, `bracketPairColorization`, `wordWrap`, `minimap`, `stickyScroll`, `quickSuggestions`, `maxPasteLength`. `setKeymap('jetbrains')` switches the preset; `addKeybindings([{ key: 'ctrl+k ctrl+c', command: 'editor.action.commentLine', when: 'editorHasSelection' }])` adds or removes bindings (a command starting with `-` removes). `docs/keybindings.md` lists the default bindings and their status.
 
 ## Languages, the worker and CSP
 

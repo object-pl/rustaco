@@ -109,9 +109,60 @@ fn name_at(tree: &Tree, byte: usize) -> Option<Node<'_>> {
     at(byte).or_else(|| byte.checked_sub(1).and_then(at))
 }
 
+/// A name after a value or a path: `counter.total`, `self.counts`, `Counter::new`,
+/// `obj.attr`, `pkg.Func`. Such a name is a member and never a local.
+fn is_member_use(node: Node) -> bool {
+    let Some(parent) = node.parent() else { return false };
+    let kind = parent.kind();
+    let accessor = kind.contains("field_expression")
+        || kind.contains("member_expression")
+        || kind.contains("member_access")
+        || kind.contains("selector_expression")
+        || kind.contains("scoped_identifier")
+        || kind.contains("scoped_type_identifier")
+        || kind == "attribute"
+        || kind == "field_access"
+        || kind == "navigation_expression"
+        // `obj.method()` in Java; a bare `method()` has no object.
+        || (kind == "method_invocation" && parent.child_by_field_name("object").is_some());
+    accessor && ["field", "property", "attribute", "name"].iter().any(|f| parent.child_by_field_name(f) == Some(node))
+}
+
+/// True when the declaration `node` declares a member: a method or field inside a class,
+/// impl, trait, struct or the like, rather than a local or a top-level item.
+fn is_member_declaration(node: Node) -> bool {
+    let Some(declaring) = node.parent() else { return false };
+    let kind = declaring.kind();
+    if kind.contains("parameter") || kind.contains("pattern") || kind.contains("let") {
+        return false;
+    }
+    let mut ancestor = declaring.parent();
+    while let Some(a) = ancestor {
+        let k = a.kind();
+        if ["function", "method", "closure", "lambda", "arrow"].iter().any(|p| k.contains(p)) {
+            return false;
+        }
+        if ["class", "impl", "trait", "interface", "struct", "enum", "record", "protocol"].iter().any(|p| k.contains(p))
+        {
+            return true;
+        }
+        ancestor = a.parent();
+    }
+    false
+}
+
+/// True for an occurrence on the member side: used after a value or path, or declared as
+/// a member. Members and plain names with the same text never refer to each other.
+fn is_member(node: Node) -> bool {
+    is_member_use(node) || (is_declaration(node) && is_member_declaration(node))
+}
+
 /// True when `node` is declared where it stands.
 fn is_declaration(node: Node) -> bool {
     let Some(parent) = node.parent() else { return false };
+    if is_member_use(node) {
+        return false;
+    }
     let kind = parent.kind();
     let field = |f: &str| parent.child_by_field_name(f) == Some(node);
     field("name")
@@ -150,18 +201,34 @@ fn contains(outer: Node, inner: Node) -> bool {
     outer.start_byte() <= inner.start_byte() && inner.end_byte() <= outer.end_byte()
 }
 
-/// Where the name at `byte` is declared: of the declarations of that name whose scope holds
-/// the use, the one in the innermost scope (the last before the use when a scope declares
-/// it twice). Without one, the first occurrence of the name in the file.
+/// Where the name at `byte` is declared. A member (`counter.total`, `Counter::new`) goes to
+/// the first member declaration of that name in the file. A plain name goes to the
+/// declaration whose scope holds the use, the innermost one (the last before the use when
+/// a scope declares it twice). Without a declaration, the first occurrence of the same kind.
 pub fn definition(tree: &Tree, rope: &Rope, byte: usize) -> Option<Range<usize>> {
     if rope.len_bytes() > MAX_BYTES {
         return None;
     }
     let target = name_at(tree, byte)?;
+    let found = declaration_of(tree, rope, target).or_else(|| same_kind(tree, rope, target).into_iter().next())?;
+    Some(found.start_byte()..found.end_byte())
+}
+
+/// Occurrences of the name of `target` on the same side (member or plain), in order.
+fn same_kind<'t>(tree: &'t Tree, rope: &Rope, target: Node<'t>) -> Vec<Node<'t>> {
     let name = text(rope, target);
-    let all: Vec<Node> = names(tree.root_node()).into_iter().filter(|n| text(rope, *n) == name).collect();
+    let member = is_member(target);
+    names(tree.root_node()).into_iter().filter(|n| is_member(*n) == member && text(rope, *n) == name).collect()
+}
+
+/// The declaration `target` refers to, if the file has one.
+fn declaration_of<'t>(tree: &'t Tree, rope: &Rope, target: Node<'t>) -> Option<Node<'t>> {
+    let candidates = same_kind(tree, rope, target);
+    if is_member(target) {
+        return candidates.into_iter().find(|n| is_declaration(*n));
+    }
     let mut best: Option<(Node, usize)> = None;
-    for n in all.iter().copied().filter(|n| is_declaration(*n)) {
+    for n in candidates.into_iter().filter(|n| is_declaration(*n)) {
         let scope = scope_of(n);
         if !contains(scope, target) {
             continue;
@@ -177,24 +244,23 @@ pub fn definition(tree: &Tree, rope: &Rope, byte: usize) -> Option<Range<usize>>
             best = Some((n, size));
         }
     }
-    let found = best.map(|(n, _)| n).or_else(|| all.first().copied())?;
-    Some(found.start_byte()..found.end_byte())
+    best.map(|(n, _)| n)
 }
 
-/// The uses of the name at `byte`: every occurrence in the scope of its declaration (the
-/// whole file when no declaration is found), as byte ranges in document order.
+/// The uses of the name at `byte`, as byte ranges in document order. For a member, every
+/// member occurrence of the name in the file; for a plain name, its occurrences in the scope
+/// of its declaration (the whole file when no declaration is found).
 pub fn references(tree: &Tree, rope: &Rope, byte: usize) -> Vec<Range<usize>> {
     if rope.len_bytes() > MAX_BYTES {
         return Vec::new();
     }
     let Some(target) = name_at(tree, byte) else { return Vec::new() };
-    let name = text(rope, target);
-    let root = tree.root_node();
-    let scope = definition(tree, rope, byte)
-        .and_then(|d| root.descendant_for_byte_range(d.start, d.end))
-        .filter(|d| is_name(*d) && is_declaration(*d))
-        .map_or(root, scope_of);
-    names(scope).into_iter().filter(|n| text(rope, *n) == name).map(|n| n.start_byte()..n.end_byte()).collect()
+    let all = same_kind(tree, rope, target);
+    let scope = match declaration_of(tree, rope, target) {
+        Some(d) if !is_member(target) => Some(scope_of(d)),
+        _ => None,
+    };
+    all.into_iter().filter(|n| scope.is_none_or(|s| contains(s, *n))).map(|n| n.start_byte()..n.end_byte()).collect()
 }
 
 /// True for a name the grammars accept as an identifier: a letter, `_` or `$`, then also
@@ -260,6 +326,35 @@ mod tests {
         assert!(refs.iter().all(|r| r.end < src.find("fn two").unwrap()));
         // `two` is visible in the file: its declaration and nothing else.
         assert_eq!(references(tree, &rope, at(src, "two", 0)).len(), 1);
+    }
+
+    #[test]
+    fn members_and_locals_with_one_name() {
+        let src = "struct C { total: u32 }
+impl C {
+    fn total(&self) -> u32 { self.total }
+    fn new() -> Self { C { total: 0 } }
+}
+fn main() {
+    let c = C::new();
+    let total = c.total();
+    print(total);
+}
+";
+        let (s, rope) = parse("rust", src);
+        let tree = s.tree().unwrap();
+        // `c.total()` is the method, not the local `total` next to it.
+        let call = at(src, "total()", 0);
+        assert_eq!(definition(tree, &rope, call), Some(at(src, "total", 0)..at(src, "total", 0) + 5));
+        // `C::new` is a use, not a declaration of a second `new`.
+        assert_eq!(definition(tree, &rope, at(src, "new()", 1)), Some(at(src, "new", 0)..at(src, "new", 0) + 3));
+        // The local: its declaration and the use in `print`, nothing on the member side.
+        let local = references(tree, &rope, at(src, "total);", 0));
+        assert_eq!(
+            local,
+            vec![at(src, "total =", 0)..at(src, "total =", 0) + 5, at(src, "total);", 0)..at(src, "total);", 0) + 5]
+        );
+        assert_eq!(definition(tree, &rope, at(src, "total);", 0)), Some(local[0].clone()));
     }
 
     #[test]

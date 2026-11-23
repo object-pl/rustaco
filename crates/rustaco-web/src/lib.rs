@@ -897,6 +897,30 @@ impl Editor {
         }
     }
 
+    /// Changes the font. The cell width is measured again, the line height follows the size,
+    /// wrapping and line heights are recomputed at the next frame, the glyph atlas starts
+    /// over, and the line at the top of the viewport stays there. Text sits on a grid of equal
+    /// cells, so only monospace fonts line up.
+    #[wasm_bindgen(js_name = setFont)]
+    pub fn set_font(&mut self, font_family: &str, font_size: f64) -> Result<(), JsValue> {
+        let font = format!("{font_size}px {font_family}");
+        self.ctx.set_font(&font);
+        let sample = "M".repeat(64);
+        let char_width = (self.ctx.measure_text(&sample)?.width() / 64.0) as f32;
+        let model = self.model.clone();
+        let model = model.borrow();
+        let rope = model.rope();
+        let top_line = self.view.line_at_y(rope, self.view.scroll_top());
+        let left_cells = self.view.scroll_left() / self.view.metrics.char_width;
+        self.view.metrics = Metrics { char_width, line_height: (font_size * 1.5).round() as f32 };
+        self.font = font;
+        self.view.sync(&model);
+        let top = self.view.line_top(top_line);
+        self.view.scroll_to(rope, top, left_cells * char_width);
+        self.gl_forget_atlas();
+        Ok(())
+    }
+
     pub fn resize(&mut self, width: f64, height: f64, dpr: f64) {
         self.overview = None;
         self.dpr = dpr;

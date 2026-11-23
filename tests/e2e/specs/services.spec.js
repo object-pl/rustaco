@@ -54,6 +54,22 @@ test('rust: F2 renames through the built-in provider', async ({ page }) => {
   await expect.poll(() => page.evaluate(() => window.editor.getValue())).toBe('fn f() {\n    let b = 1;\n    b + b;\n}\n');
 });
 
+test('rust: Ctrl+Space lists names of the file; F12 on a method call goes to the method', async ({ page }) => {
+  const src = 'struct C;\nimpl C {\n    fn total(&self) -> u32 { 1 }\n}\nfn main() {\n    let c = C;\n    let total = c.total();\n    \n}\n';
+  await open(page, src, 'rust');
+  const blank = src.lastIndexOf('    \n') + 4;
+  await page.evaluate((o) => window.editor.setSelections([{ anchor: o, head: o }]), blank);
+  await page.keyboard.press('Control+Space');
+  const list = page.locator('[role="listbox"]');
+  await expect(list).toContainText('total');
+  await page.keyboard.press('Escape');
+  const call = src.indexOf('total()') + 1;
+  await page.evaluate((o) => window.editor.setSelections([{ anchor: o, head: o }]), call);
+  await page.keyboard.press('F12');
+  const decl = src.indexOf('total');
+  await expect.poll(() => page.evaluate(() => window.editor.getSelections()[0].anchor)).toBe(decl);
+});
+
 test('mermaid: colours and completion from its service', async ({ page }) => {
   const src = 'graph LR\n  start[Go] --> check{Ok?}\n  check -->|no| start\n  ';
   await open(page, src, 'mermaid');

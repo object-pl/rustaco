@@ -54,9 +54,10 @@ impl KeyPress {
 
     /// Whether a pressed key matches this binding key. For symbol keys (not letters, digits
     /// or named keys) shift is ignored: on many layouts `/` or `[` need shift to type, and a
-    /// `ctrl+/` binding should still fire.
+    /// `ctrl+/` binding should still fire. The space bar is a named key: `ctrl+space` and
+    /// `ctrl+shift+space` are different commands.
     fn matches(&self, pressed: &KeyPress) -> bool {
-        let symbol = self.key.chars().count() == 1 && !self.key.chars().all(char::is_alphanumeric);
+        let symbol = self.key.chars().count() == 1 && !self.key.chars().all(char::is_alphanumeric) && self.key != " ";
         self.key == pressed.key
             && self.ctrl == pressed.ctrl
             && self.alt == pressed.alt
@@ -383,6 +384,12 @@ mod tests {
         assert_eq!(
             km.resolve(&key("escape"), &ctx(&[("editorHasMultipleSelections", true), ("editorHasSelection", true)])),
             Resolved::Command("removeSecondaryCursors".into())
+        );
+        // Space is not a symbol key: shift tells completion from parameter hints.
+        assert_eq!(km.resolve(&key("ctrl+space"), &none), Resolved::Command("editor.action.triggerSuggest".into()));
+        assert_eq!(
+            km.resolve(&key("ctrl+shift+space"), &none),
+            Resolved::Command("editor.action.triggerParameterHints".into())
         );
         // AltGr arrives as ctrl+alt: unbound letters stay free for typing (Polish ą, ę).
         assert_eq!(km.resolve(&key("ctrl+alt+a"), &none), Resolved::Unbound);

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <link rel="icon" href="favicon.ico">
+  <meta charset="utf-8">
+  <title>Rustaco: language services</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #1e1e1e; color: #ccc; font: 13px 'IBM Plex Sans', system-ui, sans-serif; }
+    body { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: auto auto 1fr; }
+    nav { grid-column: 1 / 3; padding: 6px 10px; border-bottom: 1px solid #333; display: flex; gap: 12px; align-items: center; }
+    select, input { background: #2a2a2a; color: #ddd; border: 1px solid #444; border-radius: 0; font: inherit; padding: 2px 4px; }
+    header { padding: 6px 10px; border-bottom: 1px solid #333; }
+    header:nth-of-type(1) { grid-column: 1; }
+    .pane { position: relative; border-right: 1px solid #333; }
+  </style>
+</head>
+<body>
+  <nav>
+    <label>Font <select id="font">
+      <option value='"Cascadia Code", Consolas, monospace'>Cascadia Code</option>
+      <option value='"Cascadia Mono", Consolas, monospace'>Cascadia Mono</option>
+      <option value='Consolas, monospace'>Consolas</option>
+      <option value='"IBM Plex Mono", Consolas, monospace'>IBM Plex Mono</option>
+      <option value='"JetBrains Mono", Consolas, monospace'>JetBrains Mono</option>
+      <option value='"Fira Code", Consolas, monospace'>Fira Code</option>
+      <option value='"Lucida Console", monospace'>Lucida Console</option>
+      <option value='"Courier New", monospace'>Courier New</option>
+      <option value='monospace'>monospace (browser default)</option>
+    </select></label>
+    <label>Size <input id="size" type="number" min="8" max="40" value="14" style="width:4em"></label>
+    <span style="color:#888">Fonts that are not installed fall back to Consolas.</span>
+  </nav>
+  <header>Rust: Ctrl+Space completion, F12 definition, Shift+F12 references, F2 rename, Ctrl+Shift+O outline</header>
+  <header>Mermaid: Ctrl+Space completion (first line, after <code>graph </code>, node ids, shapes after <code>[</code>)</header>
+  <div class="pane" id="rust"></div>
+  <div class="pane" id="mermaid"></div>
+  <script type="module">
+    import { createEditor } from './rustaco.js';
+
+    const rust = `use std::collections::HashMap;
+
+struct Counter {
+    counts: HashMap<String, usize>,
+}
+
+impl Counter {
+    fn new() -> Self {
+        Counter { counts: HashMap::new() }
+    }
+
+    fn add(&mut self, word: &str) {
+        let entry = self.counts.entry(word.to_owned()).or_default();
+        *entry += 1;
+    }
+
+    fn total(&self) -> usize {
+        self.counts.values().sum()
+    }
+}
+
+fn main() {
+    let mut counter = Counter::new();
+    for word in "the quick brown fox jumps over the lazy dog the end".split_whitespace() {
+        counter.add(word);
+    }
+    let total = counter.total();
+    println!("{total} words");
+}
+`;
+
+    const mermaid = `%% Order flow
+graph TD
+  order[Order placed] --> check{In stock?}
+  check -->|yes| pack[(Warehouse)]
+  check -->|no| wait([Back order])
+  wait --> check
+  pack --> ship((Shipped)):::done
+
+  subgraph billing
+    invoice[Invoice] --> paid{Paid?}
+  end
+  ship --> invoice
+
+  classDef done fill:#2a2,stroke:#060
+`;
+
+    window.rustEditor = await createEditor(document.getElementById('rust'), { value: rust, language: 'rust' });
+    window.mermaidEditor = await createEditor(document.getElementById('mermaid'), { value: mermaid, language: 'mermaid' });
+    window.rustEditor.focus();
+    const apply = () => {
+      const options = { fontFamily: document.getElementById('font').value, fontSize: Number(document.getElementById('size').value) || 14 };
+      window.rustEditor.setOptions(options);
+      window.mermaidEditor.setOptions(options);
+    };
+    document.getElementById('font').addEventListener('change', apply);
+    document.getElementById('size').addEventListener('input', apply);
+  </script>
+</body>
+</html>

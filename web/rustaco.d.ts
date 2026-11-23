@@ -179,8 +179,6 @@ export interface EditorOptions extends ViewOptions {
   /** Show an existing model, for example in a split view. */
   model?: RustacoModel;
   keymap?: 'default' | 'jetbrains';
-  fontFamily?: string;
-  fontSize?: number;
   /** Label screen readers announce for the editor. */
   ariaLabel?: string;
   /**
@@ -192,6 +190,13 @@ export interface EditorOptions extends ViewOptions {
 }
 
 export interface ViewOptions {
+  /**
+   * CSS font family; changing it later through `setOptions` re-measures the text. Text sits
+   * on a grid of equal cells, so only monospace fonts line up.
+   */
+  fontFamily?: string;
+  /** Font size in CSS pixels; the line height is one and a half times it. */
+  fontSize?: number;
   /** Columns of vertical rulers. */
   rulers?: number[];
   renderWhitespace?: 'none' | 'all';

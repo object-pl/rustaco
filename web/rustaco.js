@@ -690,7 +690,7 @@ export class RustacoEditor {
     this.font = `${fontSize}px ${fontFamily}`;
     this.#setupTextLayer(textLayer, fontFamily, fontSize);
     this.setKeymap(keymap);
-    this.options = {};
+    this.options = { fontFamily, fontSize };
     this.setOptions({ rulers, renderWhitespace, guides, occurrencesHighlight, bracketPairColorization, wordWrap, minimap, stickyScroll });
     this.refreshFolding();
     this.model.editors.add(this);
@@ -716,7 +716,10 @@ export class RustacoEditor {
    * `stickyScroll` (`{ enabled, maxLineCount }`).
    */
   setOptions(options) {
+    const fontChanged = ('fontFamily' in options && options.fontFamily !== this.options.fontFamily)
+      || ('fontSize' in options && options.fontSize !== this.options.fontSize);
     Object.assign(this.options, options);
+    if (fontChanged) this.#setFont(this.options.fontFamily, this.options.fontSize);
     this.core.refreshOverview();
     const o = this.options;
     this.core.setViewOptions(
@@ -726,6 +729,21 @@ export class RustacoEditor {
     this.core.setMinimap(!!(typeof o.minimap === 'object' ? o.minimap?.enabled : o.minimap));
     const sticky = o.stickyScroll ?? {};
     this.core.setStickyScroll(sticky.enabled ? (sticky.maxLineCount ?? 5) : 0);
+    this.schedule();
+  }
+
+  /**
+   * Switches to another font once it is loaded (a web font may still be downloading), so
+   * the cells are measured with the real glyphs. A newer change wins over one still waiting.
+   */
+  async #setFont(family, size) {
+    const font = `${size}px ${family}`;
+    this.fontRequest = font;
+    await document.fonts?.load(font).catch(() => {});
+    if (this.fontRequest !== font) return;
+    this.core.setFont(family, size);
+    this.font = font;
+    if (this.textLayer) { this.textLayer.fontFamily = family; this.textLayer.fontSize = size; }
     this.schedule();
   }
 

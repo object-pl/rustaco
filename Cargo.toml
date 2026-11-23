@@ -10,7 +10,6 @@ edition = "2024"
 license = "MIT"
 rust-version = "1.85"
 repository = "https://github.com/theObjectCo/rustaco"
-homepage = "https://github.com/theObjectCo/rustaco"
 keywords = ["editor", "code-editor", "text-editor", "monaco", "wasm"]
 
 [workspace.dependencies]

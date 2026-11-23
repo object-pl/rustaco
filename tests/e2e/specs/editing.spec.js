@@ -520,3 +520,17 @@ test('the find widget searches, counts, steps and replaces', async ({ page }) =>
   expect(await value(page)).toBe('X bar X baz X');
   await expect(widget.locator('[data-count]')).toHaveText('No results');
 });
+
+test('setOptions changes the font: cells are measured again and clicks land on the right char', async ({ page }) => {
+  await open(page, 'abcdefghij\nsecond line\nthird line\n');
+  const before = await page.evaluate(() => ({ cw: window.editor.core.charWidth(), lh: window.editor.core.line_height() }));
+  await page.evaluate(() => window.editor.setOptions({ fontFamily: '"Courier New", monospace', fontSize: 24 }));
+  await expect.poll(() => page.evaluate(() => window.editor.core.line_height())).toBe(36);
+  const after = await page.evaluate(() => window.editor.core.charWidth());
+  expect(after).toBeGreaterThan(before.cw);
+  // A click in the middle of the sixth cell of line 2 puts the caret after five chars.
+  const box = await page.locator('canvas').first().boundingBox();
+  const gutter = await page.evaluate(() => { window.editor.setSelections([{ anchor: 0, head: 0 }]); window.editor.core.render(false); return window.editor.core.caret_x(); });
+  await page.mouse.click(box.x + gutter + after * 5.5, box.y + 36 * 1.5);
+  expect(await selections(page)).toEqual([{ anchor: 16, head: 16 }]);
+});
