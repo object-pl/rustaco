@@ -1,0 +1,77 @@
+/* Page layout on top of the Object kit (kit.css): sheets stacked, the live editor, code. */
+
+.sheets {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+
+.site-nav {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.sheet-body,
+.demo-body {
+  padding: 24px 32px 32px;
+}
+
+.demo-editor {
+  height: 440px;
+  border: 1px solid var(--paper-line);
+}
+
+.demo-hint {
+  margin: 8px 0 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--paper-text-muted);
+}
+
+.body-text {
+  max-width: 72ch;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.card-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 500;
+}
+
+.code-block {
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  overflow-x: auto;
+  font: 13px/1.5 var(--font-mono);
+  background: var(--paper-card);
+  border: 1px solid var(--paper-line);
+}
+
+.footer-links {
+  display: flex;
+  gap: 16px;
+}
+
+@media (max-width: 639px) {
+  .sheet-body,
+  .demo-body {
+    padding: 16px;
+  }
+  .demo-editor {
+    height: 360px;
+  }
+}
+
+.ph-stats + .body-text {
+  margin-top: 24px;
+}
+
+.site-footer a {
+  color: inherit;
+}

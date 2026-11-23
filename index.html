@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Rustaco: a code editor for the browser, written in Rust</title>
+  <meta name="description" content="Rustaco is an MIT-licensed code editor in Rust for web pages and native applications: tree-sitter highlighting for 21 languages, an LSP client, a diff editor, a 368 KB editor module." />
+  <link rel="icon" href="editor/favicon.ico" />
+  <script src="https://themes.apps.object.pl/api/kit/theme/themeInit.js"></script>
+  <link rel="stylesheet" href="https://themes.apps.object.pl/api/kit/kit.css" />
+  <link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/thin/style.css" />
+  <link rel="stylesheet" href="site.css" />
+</head>
+<body>
+  <header class="site-header">
+    <div class="container site-header-inner site-header-inner--compact">
+      <div class="brand brand--named">
+        <a class="logo-link" href="https://object.pl/">
+          <img class="logo-image" src="https://themes.apps.object.pl/api/logo?color=%23ffffff" alt="Object" />
+        </a>
+        <span class="brand-name">Rustaco</span>
+      </div>
+      <nav class="header-actions site-nav" aria-label="Sections">
+        <a class="nav-link" href="#demo">Demo</a>
+        <a class="nav-link" href="#install">Install</a>
+        <a class="nav-link" href="https://github.com/object-pl/rustaco">GitHub</a>
+        <a class="nav-cta" href="https://github.com/sponsors/object-pl">Sponsor</a>
+        <button data-theme-toggle></button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="site-main">
+    <div class="container sheets">
+
+      <article class="sheet paper" id="demo">
+        <header class="sheet-head">
+          <h1 class="sheet-title">A code editor for the browser, written in Rust</h1>
+          <div class="sheet-lead-col">
+            <p class="slide-lead">Rustaco edits code in a web page or a native window. The text model, the
+            commands and the layout run in Rust, compiled to WebAssembly for the browser; syntax
+            highlighting and the language services run in a Web Worker. The editor below is Rustaco
+            itself, loaded from this page.</p>
+          </div>
+        </header>
+        <div class="card-tabs">
+          <div class="card-tabs-list" role="tablist" aria-label="Examples">
+            <button class="card-tab active" role="tab" aria-selected="true" data-demo="rust">Rust</button>
+            <button class="card-tab" role="tab" aria-selected="false" data-demo="mermaid">Mermaid</button>
+            <button class="card-tab" role="tab" aria-selected="false" data-demo="diff">Diff</button>
+          </div>
+        </div>
+        <div class="demo-body">
+          <div class="demo-editor" id="demo-editor" role="region" aria-label="Live editor"></div>
+          <p class="demo-hint" id="demo-hint">Ctrl+Space completes, F12 goes to a definition, F2 renames a local, Ctrl+Shift+O lists the symbols.</p>
+        </div>
+      </article>
+
+      <article class="sheet paper">
+        <header class="sheet-head">
+          <h2 class="sheet-title">Size and speed</h2>
+          <div class="sheet-lead-col">
+            <p class="slide-lead">The figures come from the benchmarks in the repository (<code>docs/performance.md</code>),
+            measured on a Windows desktop in Chromium, Firefox and WebKit.</p>
+          </div>
+        </header>
+        <div class="sheet-body">
+          <div class="ph-stats">
+            <div class="ph-stat">
+              <span class="ph-stat-number">368 KB</span>
+              <span class="ph-stat-claim">The editor module, gzipped. Each language module (235 to 630 KB) downloads the first time a file needs it.</span>
+            </div>
+            <div class="ph-stat">
+              <span class="ph-stat-number">0.5 ms</span>
+              <span class="ph-stat-claim">Main-thread time for a keystroke in a 10 MB file while parsing and a search run in the worker.</span>
+            </div>
+            <div class="ph-stat">
+              <span class="ph-stat-number">21</span>
+              <span class="ph-stat-claim">Languages: 17 through tree-sitter, SQL, Kotlin and Dockerfile through TextMate grammars, and Mermaid.</span>
+            </div>
+          </div>
+          <p class="body-text">Against Monaco 0.57 on the same files, Rustaco loads as fast and its cost per keystroke
+          does not grow with the file. In that comparison it still spent about one and a half times
+          Monaco's main-thread time per keystroke, most of it in drawing the frame.</p>
+        </div>
+      </article>
+
+      <article class="sheet paper">
+        <header class="sheet-head">
+          <h2 class="sheet-title">What the editor does</h2>
+          <div class="sheet-lead-col">
+            <p class="slide-lead">The feature set follows Monaco as a code editor. The API keeps Monaco's
+            concepts (models, editors, decorations, providers) with char offsets in place of line and
+            column pairs.</p>
+          </div>
+        </header>
+        <div class="sheet-body">
+          <div class="ph-cards">
+            <section class="ph-card">
+              <div class="ph-card-body">
+                <h3 class="card-title"><i class="ph-thin ph-cursor-text"></i> Editing</h3>
+                <p>Multiple cursors and column selection, folding from the syntax tree, word wrap, a minimap,
+                sticky scroll, find and replace with regular expressions, snippets with tab stops, IME input
+                and a screen reader mirror. Keymaps use VS Code's command ids; a JetBrains preset is included.</p>
+              </div>
+            </section>
+            <section class="ph-card">
+              <div class="ph-card-body">
+                <h3 class="card-title"><i class="ph-thin ph-brackets-curly"></i> Languages and LSP</h3>
+                <p>Every bundled grammar also runs as a language server: completion from the grammar's keywords
+                and the file's names, go to definition, references and rename within the file. Real language
+                servers connect over a WebSocket through the LSP client, which is written in Rust and runs in
+                the editor's WebAssembly module.</p>
+              </div>
+            </section>
+            <section class="ph-card">
+              <div class="ph-card-body">
+                <h3 class="card-title"><i class="ph-thin ph-git-diff"></i> Diff editor</h3>
+                <p>Side by side or inline, both sides editable, with char-level changes and moved blocks.</p>
+              </div>
+            </section>
+            <section class="ph-card">
+              <div class="ph-card-body">
+                <h3 class="card-title"><i class="ph-thin ph-package"></i> Rust crates</h3>
+                <p>The text model, the layout, the highlighting and the LSP client are separate crates on
+                crates.io and build without a browser. A native frontend on winit draws the same frames; it is
+                younger than the web one and stays at version 0.x.</p>
+              </div>
+            </section>
+          </div>
+        </div>
+      </article>
+
+      <article class="sheet paper" id="install">
+        <header class="sheet-head">
+          <h2 class="sheet-title">Install</h2>
+          <div class="sheet-lead-col">
+            <p class="slide-lead">The npm package holds the ES modules, the WebAssembly files and the TypeScript
+            types. The crates follow semantic versioning from 1.0.0.</p>
+          </div>
+        </header>
+        <div class="sheet-body">
+          <pre class="code-block"><code>npm install rustaco</code></pre>
+          <pre class="code-block"><code>import { createEditor } from 'rustaco';
+
+const editor = await createEditor(document.getElementById('editor'), {
+  value: 'fn main() {}\n',
+  language: 'rust',
+});</code></pre>
+          <pre class="code-block"><code>cargo add rustaco-core rustaco-view rustaco-syntax rustaco-lsp</code></pre>
+          <p class="body-text">Only monospace fonts are supported: text sits on a grid of equal cells. Right-to-left
+          text and touch input do not work yet. The guides for embedding in a page or a native
+          application are in the repository, under <a href="https://github.com/object-pl/rustaco/tree/main/docs">https://github.com/object-pl/rustaco/tree/main/docs</a>.</p>
+        </div>
+      </article>
+
+      <article class="sheet paper" id="sponsor">
+        <header class="sheet-head">
+          <h2 class="sheet-title">Sponsor the work</h2>
+          <div class="sheet-lead-col">
+            <p class="slide-lead">Rustaco is MIT-licensed and built at Object, an engineering studio in Poland.
+            Sponsorships pay for the next items on the roadmap: a Markdown preview, Vim and Emacs keymaps,
+            a three-way merge editor and proportional fonts.</p>
+          </div>
+        </header>
+        <div class="sheet-body">
+          <p class="body-text">GitHub Sponsors takes monthly or one-time payments.</p>
+          <p><a class="btn-secondary" href="https://github.com/sponsors/object-pl"><i class="ph-thin ph-heart"></i> Sponsor on GitHub</a></p>
+        </div>
+      </article>
+
+    </div>
+  </main>
+
+  <footer class="site-footer">
+    <div class="container site-footer-inner">
+      <span>Rustaco is released under the MIT license. Grammars and other parts carry their own permissive licenses, listed in <a href="https://github.com/object-pl/rustaco/blob/main/THIRD_PARTY.md">THIRD_PARTY.md</a>.</span>
+      <span class="footer-links"><a href="https://github.com/object-pl/rustaco">GitHub</a> <a href="https://crates.io/crates/rustaco-core">crates.io</a> <a href="https://www.npmjs.com/package/rustaco">npm</a> <a href="https://object.pl/">object.pl</a></span>
+    </div>
+  </footer>
+
+  <script type="module">
+    import { mountThemeToggles } from 'https://themes.apps.object.pl/api/kit/theme/themeToggle.js';
+    import { mountGridBlob } from 'https://themes.apps.object.pl/api/kit/layout/gridBlobCanvas.js';
+    mountThemeToggles();
+    mountGridBlob();
+  </script>
+  <script type="module" src="site.js"></script>
+</body>
+</html>
