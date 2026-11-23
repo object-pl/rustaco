@@ -111,7 +111,9 @@ function syntaxWorker() {
     worker = null;
     for (const resolve of pending.values()) resolve({ ok: false });
     pending.clear();
-    for (const server of packServers.values()) server.then((c) => c?.abort('the worker failed'));
+    // Requests to the dead worker never get answers: fail them now, `initialize` included.
+    for (const client of packClients.values()) client.abort('the worker failed');
+    packClients.clear();
     packServers.clear();
     for (const s of workerModels.values()) s.model.workerFailed();
   };
@@ -130,6 +132,8 @@ function ask(message) {
 
 /** Language servers of the language modules in the worker: pack -> Promise<LspClient|null>. */
 const packServers = new Map();
+/** The same clients, reachable before their `initialize` is answered. */
+const packClients = new Map();
 /** Delivery of the worker's messages to each pack's client: pack -> fn(messages). */
 const packTransports = new Map();
 /** Worker links by the uri their model is open under. */
@@ -156,6 +160,7 @@ function packServer(pack) {
       onMessage(fn) { listeners.push(fn); },
     };
     const client = new LspClient(transport, '', null, lspSessionNow());
+    packClients.set(pack, client);
     client.onNotification = (method, params) => {
       if (method === 'rustaco/parsed') linksByUri.get(params?.textDocument?.uri)?.receive({ type: 'parsed' });
     };
@@ -179,15 +184,20 @@ class WorkerLink {
     this.hasTree = false;
     /** The pack's language server client while the model is open on it. */
     this.client = null;
+    /** Counts opens and closes, so an open overtaken by a newer one gives up. */
+    this.opening = 0;
     this.uri = `rustaco:model/${this.id}`;
     workerModels.set(this.id, this);
   }
 
   /** Opens the model on the language server of `pack`; resolves to whether it has `language`. */
   async openSyntax(language, pack) {
+    this.closeSyntax();
+    const token = ++this.opening;
     this.syntax = true;
     const client = await packServer(pack);
-    if (!client || !this.syntax) return false;
+    if (token !== this.opening) return false;
+    if (!client) { this.syntax = false; return false; }
     this.client = client;
     linksByUri.set(this.uri, this);
     client.attach(this.model, this.uri, language);
@@ -197,19 +207,23 @@ class WorkerLink {
     } catch {
       status = null;
     }
-    if (!status?.ok || this.client !== client) {
-      if (this.client === client) this.closeSyntax();
+    // A newer open or a close took over the link meanwhile: leave it to that one.
+    if (token !== this.opening) return false;
+    if (!status?.ok) {
+      this.closeSyntax();
       return false;
     }
     this.hasTree = !!status.tree;
     if (languageServices && !servedLanguages.has(language)) {
       servedLanguages.add(language);
-      client.registerProviders(language, new Set(['completionProvider', 'definitionProvider', 'referencesProvider', 'renameProvider']));
+      const kinds = new Set(['completionProvider', 'definitionProvider', 'referencesProvider', 'renameProvider']);
+      client.registerProviders(language, kinds, true);
     }
     return true;
   }
 
   closeSyntax() {
+    this.opening++;
     if (this.client) {
       this.client.detach(this.model);
       linksByUri.delete(this.uri);
@@ -543,10 +557,13 @@ export class RustacoModel {
     const pack = id ? Model.languagePack(id) : '';
     const link = pack ? this.workerLink() : null;
     if (link) {
-      if (await link.openSyntax(id, pack) && this.language === id) {
+      const opened = await link.openSyntax(id, pack);
+      if (opened && this.language === id) {
         this.syntax = link;
         ok = true;
-      } else {
+      } else if (opened || this.language === id) {
+        // Opened for a language that was replaced meanwhile, or failed: close it. A false
+        // result with another language set means a newer open owns the link; leave it.
         link.closeSyntax();
       }
     }

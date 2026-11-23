@@ -272,54 +272,57 @@ export class LspClient {
 
   /**
    * Registers the editor providers the server's capabilities allow, for `languageId`;
-   * `only` (a set of capability names such as `'renameProvider'`) limits them.
+   * `only` (a set of capability names such as `'renameProvider'`) limits them. With
+   * `fallback`, each is asked only while no other provider of its kind serves the language
+   * (the bundled language modules register this way, so a real language server wins).
    */
-  registerProviders(languageId = this.languageId, only = null) {
+  registerProviders(languageId = this.languageId, only = null, fallback = false) {
     const c = this.capabilities;
     const id = languageId;
+    const mark = (provider) => (fallback ? Object.assign(provider, { fallback: true }) : provider);
     const reg = (cap, register) => { if (c[cap] && (!only || only.has(cap))) this.disposables.push(register()); };
     const diagnosticsAt = (model, start, end) => (this.docs.get(model)?.diagnostics ?? [])
       .filter((d) => d.offsets.start <= end && start <= d.offsets.end);
 
-    reg('hoverProvider', () => languages.registerHoverProvider(id, {
+    reg('hoverProvider', () => languages.registerHoverProvider(id, mark({
       provideHover: async (model, offset, token) => {
         const result = await this.#ask('hover', model, token, offset);
         const contents = [...diagnosticsAt(model, offset, offset).map((d) => d.message), ...(result?.contents ?? [])];
         return contents.length ? { contents, range: result?.range } : null;
       },
-    }));
-    reg('completionProvider', () => languages.registerCompletionItemProvider(id, {
+    })));
+    reg('completionProvider', () => languages.registerCompletionItemProvider(id, mark({
       triggerCharacters: c.completionProvider.triggerCharacters ?? [],
       provideCompletionItems: async (model, offset, context, token) =>
         (await this.#ask('completion', model, token, offset, 0, context.triggerCharacter)) ?? [],
-    }));
-    reg('signatureHelpProvider', () => languages.registerSignatureHelpProvider(id, {
+    })));
+    reg('signatureHelpProvider', () => languages.registerSignatureHelpProvider(id, mark({
       signatureHelpTriggerCharacters: c.signatureHelpProvider.triggerCharacters ?? ['(', ','],
       provideSignatureHelp: (model, offset, context, token) => this.#ask('signatureHelp', model, token, offset),
-    }));
-    reg('definitionProvider', () => languages.registerDefinitionProvider(id, {
+    })));
+    reg('definitionProvider', () => languages.registerDefinitionProvider(id, mark({
       provideDefinition: async (model, offset, token) => this.#locations(model, await this.#ask('definition', model, token, offset)),
-    }));
-    reg('referencesProvider', () => languages.registerReferenceProvider(id, {
+    })));
+    reg('referencesProvider', () => languages.registerReferenceProvider(id, mark({
       provideReferences: async (model, offset, context, token) =>
         this.#locations(model, await this.#ask('references', model, token, offset)).filter((r) => 'start' in r),
-    }));
-    reg('documentHighlightProvider', () => languages.registerDocumentHighlightProvider(id, {
+    })));
+    reg('documentHighlightProvider', () => languages.registerDocumentHighlightProvider(id, mark({
       provideDocumentHighlights: async (model, offset, token) => (await this.#ask('documentHighlight', model, token, offset)) ?? [],
-    }));
-    reg('renameProvider', () => languages.registerRenameProvider(id, {
+    })));
+    reg('renameProvider', () => languages.registerRenameProvider(id, mark({
       provideRenameEdits: async (model, offset, newName, token) => {
         const result = await this.#ask('rename', model, token, offset, 0, newName);
         // Edits to this model come back for the editor; other documents go to the host.
         if (result?.others && Object.keys(result.others).length) this.applyWorkspaceEdit({ changes: result.others });
         return result?.own ?? [];
       },
-    }));
-    reg('documentFormattingProvider', () => languages.registerDocumentFormattingEditProvider(id, {
+    })));
+    reg('documentFormattingProvider', () => languages.registerDocumentFormattingEditProvider(id, mark({
       provideDocumentFormattingEdits: async (model, options, token) =>
         (await this.#ask('formatting', model, token, options?.tabSize ?? 4, options?.insertSpaces === false ? 0 : 1)) ?? [],
-    }));
-    reg('codeActionProvider', () => languages.registerCodeActionProvider(id, {
+    })));
+    reg('codeActionProvider', () => languages.registerCodeActionProvider(id, mark({
       provideCodeActions: async (model, range, token) => {
         const result = await this.#ask('codeAction', model, token, range.start, range.end);
         return (result ?? []).map((a) => ({
@@ -331,29 +334,29 @@ export class LspClient {
           },
         }));
       },
-    }));
-    reg('foldingRangeProvider', () => languages.registerFoldingRangeProvider(id, {
+    })));
+    reg('foldingRangeProvider', () => languages.registerFoldingRangeProvider(id, mark({
       provideFoldingRanges: async (model) => (await this.#ask('foldingRange', model)) ?? [],
-    }));
-    reg('selectionRangeProvider', () => languages.registerSelectionRangeProvider(id, {
+    })));
+    reg('selectionRangeProvider', () => languages.registerSelectionRangeProvider(id, mark({
       provideSelectionRanges: async (model, offset) => (await this.#ask('selectionRange', model, null, offset)) ?? [],
-    }));
-    reg('documentSymbolProvider', () => languages.registerDocumentSymbolProvider(id, {
+    })));
+    reg('documentSymbolProvider', () => languages.registerDocumentSymbolProvider(id, mark({
       provideDocumentSymbols: async (model) => (await this.#ask('documentSymbol', model)) ?? [],
-    }));
-    reg('codeLensProvider', () => languages.registerCodeLensProvider(id, {
+    })));
+    reg('codeLensProvider', () => languages.registerCodeLensProvider(id, mark({
       provideCodeLenses: async (model, token) => ((await this.#ask('codeLens', model, token)) ?? []).map((l) => ({
         line: l.line,
         title: l.title,
         command: () => this.#execute(l.command),
       })),
-    }));
-    reg('inlayHintProvider', () => languages.registerInlayHintsProvider(id, {
+    })));
+    reg('inlayHintProvider', () => languages.registerInlayHintsProvider(id, mark({
       provideInlayHints: async (model, range, token) => (await this.#ask('inlayHint', model, token, range.start, range.end)) ?? [],
-    }));
-    reg('semanticTokensProvider', () => languages.registerDocumentSemanticTokensProvider(id, {
+    })));
+    reg('semanticTokensProvider', () => languages.registerDocumentSemanticTokensProvider(id, mark({
       provideSemanticTokens: async (model, token) => (await this.#ask('semanticTokens', model, token)) ?? [],
-    }));
+    })));
   }
 
   /** `shutdown`, `exit`, and the providers go away. */

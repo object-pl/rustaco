@@ -59,11 +59,14 @@ export function onDidChangeProviders(fn) {
   return () => listeners.delete(fn);
 }
 
-/** Providers of `kind` for `languageId`, those registered for `"*"` last. */
+/** Providers of `kind` for `languageId`, those registered for `"*"` last; fallbacks only when nothing else serves it. */
 export function providersFor(kind, languageId) {
   const byLanguage = registries.get(kind);
   if (!byLanguage) return [];
-  return [...(byLanguage.get(languageId) ?? []), ...(languageId === '*' ? [] : byLanguage.get('*') ?? [])];
+  const all = [...(byLanguage.get(languageId) ?? []), ...(languageId === '*' ? [] : byLanguage.get('*') ?? [])];
+  // Fallbacks (the bundled language modules' guesses) step aside for any other provider.
+  const primary = all.filter((p) => !p.fallback);
+  return primary.length ? primary : all;
 }
 
 /** Kinds of completion items, as Monaco numbers them; they pick the icon. */

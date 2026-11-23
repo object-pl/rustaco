@@ -65,8 +65,9 @@ impl SyntaxService {
     /// The document's engine with its parse finished.
     fn parsed(&mut self, cx: &Context) -> Option<&Engine> {
         let engine = self.docs.get_mut(cx.uri)?.as_mut()?;
-        engine.parse_with_budget(cx.model.rope(), || !cx.cancel.is_cancelled());
-        Some(engine)
+        // A cancelled parse leaves a tree that no longer matches the text; nothing may read
+        // it against the new text (the answer is dropped anyway).
+        engine.parse_with_budget(cx.model.rope(), || !cx.cancel.is_cancelled()).then_some(&*engine)
     }
 
     fn highlight(&mut self, cx: &Context, params: &Value) -> Value {
@@ -140,6 +141,18 @@ const KIND_KEYWORD: u64 = 14;
 const KIND_SNIPPET: u64 = 15;
 const KIND_ENUM_MEMBER: u64 = 20;
 
+/// `text` as literal snippet text: `\`, `$` and `}` escaped.
+fn snippet_text(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        if matches!(c, '\\' | '$' | '}') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// Completion in a Mermaid document.
 fn mermaid_completion(rope: &Rope, at: usize) -> Vec<CompletionItem> {
     use crate::mermaid::{DIAGRAMS, DIRECTIONS, KEYWORDS, SHAPES, diagram, node_ids};
@@ -159,7 +172,7 @@ fn mermaid_completion(rope: &Rope, at: usize) -> Vec<CompletionItem> {
                     kind: Some(KIND_SNIPPET),
                     detail: Some((*name).into()),
                     documentation: None,
-                    insert_text: format!("{o}${{1:text}}{c}$0"),
+                    insert_text: format!("{}${{1:text}}{}$0", snippet_text(o), snippet_text(c)),
                     is_snippet: true,
                     range: Some(at - 1..at),
                     sort_text: Some(format!("{i:02}")),
@@ -309,8 +322,23 @@ impl LanguageService for SyntaxService {
 
     fn rename(&mut self, cx: &Context, at: usize, new_name: &str) -> Option<WorkspaceEdit> {
         #[cfg(feature = "engine")]
-        if !crate::locals::valid_name(new_name) {
-            return None;
+        {
+            if !crate::locals::valid_name(new_name) {
+                return None;
+            }
+            // A keyword would not parse as a name; a shorthand field (`C { total }`) would
+            // rename the field along with the local.
+            let syntax = self.parsed(cx).and_then(Engine::syntax)?;
+            let def = syntax.language();
+            let rope = cx.model.rope();
+            let byte = rope.char_to_byte(at.min(rope.len_chars()));
+            if syntax.tree().is_some_and(|t| crate::locals::in_shorthand(t, rope, byte)) {
+                return None;
+            }
+            let keywords = self.keywords.entry(def.id).or_insert_with(|| crate::locals::keywords(&def.grammar()));
+            if keywords.iter().any(|k| k == new_name) {
+                return None;
+            }
         }
         let uses = self.uses(cx, at);
         if uses.is_empty() {
@@ -407,6 +435,12 @@ mod tests {
             json!({ "textDocument": doc, "position": { "line": 2, "character": 4 }, "newName": "no way" }),
         );
         assert_eq!(bad, Value::Null);
+        let keyword = ask(
+            &mut s,
+            "textDocument/rename",
+            json!({ "textDocument": doc, "position": { "line": 2, "character": 4 }, "newName": "match" }),
+        );
+        assert_eq!(keyword, Value::Null);
         let symbols = ask(&mut s, "textDocument/documentSymbol", json!({ "textDocument": doc }));
         assert_eq!(symbols[0]["name"], "main");
         assert_eq!(symbols[0]["kind"], 12);
@@ -439,5 +473,20 @@ mod tests {
         let labels: Vec<&str> = items["items"].as_array().unwrap().iter().filter_map(|i| i["label"].as_str()).collect();
         assert_eq!(&labels[..2], &["A", "B"]);
         assert!(labels.contains(&"subgraph"));
+        // Shapes after `id[`, with backslashes escaped so the snippet keeps its tab stop.
+        s.handle(json!({ "jsonrpc": "2.0", "method": "textDocument/didChange", "params": {
+            "textDocument": { "uri": "mem://m", "version": 2 },
+            "contentChanges": [{ "range": { "start": { "line": 2, "character": 2 }, "end": { "line": 2, "character": 2 } }, "text": "X[" }] } }));
+        let items = ask(
+            &mut s,
+            "textDocument/completion",
+            json!({ "textDocument": m, "position": { "line": 2, "character": 4 } }),
+        );
+        let items = items["items"].as_array().unwrap();
+        let lean = items.iter().find(|i| i["detail"] == "parallelogram, leaning left").unwrap();
+        assert_eq!(lean["textEdit"]["newText"], "[\\\\${1:text}\\\\]$0");
+        let snippet = rustaco_core::Snippet::parse(lean["textEdit"]["newText"].as_str().unwrap(), &|_| None);
+        assert_eq!(snippet.text, "[\\text\\]");
+        assert!(snippet.stops.len() >= 2);
     }
 }

@@ -38,6 +38,9 @@ struct Pending {
     doc: u32,
     /// The answer, once it arrived.
     answer: Option<Result<Value, String>>,
+    /// The model version the request was made for; an answer about another version would
+    /// land on the wrong chars.
+    version: Option<u64>,
 }
 
 /// One language server connection's protocol state.
@@ -100,7 +103,7 @@ impl LspSession {
     fn send_request(&mut self, kind: Kind, doc: u32, method: &str, params: Value) -> f64 {
         let id = self.next_id;
         self.next_id += 1;
-        self.pending.insert(id, Pending { kind, doc, answer: None });
+        self.pending.insert(id, Pending { kind, doc, answer: None, version: None });
         self.send(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
         id as f64
     }
@@ -126,7 +129,9 @@ impl LspSession {
                     self.notify_value("initialized", json!({}));
                     self.session.capabilities().clone()
                 }
-                _ => v.clone(),
+                Kind::Raw => v.clone(),
+                // The document was closed meanwhile: nothing to place the answer in.
+                _ => Value::Null,
             };
         };
         match kind {
@@ -361,8 +366,13 @@ impl LspSession {
             }
             _ => return -1.0,
         };
+        let version = m.version();
         drop(m);
-        self.send_request(k, doc, method, params)
+        let id = self.send_request(k, doc, method, params);
+        if let Some(p) = self.pending.get_mut(&(id as i64)) {
+            p.version = Some(version);
+        }
+        id
     }
 
     /// Queues any request with JSON params; its result comes back as the server sent it.
@@ -434,12 +444,17 @@ impl LspSession {
     }
 
     /// The decoded result of a request about a document whose answer arrived, as JSON,
-    /// against `model` (the document asked about); the request is forgotten.
+    /// against `model` (the document asked about); the request is forgotten. `null` when the
+    /// model changed since the request, since the answer's positions are about the old text.
     pub fn result(&mut self, id: f64, model: &Model) -> String {
         let Some(p) = self.pending.remove(&(id as i64)) else { return "null".into() };
         let Some(Ok(v)) = p.answer else { return "null".into() };
         let doc = self.docs.get(&p.doc).cloned();
         let m = model.inner.borrow();
+        // The text changed while the server worked: its offsets would point at other chars.
+        if p.version.is_some_and(|v| v != m.version()) {
+            return "null".into();
+        }
         let mut out = self.decode(p.kind, doc.as_ref(), &m, &v);
         strip_nulls(&mut out);
         out.to_string()

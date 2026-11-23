@@ -570,12 +570,12 @@ fn encode_tokens(
     rope: &Rope,
     enc: PositionEncoding,
     (types, modifiers): &(Vec<String>, Vec<String>),
-    mut tokens: Vec<crate::SemanticToken>,
+    tokens: Vec<crate::SemanticToken>,
 ) -> Vec<u64> {
-    tokens.sort_by_key(|t| t.range.start);
     let len = rope.len_chars();
-    let mut data = Vec::with_capacity(tokens.len() * 5);
-    let (mut prev_line, mut prev_char) = (0u64, 0u64);
+    // Split into one segment per line first, then sort: a token inside a multi-line one
+    // starts on an earlier line than that one's last segment, and deltas must not go back.
+    let mut segments: Vec<(u64, u64, u64, u64, u64)> = Vec::with_capacity(tokens.len());
     for t in tokens {
         let Some(ty) = types.iter().position(|x| *x == t.token_type) else { continue };
         let bits = t
@@ -590,9 +590,7 @@ fn encode_tokens(
             if b > a {
                 let (line, ch) = line_char(rope, a, enc);
                 let (_, ch_end) = line_char(rope, b, enc);
-                let delta_char = if line == prev_line { ch - prev_char } else { ch };
-                data.extend([line - prev_line, delta_char, ch_end - ch, ty as u64, bits]);
-                (prev_line, prev_char) = (line, ch);
+                segments.push((line, ch, ch_end - ch, ty as u64, bits));
             }
             // Past the line break to the next line's start.
             let next = rope.line_to_char((rope.char_to_line(a) + 1).min(rope.len_lines()));
@@ -601,6 +599,14 @@ fn encode_tokens(
             }
             a = next;
         }
+    }
+    segments.sort_by_key(|&(line, ch, ..)| (line, ch));
+    let mut data = Vec::with_capacity(segments.len() * 5);
+    let (mut prev_line, mut prev_char) = (0u64, 0u64);
+    for (line, ch, length, ty, bits) in segments {
+        let delta_char = if line == prev_line { ch - prev_char } else { ch };
+        data.extend([line - prev_line, delta_char, length, ty, bits]);
+        (prev_line, prev_char) = (line, ch);
     }
     data
 }
@@ -656,4 +662,30 @@ pub fn serve<S: LanguageService>(
 /// [`serve`] on the process's stdin and stdout.
 pub fn serve_stdio<S: LanguageService>(service: S) -> io::Result<()> {
     serve(service, io::stdin(), io::stdout().lock())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SemanticToken;
+
+    #[test]
+    fn tokens_inside_a_multi_line_token_keep_deltas_forward() {
+        let rope = Rope::from_str("/* a\nb\nc */ x\n");
+        let legend = (vec!["comment".to_owned(), "variable".to_owned()], Vec::new());
+        let token = |range: std::ops::Range<usize>, t: &str| SemanticToken {
+            range,
+            token_type: t.into(),
+            modifiers: Vec::new(),
+        };
+        // A comment over three lines and a token on its middle line.
+        let data = encode_tokens(
+            &rope,
+            PositionEncoding::Utf16,
+            &legend,
+            vec![token(0..11, "comment"), token(5..6, "variable")],
+        );
+        let rows: Vec<&[u64]> = data.chunks(5).collect();
+        assert_eq!(rows, vec![&[0, 0, 4, 0, 0][..], &[1, 0, 1, 0, 0], &[0, 0, 1, 1, 0], &[1, 0, 4, 0, 0]]);
+    }
 }

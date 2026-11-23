@@ -9,7 +9,7 @@ version = "0.3.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.85"
-repository = "https://github.com/theObjectCo/rustaco"
+repository = "https://github.com/object-pl/rustaco"
 keywords = ["editor", "code-editor", "text-editor", "monaco", "wasm"]
 
 [workspace.dependencies]

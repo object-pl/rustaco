@@ -123,6 +123,8 @@ fn is_member_use(node: Node) -> bool {
         || kind == "attribute"
         || kind == "field_access"
         || kind == "navigation_expression"
+        // The field of a struct literal: `C { total: 0 }`.
+        || kind == "field_initializer"
         // `obj.method()` in Java; a bare `method()` has no object.
         || (kind == "method_invocation" && parent.child_by_field_name("object").is_some());
     accessor && ["field", "property", "attribute", "name"].iter().any(|f| parent.child_by_field_name(f) == Some(node))
@@ -263,6 +265,17 @@ pub fn references(tree: &Tree, rope: &Rope, byte: usize) -> Vec<Range<usize>> {
     all.into_iter().filter(|n| scope.is_none_or(|s| contains(s, *n))).map(|n| n.start_byte()..n.end_byte()).collect()
 }
 
+/// True when one of the uses of the name at `byte` is a shorthand field or property
+/// (`C { total }`, `{ total }`), where the name is a field and a local at once.
+pub fn in_shorthand(tree: &Tree, rope: &Rope, byte: usize) -> bool {
+    let root = tree.root_node();
+    references(tree, rope, byte).iter().any(|r| {
+        root.descendant_for_byte_range(r.start, r.end).is_some_and(|n| {
+            n.kind().starts_with("shorthand") || n.parent().is_some_and(|p| p.kind().starts_with("shorthand"))
+        })
+    })
+}
+
 /// True for a name the grammars accept as an identifier: a letter, `_` or `$`, then also
 /// digits.
 pub fn valid_name(name: &str) -> bool {
@@ -370,6 +383,20 @@ fn main() {
         let refs = references(tree, &rope, at(src, "total", 2));
         assert_eq!(refs.len(), 3);
         assert_eq!(definition(tree, &rope, at(src, "n;", 0)), Some(at(src, "n)", 0)..at(src, "n)", 0) + 1));
+    }
+
+    #[test]
+    fn shorthand_fields_are_seen() {
+        let src = "struct C { total: u32 }\nfn f() -> C {\n    let total = 1;\n    C { total }\n}\n";
+        let (s, rope) = parse("rust", src);
+        let tree = s.tree().unwrap();
+        assert!(in_shorthand(tree, &rope, at(src, "total = 1", 0)));
+        let src = "struct C { total: u32 }\nfn f() -> C {\n    let total = 1;\n    C { total: total }\n}\n";
+        let (s, rope) = parse("rust", src);
+        let tree = s.tree().unwrap();
+        assert!(!in_shorthand(tree, &rope, at(src, "total = 1", 0)));
+        // The field side of `total: total` is a member: not one of the local's uses.
+        assert_eq!(references(s.tree().unwrap(), &rope, at(src, "total = 1", 0)).len(), 2);
     }
 
     #[test]

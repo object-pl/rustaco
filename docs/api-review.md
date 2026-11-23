@@ -27,7 +27,7 @@ The public surface as of the end of phase 13, with what should change before it 
 ## Release checklist
 
 1. Settle the items above.
-2. `keywords` and `categories` in the crate manifests (`repository` points at github.com/theObjectCo/rustaco; `homepage` would repeat it). Done.
-3. `cargo publish --dry-run` for each crate in dependency order: core, view, syntax, lsp, desktop.
+2. `keywords` and `categories` in the crate manifests (`repository` points at github.com/object-pl/rustaco; `homepage` would repeat it). Done.
+3. `cargo publish --dry-run` for each crate in dependency order: core, view, lsp, syntax, desktop.
 4. `scripts/pack-web.sh`, then `npm publish target/npm/rustaco-<version>.tgz`.
 5. Tag the release and attach `docs/performance.md` with the Monaco comparison.
