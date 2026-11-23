@@ -8,7 +8,7 @@ import { onDidChangeProviders, providersFor } from './languages.js';
 import { WebGLText } from './webgl-text.js';
 import { LspClient } from './lsp.js';
 
-export { languages, CompletionItemKind, SymbolKind, fuzzyScore, CancellationTokenSource } from './languages.js';
+export { languages, CompletionItemKind, SymbolKind, CancellationTokenSource } from './languages.js';
 
 /** The LSP client's protocol in wasm, for lsp.js (internal). */
 export async function lspSession() { await load(); return new LspSession(); }

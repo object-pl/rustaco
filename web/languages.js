@@ -1,8 +1,6 @@
 // Language feature providers: a host registers them per language id, the editor asks them.
 // Positions are char offsets into the model's text; ranges are `{ start, end }` offsets.
 
-import { fuzzyScore as fuzzyScoreWasm } from './pkg/rustaco_web.js';
-
 /**
  * Cancellation for provider requests, as Monaco has it: every provider gets a token as its
  * last argument; the editor cancels it when the answer is no longer wanted (the caret
@@ -134,14 +132,3 @@ export const languages = Object.freeze({
   SymbolKind,
 });
 
-/**
- * Fuzzy match of `pattern` in `word`, case-insensitive, as completion filters: every pattern
- * char must appear in order. Matches at the word start, after `_`, `-`, `.` or at a lower to
- * upper case step score higher, and so do runs of consecutive chars. Returns
- * `{ score, matches }` (indexes of the matched chars) or null. Computed in Rust: call it
- * after the editor module has loaded (after the first `createEditor` or `createModel`).
- */
-export function fuzzyScore(pattern, word) {
-  const r = fuzzyScoreWasm(pattern, word);
-  return r ? { score: r[0], matches: Array.from(r.subarray(1)) } : null;
-}

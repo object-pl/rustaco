@@ -2337,14 +2337,6 @@ impl Editor {
     }
 }
 
-/// Scores `word` against what was typed (see `rustaco_core::fuzzy_score`): the score
-/// followed by the matched char indices, or nothing when it does not match.
-#[wasm_bindgen(js_name = fuzzyScore)]
-pub fn fuzzy_score_js(pattern: &str, word: &str) -> Option<Vec<f64>> {
-    rustaco_core::fuzzy_score(pattern, word)
-        .map(|m| std::iter::once(m.score).chain(m.matches.iter().map(|&i| i as f64)).collect())
-}
-
 /// Width of the minimap column in CSS pixels.
 const MINIMAP_WIDTH: f32 = 90.0;
 
