@@ -70,6 +70,17 @@ test('rust: Ctrl+Space lists names of the file; F12 on a method call goes to the
   await expect.poll(() => page.evaluate(() => window.editor.getSelections()[0].anchor)).toBe(decl);
 });
 
+test('rust: the references peek marks the name even after an emoji on the line', async ({ page }) => {
+  const src = 'fn main() {\n    let total = 1;\n    let s = "😀😀"; print(total);\n}\n';
+  await open(page, src, 'rust');
+  const use = src.indexOf('total)');
+  await page.evaluate((o) => window.editor.setSelections([{ anchor: o, head: o }]), use);
+  await page.keyboard.press('Shift+F12');
+  const peek = page.locator('[role="listbox"][aria-label="References"]');
+  await expect(peek).toContainText('2 references');
+  await expect(peek.locator('b')).toHaveText(['total', 'total']);
+});
+
 test('mermaid: colours and completion from its service', async ({ page }) => {
   const src = 'graph LR\n  start[Go] --> check{Ok?}\n  check -->|no| start\n  ';
   await open(page, src, 'mermaid');

@@ -221,13 +221,11 @@ export class LspClient {
     const model = this.byUri.get(uri);
     const doc = model && this.docs.get(model);
     if (!doc) return;
+    // Ranges come one char wide at least and severities within 1 to 4 (LspSession).
     doc.diagnostics = JSON.parse(this.session.diagnostics(uri, model.core))
       .map((d) => ({ message: d.message, severity: d.severity, offsets: { start: d.start, end: d.end } }));
     const list = [];
-    for (const d of doc.diagnostics) {
-      const r = d.offsets.start === d.offsets.end ? { start: d.offsets.start, end: d.offsets.start + 1 } : d.offsets;
-      list.push({ start: r.start, end: r.end, type: await diagnosticType(d.severity) });
-    }
+    for (const d of doc.diagnostics) list.push({ ...d.offsets, type: await diagnosticType(d.severity) });
     doc.collection.set(list);
   }
 
@@ -239,11 +237,8 @@ export class LspClient {
 
   /** Applies a WorkspaceEdit to attached models; returns whether every document was attached. */
   applyWorkspaceEdit(edit) {
-    const perUri = new Map();
-    for (const [uri, edits] of Object.entries(edit?.changes ?? {})) perUri.set(uri, edits);
-    for (const c of edit?.documentChanges ?? []) if (c.textDocument) perUri.set(c.textDocument.uri, c.edits);
     let all = true;
-    for (const [uri, edits] of perUri) {
+    for (const { uri, edits } of JSON.parse(this.session.workspaceEditGroups(JSON.stringify(edit ?? null)))) {
       const model = this.byUri.get(uri);
       const editor = model && [...model.editors][0];
       if (!editor) {
@@ -251,7 +246,9 @@ export class LspClient {
         if (this.onApplyEdit) this.onApplyEdit(uri, edits);
         continue;
       }
-      editor.features.applyEdits(edits.map((e) => ({ range: this.#range(model, e.range), text: e.newText })));
+      // One call converts every range.
+      const ranges = this.session.toRanges(JSON.stringify(edits.map((e) => e.range)), model.core);
+      editor.features.applyEdits(edits.map((e, i) => ({ range: { start: ranges[2 * i], end: ranges[2 * i + 1] }, text: e.newText })));
     }
     return all;
   }

@@ -1,6 +1,6 @@
 // DOM glue for the Rustaco editor. Rust draws and edits; this file forwards browser events.
 import init, {
-  Editor, LspSession, Model, defineDecorationType as defineType, setBuiltinTheme, setThemeRules, styleId, widgetColors,
+  Editor, LspSession, Model, defineDecorationType as defineType, setBuiltinTheme, setThemeRules, widgetColors,
 } from './pkg/rustaco_web.js';
 import { SuggestController } from './suggest.js';
 import { Features } from './features.js';
@@ -259,7 +259,9 @@ class WorkerLink {
   /** Ranges of the syntax nodes around `start..end`, innermost first, as flat pairs. */
   async enclosing(start, end) {
     const ranges = await this.client?.ask('selectionRange', this.model, start).catch(() => null);
-    return (ranges ?? []).filter((r) => r.start <= start && r.end >= end).flatMap((r) => [r.start, r.end]);
+    // expandSelection skips ranges that do not contain the selection.
+    void end;
+    return (ranges ?? []).flatMap((r) => [r.start, r.end]);
   }
 
   /** Highlight quads of lines `start..end`, after the parse catches up. */
@@ -312,7 +314,7 @@ class WorkerLink {
     if (m.type === 'parsed') {
       // The background parse caught up: ask again for the final colours; the reply draws
       // only if they differ.
-      for (const e of this.model.editors) { e.frameKey = null; e.requestHighlights(); }
+      for (const e of this.model.editors) { e.core.forgetHighlightRequest(); e.requestHighlights(); }
     } else if (m.type === 'resync') {
       worker?.postMessage({ type: 'edit', id: this.id, version: this.model.core.version(), reset: this.model.getValue() });
       this.sent = this.model.core.version();
@@ -335,12 +337,6 @@ export function setWorkersEnabled(on) { workersByDefault = !!on; }
 
 
 /** Commands the JS side runs: they need the language module, providers or the DOM. */
-const FRONTEND_COMMANDS = new Set([
-  'editor.action.smartSelect.expand', 'editor.action.jumpToBracket', 'actions.find',
-  'editor.action.startFindReplaceAction', 'editor.action.triggerSuggest', 'editor.action.triggerParameterHints',
-  'editor.action.revealDefinition', 'editor.action.referenceSearch.trigger', 'editor.action.rename',
-  'editor.action.formatDocument', 'editor.action.showHover', 'editor.action.quickFix', 'editor.action.quickOutline',
-]);
 
 /** Longest paste accepted, in UTF-16 units (option `maxPasteLength`). */
 const MAX_PASTE_LENGTH = 50_000_000;
@@ -349,7 +345,6 @@ const MAX_PASTE_LENGTH = 50_000_000;
 const CLIPBOARD_META = 'application/x-rustaco-editor';
 
 /** Languages whose blocks are marked by indentation, so indentation adds fold regions. */
-const INDENTATION_BLOCKS = new Set(['python', 'yaml']);
 
 /** Physical keys whose unshifted symbol names them in keybindings. */
 const SYMBOL_CODES = {
@@ -516,24 +511,9 @@ export class RustacoModel {
    */
   async builtinSymbols() {
     if (this.syntax?.hasTree) return this.syntax.symbols();
-    let flat = [];
-    if (this.highlighter?.hasTree()) { this.updateHighlighter(50); flat = this.highlighter.documentSymbols(); }
-    const roots = [];
-    const stack = [];
-    for (let i = 0; i + 5 < flat.length; i += 6) {
-      const [start, end, nameStart, nameEnd, kind, depth] = flat.slice(i, i + 6);
-      const symbol = {
-        name: this.getTextRange(nameStart, nameEnd),
-        kind,
-        range: { start, end },
-        selectionRange: { start: nameStart, end: nameEnd },
-        children: [],
-      };
-      stack.length = depth;
-      (depth > 0 && stack[depth - 1] ? stack[depth - 1].children : roots).push(symbol);
-      stack[depth] = symbol;
-    }
-    return roots;
+    if (!this.highlighter?.hasTree()) return [];
+    this.updateHighlighter(50);
+    return JSON.parse(this.core.symbolTree(this.highlighter.documentSymbols()));
   }
 
   /** The text of a line (0-based), without its line break. */
@@ -875,7 +855,7 @@ export class RustacoEditor {
     this.foldTimer = setTimeout(() => {
       this.refreshFolding();
       this.features.refreshCodeLens();
-      this.features.refreshSemanticTokens(styleId);
+      this.features.refreshSemanticTokens();
       this.features.refreshInlayHints();
       this.core.refreshOverview();
       this.schedule();
@@ -902,7 +882,7 @@ export class RustacoEditor {
       if (!s.hasTree) { this.core.refreshFoldingRanges(); return; }
       s.folding().then(({ ranges, version }) => {
         if (version !== this.model.core.version()) { this.refreshFoldingSoon(); return; }
-        this.core.setFoldingRanges(Uint32Array.from(ranges), INDENTATION_BLOCKS.has(this.model.language));
+        this.core.setTreeFoldingRanges(Uint32Array.from(ranges));
         this.schedule();
       });
       return;
@@ -910,8 +890,7 @@ export class RustacoEditor {
     const h = this.model.highlighter;
     if (h && h.hasTree()) {
       this.model.updateHighlighter(20);
-      const lang = this.model.language;
-      this.core.setFoldingRanges(Uint32Array.from(h.foldingRanges()), INDENTATION_BLOCKS.has(lang));
+      this.core.setTreeFoldingRanges(Uint32Array.from(h.foldingRanges()));
     } else {
       this.core.refreshFoldingRanges();
     }
@@ -1047,7 +1026,7 @@ export class RustacoEditor {
       host(this);
       return true;
     }
-    if (FRONTEND_COMMANDS.has(id)) {
+    if (this.core.isFrontendCommand(id)) {
       this.#frontendCommand(id);
       return true;
     }
@@ -1272,14 +1251,19 @@ export class RustacoEditor {
       const before = this.mirrored ?? '';
       const after = input.value;
       if (after === before) return;
+      // Code points, so an emoji is never cut in half.
+      const b = Array.from(before);
+      const a = Array.from(after);
       let p = 0;
-      while (p < before.length && p < after.length && before[p] === after[p]) p++;
+      while (p < b.length && p < a.length && b[p] === a[p]) p++;
       let q = 0;
-      while (q < before.length - p && q < after.length - p && before[before.length - 1 - q] === after[after.length - 1 - q]) q++;
-      const inserted = after.slice(p, after.length - q);
-      const removed = before.length - p - q;
+      while (q < b.length - p && q < a.length - p && b[b.length - 1 - q] === a[a.length - 1 - q]) q++;
+      const inserted = a.slice(p, a.length - q).join('');
+      const removed = b.slice(p, b.length - q).join('');
+      // deleteLeft removes one grapheme cluster at a time.
+      const clusters = removed ? [...new Intl.Segmenter().segment(removed)].length : 0;
+      for (let i = 0; i < clusters; i++) core.runCommand('deleteLeft');
       if (inserted) core.insert_text(inserted, this.#inLiteral());
-      else if (removed > 0) core.runCommand('deleteLeft');
       this.#changed();
     });
     // IME: each step replaces the previous step's text in the model, underlined, so the
@@ -1543,15 +1527,10 @@ export class RustacoEditor {
   requestHighlights() {
     const s = this.model.syntax;
     if (!s) return;
-    const { core } = this;
-    const runs = Array.from(core.visibleLines());
-    const caret = core.primaryRange()[0];
     const colorize = !!this.options.bracketPairColorization;
-    const key = `${this.model.core.version()}|${runs.join(',')}|${caret}|${colorize}`;
-    if (key !== this.frameKey) {
-      this.frameKey = key;
-      s.frame(this, runs, colorize, caret);
-    }
+    // Empty when the text, visible lines, caret and colouring are as last asked.
+    const request = this.core.highlightRequest(colorize);
+    if (request.length) s.frame(this, Array.from(request.subarray(1)), colorize, request[0]);
   }
 
   #drawFrame(caret = this.focused && this.caretOn) {

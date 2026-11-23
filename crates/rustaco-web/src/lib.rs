@@ -449,6 +449,74 @@ impl Model {
         self.inner.borrow().rope().len_lines() as u32
     }
 
+    /// Length of the text in chars (JS's `length` counts UTF-16 units).
+    #[wasm_bindgen(js_name = charCount)]
+    pub fn char_count(&self) -> u32 {
+        self.inner.borrow().len_chars() as u32
+    }
+
+    /// Rows for a list of references: `ranges` holds start and end char offsets per range.
+    /// Answers JSON, sorted by start: `[{ start, end, line, pre, match, post }]`, where `pre`
+    /// is the line before the match without its indentation and `post` the rest of the line.
+    #[wasm_bindgen(js_name = referenceRows)]
+    pub fn reference_rows(&self, ranges: &[u32]) -> String {
+        let model = self.inner.borrow();
+        let rope = model.rope();
+        let len = rope.len_chars();
+        let mut pairs: Vec<(usize, usize)> =
+            ranges.chunks_exact(2).map(|r| ((r[0] as usize).min(len), (r[1] as usize).min(len))).collect();
+        pairs.sort_unstable();
+        let rows: Vec<serde_json::Value> = pairs
+            .into_iter()
+            .map(|(start, end)| {
+                let line = rope.char_to_line(start);
+                let line_start = rope.line_to_char(line);
+                let line_end = line_start + rustaco_core::line_len(rope, line);
+                let end_on_line = end.clamp(start, line_end);
+                let text = |a: usize, b: usize| rope.slice(a..b).to_string();
+                serde_json::json!({
+                    "start": start,
+                    "end": end,
+                    "line": line,
+                    "pre": text(line_start, start).trim_start(),
+                    "match": text(start, end_on_line),
+                    "post": text(end_on_line, line_end),
+                })
+            })
+            .collect();
+        serde_json::Value::Array(rows).to_string()
+    }
+
+    /// An outline tree from a language module's flat symbols (six numbers each: start, end,
+    /// name start, name end, kind, depth), as JSON:
+    /// `[{ name, kind, range: { start, end }, selectionRange, children }]`.
+    #[wasm_bindgen(js_name = symbolTree)]
+    pub fn symbol_tree(&self, flat: &[u32]) -> String {
+        use serde_json::{Value, json};
+        let model = self.inner.borrow();
+        let rope = model.rope();
+        let len = rope.len_chars();
+        fn take(rope: &rustaco_core::Rope, len: usize, flat: &[&[u32]], i: &mut usize, depth: u32) -> Vec<Value> {
+            let mut out = Vec::new();
+            while *i < flat.len() && flat[*i][5] >= depth {
+                let s = flat[*i];
+                *i += 1;
+                let children = take(rope, len, flat, i, s[5] + 1);
+                let (ns, ne) = ((s[2] as usize).min(len), (s[3] as usize).min(len));
+                out.push(json!({
+                    "name": rope.slice(ns.min(ne)..ne).to_string(),
+                    "kind": s[4],
+                    "range": { "start": s[0], "end": s[1] },
+                    "selectionRange": { "start": s[2], "end": s[3] },
+                    "children": children,
+                }));
+            }
+            out
+        }
+        let rows: Vec<&[u32]> = flat.chunks_exact(6).collect();
+        Value::Array(take(rope, len, &rows, &mut 0, 0)).to_string()
+    }
+
     /// Replaces the decorations of `owner` (an id the caller picks, at or above 2^20 so it
     /// stays clear of editors' own) with triples of start, end (char offsets) and kind from
     /// [`define_decoration_type`]. Every editor showing the model draws them; they move with
@@ -734,6 +802,8 @@ struct Drag {
 pub struct Editor {
     model: Rc<RefCell<TextModel>>,
     highlights: ExternalHighlights,
+    /// What the last [`Editor::highlight_request`] asked about: version, runs, caret, colours.
+    highlight_key: Option<(u64, Vec<u32>, u32, bool)>,
     cursors: Cursors,
     view: View,
     canvas: HtmlCanvasElement,
@@ -818,6 +888,7 @@ impl Editor {
         Ok(Editor {
             model: model.inner.clone(),
             highlights: ExternalHighlights::default(),
+            highlight_key: None,
             cursors,
             view: View::new(metrics, canvas.client_width() as f32, canvas.client_height() as f32),
             canvas,
@@ -1053,6 +1124,45 @@ impl Editor {
         let model = self.model.borrow();
         self.view.sync(&model);
         self.view.set_foldable(indent_fold_ranges(model.rope(), model.options.tab_size));
+    }
+
+    /// [`Editor::set_folding_ranges`] for regions from the syntax tree: languages whose blocks
+    /// open after a line ending in `:` (Python, YAML; `indent_after` in the catalog) also get
+    /// the regions from indentation.
+    #[wasm_bindgen(js_name = setTreeFoldingRanges)]
+    pub fn set_tree_folding_ranges(&mut self, pairs: &[u32]) {
+        let by_indentation = !self.model.borrow().editing.indent_after.is_empty();
+        self.set_folding_ranges(pairs, by_indentation);
+    }
+
+    /// True for commands the frontend runs itself (they need the language module, providers
+    /// or the DOM); `key_down` reports these instead of running them.
+    #[wasm_bindgen(js_name = isFrontendCommand)]
+    pub fn is_frontend_command(&self, command: &str) -> bool {
+        FRONTEND_COMMANDS.contains(&command)
+    }
+
+    /// What a frame needs from the language module, once per change of text, visible lines,
+    /// caret or bracket colouring: the caret offset followed by the visible runs of lines
+    /// (pairs of first and end line). Empty when nothing changed since the last call, or
+    /// since [`Editor::forget_highlight_request`].
+    #[wasm_bindgen(js_name = highlightRequest)]
+    pub fn highlight_request(&mut self, colorize: bool) -> Vec<u32> {
+        let runs = self.visible_lines();
+        let caret = self.primary_range()[0];
+        let version = self.model.borrow().version();
+        let key = (version, runs.clone(), caret, colorize);
+        if self.highlight_key.as_ref() == Some(&key) {
+            return Vec::new();
+        }
+        self.highlight_key = Some(key);
+        std::iter::once(caret).chain(runs).collect()
+    }
+
+    /// Makes the next [`Editor::highlight_request`] ask again (a background parse finished).
+    #[wasm_bindgen(js_name = forgetHighlightRequest)]
+    pub fn forget_highlight_request(&mut self) {
+        self.highlight_key = None;
     }
 
     /// Sets the regions that can be folded: pairs of header line and last line, from a syntax
@@ -1725,6 +1835,16 @@ impl Editor {
         let model = self.model.borrow();
         let hints = offsets.iter().zip(labels).map(|(&o, l)| (o as usize, l)).collect();
         self.view.set_inlays(&model, hints);
+    }
+
+    /// [`Editor::set_semantic_tokens`] with style names: `ranges` holds start and end per
+    /// token, `styles` the highlight names joined by newlines (`"function\nvariable"`).
+    #[wasm_bindgen(js_name = setSemanticTokensNamed)]
+    pub fn set_semantic_tokens_named(&mut self, ranges: &[u32], styles: &str) {
+        let mut triples: Vec<[u32; 3]> =
+            ranges.chunks_exact(2).zip(styles.split('\n')).map(|(r, s)| [r[0], r[1], style_id(s)]).collect();
+        triples.sort_unstable_by_key(|t| t[0]);
+        self.set_semantic_tokens(&triples.concat());
     }
 
     /// Takes semantic tokens: triples of start and end char offsets and style id

@@ -477,9 +477,56 @@ impl LspSession {
             .session
             .diagnostics(&m, params)
             .into_iter()
-            .map(|d| json!({ "start": d.range.start, "end": d.range.end, "severity": d.severity as u8, "message": d.message }))
+            .map(|d| {
+                // An empty range still gets a squiggle: one char wide, where there is one.
+                let end = if d.range.end > d.range.start { d.range.end } else { (d.range.start + 1).min(m.len_chars()) };
+                json!({ "start": d.range.start, "end": end, "severity": (d.severity as u8).clamp(1, 4), "message": d.message })
+            })
             .collect();
         json!(list).to_string()
+    }
+
+    /// The edits of a `WorkspaceEdit` (JSON) grouped by document, from `changes` and
+    /// `documentChanges` alike, as JSON `[{ uri, edits }]` with the edits as LSP sent them.
+    #[wasm_bindgen(js_name = workspaceEditGroups)]
+    pub fn workspace_edit_groups(&self, edit: &str) -> String {
+        let v: Value = serde_json::from_str(edit).unwrap_or(Value::Null);
+        let mut groups: Vec<(String, Vec<Value>)> = Vec::new();
+        let mut add = |uri: &str, edits: &Value| {
+            let edits = edits.as_array().cloned().unwrap_or_default();
+            match groups.iter_mut().find(|(u, _)| u == uri) {
+                Some((_, list)) => list.extend(edits),
+                None => groups.push((uri.to_owned(), edits)),
+            }
+        };
+        if let Some(changes) = v["changes"].as_object() {
+            for (uri, edits) in changes {
+                add(uri, edits);
+            }
+        }
+        for change in v["documentChanges"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+            if let Some(uri) = change["textDocument"]["uri"].as_str() {
+                add(uri, &change["edits"]);
+            }
+        }
+        json!(groups.into_iter().map(|(uri, edits)| json!({ "uri": uri, "edits": edits })).collect::<Vec<_>>())
+            .to_string()
+    }
+
+    /// Char ranges of many LSP ranges (a JSON array) in `model`: start and end per range.
+    #[wasm_bindgen(js_name = toRanges)]
+    pub fn to_ranges(&self, ranges: &str, model: &Model) -> Vec<u32> {
+        let v: Value = serde_json::from_str(ranges).unwrap_or(Value::Null);
+        let m = model.inner.borrow();
+        v.as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+            .iter()
+            .flat_map(|r| {
+                let x = self.session.char_range(&m, r);
+                [x.start as u32, x.end as u32]
+            })
+            .collect()
     }
 
     /// The char range `[start, end]` of an LSP range (JSON) in `model`.

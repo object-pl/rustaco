@@ -268,19 +268,19 @@ export class Features {
     title.textContent = `${ranges.length} reference${ranges.length === 1 ? '' : 's'}`;
     title.style.cssText = `padding:2px 8px;border-bottom:1px solid ${border};opacity:.8`;
     node.append(title);
-    for (const r of ranges) {
-      const { line, column } = this.model.positionAt(r.start);
+    // Line, the text around each match and the match itself, cut in chars by Rust.
+    const rows = JSON.parse(this.model.core.referenceRows(Uint32Array.from(ranges.flatMap((r) => [r.start, r.end]))));
+    for (const r of rows) {
       const row = document.createElement('div');
       row.setAttribute('role', 'option');
       row.style.cssText = 'padding:1px 8px;cursor:pointer;white-space:pre;font-family:monospace';
-      const text = this.model.getLineContent(line);
       const lineLabel = document.createElement('span');
-      lineLabel.textContent = `${line + 1}: `;
+      lineLabel.textContent = `${r.line + 1}: `;
       lineLabel.style.opacity = '.6';
       const b = document.createElement('b');
-      b.textContent = text.slice(column, column + (r.end - r.start));
+      b.textContent = r.match;
       b.style.color = match;
-      row.append(lineLabel, text.slice(0, column).trimStart(), b, text.slice(column + (r.end - r.start)));
+      row.append(lineLabel, r.pre, b, r.post);
       row.addEventListener('mousedown', (ev) => {
         ev.preventDefault();
         e.setSelections([{ anchor: r.start, head: r.end }]);
@@ -308,8 +308,9 @@ export class Features {
   /** Applies provider edits `[{ range, text }]` as one undo step. */
   applyEdits(edits) {
     if (!edits?.length) return;
-    const sorted = edits.map((x) => ({ range: rangeOf(x), text: x.text ?? x.newText ?? '' })).sort((a, b) => a.range.start - b.range.start);
-    this.editor.core.applyEdits(Uint32Array.from(sorted.flatMap((x) => [x.range.start, x.range.end])), sorted.map((x) => x.text));
+    // Rust sorts the edits (ChangeSet).
+    const list = edits.map((x) => ({ range: rangeOf(x), text: x.text ?? x.newText ?? '' }));
+    this.editor.core.applyEdits(Uint32Array.from(list.flatMap((x) => [x.range.start, x.range.end])), list.map((x) => x.text));
     this.editor.afterEdit();
   }
 
@@ -530,7 +531,7 @@ export class Features {
   // ---- semantic tokens, inlay hints ----
 
   /** Asks the semantic token providers again and draws their styles over the syntax ones. */
-  async refreshSemanticTokens(styleId) {
+  async refreshSemanticTokens() {
     const providers = providersFor('semanticTokens', this.model.getLanguage());
     if (!providers.length) {
       if (this.hadSemantic) this.editor.core.setSemanticTokens(new Uint32Array());
@@ -540,8 +541,8 @@ export class Features {
     const version = this.model.core.version();
     const list = await askAll('semanticTokens', this.model, this.token('semanticTokens'), 'provideSemanticTokens');
     if (!list || version !== this.model.core.version()) return;
-    const tokens = list.sort((a, b) => a.start - b.start);
-    this.editor.core.setSemanticTokens(Uint32Array.from(tokens.flatMap((t) => [t.start, t.end, styleId(t.style)])));
+    // Rust maps the style names and sorts, in one call.
+    this.editor.core.setSemanticTokensNamed(Uint32Array.from(list.flatMap((t) => [t.start, t.end])), list.map((t) => t.style ?? '').join('\n'));
     this.hadSemantic = true;
     this.editor.schedule();
   }
@@ -551,7 +552,7 @@ export class Features {
     const providers = providersFor('inlayHints', this.model.getLanguage());
     if (!providers.length && !this.hadHints) return;
     const version = this.model.core.version();
-    const range = { start: 0, end: this.model.getValue().length };
+    const range = { start: 0, end: this.model.core.charCount() };
     const hints = await askAll('inlayHints', this.model, this.token('inlayHints'), 'provideInlayHints', range);
     if (!hints || version !== this.model.core.version()) return;
     this.editor.core.setInlayHints(Uint32Array.from(hints.map((h) => h.offset)), hints.map((h) => h.label?.label ?? h.label));
