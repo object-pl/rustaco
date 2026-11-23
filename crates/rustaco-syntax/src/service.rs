@@ -107,14 +107,10 @@ fn nest(rope: &Rope, flat: Vec<CharSymbol>) -> Vec<Symbol> {
             let s = &flat[*i];
             *i += 1;
             let children = take(rope, flat, i, s.depth + 1);
-            out.push(Symbol {
-                name: rope.slice(s.name.clone()).to_string(),
-                kind: s.kind as u64 + 1,
-                detail: None,
-                range: s.range.clone(),
-                selection_range: s.name.clone(),
-                children,
-            });
+            let mut symbol =
+                Symbol::new(rope.slice(s.name.clone()).to_string(), s.kind as u64 + 1, s.range.clone(), s.name.clone());
+            symbol.children = children;
+            out.push(symbol);
         }
         out
     }
@@ -122,17 +118,10 @@ fn nest(rope: &Rope, flat: Vec<CharSymbol>) -> Vec<Symbol> {
 }
 
 fn item(label: &str, kind: u64, sort: String) -> CompletionItem {
-    CompletionItem {
-        label: label.to_owned(),
-        kind: Some(kind),
-        detail: None,
-        documentation: None,
-        insert_text: label.to_owned(),
-        is_snippet: false,
-        range: None,
-        sort_text: Some(sort),
-        filter_text: None,
-    }
+    let mut item = CompletionItem::new(label);
+    item.kind = Some(kind);
+    item.sort_text = Some(sort);
+    item
 }
 
 /// LSP's `CompletionItemKind`s used here.
@@ -167,16 +156,16 @@ fn mermaid_completion(rope: &Rope, at: usize) -> Vec<CompletionItem> {
                 .iter()
                 .filter(|(o, _, _)| o.starts_with(open))
                 .enumerate()
-                .map(|(i, (o, c, name))| CompletionItem {
-                    label: format!("{o}text{c}"),
-                    kind: Some(KIND_SNIPPET),
-                    detail: Some((*name).into()),
-                    documentation: None,
-                    insert_text: format!("{}${{1:text}}{}$0", snippet_text(o), snippet_text(c)),
-                    is_snippet: true,
-                    range: Some(at - 1..at),
-                    sort_text: Some(format!("{i:02}")),
-                    filter_text: Some(open.to_string()),
+                .map(|(i, (o, c, name))| {
+                    let mut item = CompletionItem::new(format!("{o}text{c}"));
+                    item.kind = Some(KIND_SNIPPET);
+                    item.detail = Some((*name).into());
+                    item.insert_text = format!("{}${{1:text}}{}$0", snippet_text(o), snippet_text(c));
+                    item.is_snippet = true;
+                    item.range = Some(at - 1..at);
+                    item.sort_text = Some(format!("{i:02}"));
+                    item.filter_text = Some(open.to_string());
+                    item
                 })
                 .collect();
         }
@@ -298,11 +287,7 @@ impl LanguageService for SyntaxService {
             let Some(tree) = syntax.tree() else { return Vec::new() };
             let byte = rope.char_to_byte(at.min(rope.len_chars()));
             crate::locals::definition(tree, rope, byte)
-                .map(|r| Location {
-                    uri: cx.uri.to_owned(),
-                    range: Some(rope.byte_to_char(r.start)..rope.byte_to_char(r.end)),
-                    lsp_range: Value::Null,
-                })
+                .map(|r| Location::local(cx.uri, rope.byte_to_char(r.start)..rope.byte_to_char(r.end)))
                 .into_iter()
                 .collect()
         }
@@ -314,10 +299,7 @@ impl LanguageService for SyntaxService {
     }
 
     fn references(&mut self, cx: &Context, at: usize) -> Vec<Location> {
-        self.uses(cx, at)
-            .into_iter()
-            .map(|r| Location { uri: cx.uri.to_owned(), range: Some(r), lsp_range: Value::Null })
-            .collect()
+        self.uses(cx, at).into_iter().map(|r| Location::local(cx.uri, r)).collect()
     }
 
     fn rename(&mut self, cx: &Context, at: usize, new_name: &str) -> Option<WorkspaceEdit> {
@@ -344,8 +326,7 @@ impl LanguageService for SyntaxService {
         if uses.is_empty() {
             return None;
         }
-        let local = uses.into_iter().map(|range| TextEdit { range, text: new_name.to_owned() }).collect();
-        Some(WorkspaceEdit { local, other: Vec::new() })
+        Some(WorkspaceEdit::local(uses.into_iter().map(|range| TextEdit::new(range, new_name)).collect()))
     }
 
     fn request(&mut self, cx: &Context, method: &str, params: &Value) -> Option<Value> {

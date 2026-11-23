@@ -1,6 +1,6 @@
 {
   "name": "rustaco",
-  "version": "0.3.0",
+  "version": "1.0.0",
   "description": "A code editor for the browser, written in Rust: syntax highlighting for 20 languages, multi-cursor editing, folding, minimap",
   "license": "MIT",
   "repository": { "type": "git", "url": "git+https://github.com/object-pl/rustaco.git" },

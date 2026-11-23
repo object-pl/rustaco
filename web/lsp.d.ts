@@ -1,4 +1,6 @@
 // Type definitions for the browser LSP client (lsp.js).
+// Only what is declared here is API (see rustaco.d.ts); the `LspClient` constructor and
+// anything else lsp.js or diff.js export without a declaration are internal.
 import type { RustacoModel } from './rustaco';
 
 /** Carries JSON-RPC messages as strings, one per message. */

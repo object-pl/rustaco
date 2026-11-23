@@ -28,12 +28,20 @@ use folding::{Fold, Hidden, shift_foldable, shift_lines};
 use rustaco_core::{Assoc, Rope, Selections, TextModel, char_to_position, line_end, line_len};
 use unicode_width::UnicodeWidthChar;
 
-/// Font measurements supplied by the frontend.
+/// Font measurements supplied by the frontend. `#[non_exhaustive]`: measuring proportional
+/// text may add to it later, so build it with [`Metrics::new`].
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Metrics {
     /// Advance of one monospace cell.
     pub char_width: f32,
     pub line_height: f32,
+}
+
+impl Metrics {
+    pub fn new(char_width: f32, line_height: f32) -> Self {
+        Self { char_width, line_height }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -1613,7 +1621,7 @@ mod tests {
     use rustaco_core::{Document, Selection, Selections};
 
     fn view() -> View {
-        View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 100.0)
+        View::new(Metrics::new(10.0, 20.0), 400.0, 100.0)
     }
 
     #[test]
@@ -1702,7 +1710,7 @@ mod guide_tests {
     fn guides_follow_blocks_and_mark_the_active_one() {
         let text = "fn a() {\n    x\n\n    y\n        z\n}\nq";
         let doc = Document::new(text);
-        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 400.0);
+        let mut v = View::new(Metrics::new(10.0, 20.0), 400.0, 400.0);
         v.layout(doc.model(), doc.selections(), &Plain);
         let guides = v.indent_guides(doc.model(), 4);
         let level1: Vec<&Guide> = guides.iter().filter(|g| g.level == 1).collect();
@@ -1725,7 +1733,7 @@ mod fold_tests {
 
     fn setup() -> (Document, View) {
         let doc = Document::new(TEXT);
-        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 400.0);
+        let mut v = View::new(Metrics::new(10.0, 20.0), 400.0, 400.0);
         v.sync(doc.model());
         v.set_foldable(indent_fold_ranges(doc.rope(), 4));
         (doc, v)
@@ -1774,7 +1782,7 @@ mod fold_tests {
         };
         let text: String = (0..300).map(|i| format!("{}line {i}\n", "    ".repeat(i % 4))).collect();
         let mut doc = Document::new(&text);
-        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 400.0);
+        let mut v = View::new(Metrics::new(10.0, 20.0), 400.0, 400.0);
         v.sync(doc.model());
         for step in 0..200 {
             if step % 10 == 0 {
@@ -1809,7 +1817,7 @@ mod wrap_tests {
 
     /// 20 cells of text: the gutter takes 7 cells and the scrollbar 14 px.
     fn wrapped_view() -> View {
-        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 284.0, 200.0);
+        let mut v = View::new(Metrics::new(10.0, 20.0), 284.0, 200.0);
         v.set_wrap(true);
         v
     }
@@ -1903,7 +1911,7 @@ mod minimap_tests {
     fn minimap_draws_blocks_and_a_slider() {
         let text: String = (0..500).map(|i| format!("let x{i} = {i};\n")).collect();
         let doc = Document::new(&text);
-        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 600.0, 200.0);
+        let mut v = View::new(Metrics::new(10.0, 20.0), 600.0, 200.0);
         v.set_minimap(80.0);
         let frame = v.layout(doc.model(), doc.selections(), &Plain);
         let m = frame.minimap.expect("the minimap is on");
@@ -1935,7 +1943,7 @@ mod sticky_tests {
         }
         text.push_str("    }\n}\nafter\n");
         let doc = Document::new(&text);
-        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 200.0);
+        let mut v = View::new(Metrics::new(10.0, 20.0), 400.0, 200.0);
         v.sync(doc.model());
         v.set_foldable(indent_fold_ranges(doc.rope(), 4));
         v.set_sticky_scroll(5);
@@ -1961,7 +1969,7 @@ mod zone_tests {
     use rustaco_core::{Document, Edit};
 
     fn view() -> View {
-        View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 400.0)
+        View::new(Metrics::new(10.0, 20.0), 400.0, 400.0)
     }
 
     #[test]
@@ -2004,7 +2012,7 @@ mod grid_tests {
     #[test]
     fn chars_outside_ascii_sit_on_the_grid() {
         let doc = Document::new("a\u{4E2D}b\u{e9}cd");
-        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 100.0);
+        let mut v = View::new(Metrics::new(10.0, 20.0), 400.0, 100.0);
         let frame = v.layout(doc.model(), doc.selections(), &Plain);
         let g = frame.gutter_width;
         let runs: Vec<(&str, f32)> = frame.lines[0].runs.iter().map(|r| (r.text.as_str(), r.x - g)).collect();
@@ -2020,7 +2028,7 @@ mod inlay_tests {
     #[test]
     fn hints_push_text_right_and_carets_stay_before_them() {
         let mut doc = Document::new("let x = 1;");
-        let mut v = View::new(Metrics { char_width: 10.0, line_height: 20.0 }, 400.0, 100.0);
+        let mut v = View::new(Metrics::new(10.0, 20.0), 400.0, 100.0);
         v.set_inlays(doc.model(), vec![(5, ": i32".into())]);
         doc.set_selections(Selections::single(Selection::cursor(5)));
         let frame = v.layout(doc.model(), doc.selections(), &Plain);

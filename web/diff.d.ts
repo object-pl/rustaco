@@ -1,4 +1,6 @@
 // Types for `rustaco/diff`: the diff editor, side by side or inline.
+// Only what is declared here is API (see rustaco.d.ts); the `LspClient` constructor and
+// anything else lsp.js or diff.js export without a declaration are internal.
 import type { EditorOptions, RustacoEditor, RustacoModel, Subscription } from './rustaco';
 
 /** Lines `start` (inclusive) to `end` (exclusive), 0-based. */

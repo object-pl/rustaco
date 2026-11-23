@@ -26,16 +26,11 @@ impl LanguageService for Keywords {
     fn completion(&mut self, _: &Context, _: usize, _: Option<char>) -> Vec<CompletionItem> {
         KEYWORDS
             .iter()
-            .map(|(k, doc)| CompletionItem {
-                label: (*k).into(),
-                kind: Some(14),
-                detail: None,
-                documentation: Some((*doc).into()),
-                insert_text: (*k).into(),
-                is_snippet: false,
-                range: None,
-                sort_text: None,
-                filter_text: None,
+            .map(|(k, doc)| {
+                let mut item = CompletionItem::new(*k);
+                item.kind = Some(14);
+                item.documentation = Some((*doc).into());
+                item
             })
             .collect()
     }
@@ -53,7 +48,9 @@ impl LanguageService for Keywords {
         }
         let word = rope.slice(start..end).to_string();
         let (_, doc) = KEYWORDS.iter().find(|(k, _)| *k == word)?;
-        Some(Hover { contents: vec![format!("`{word}`: {doc}")], range: Some(start..end) })
+        let mut hover = Hover::new(vec![format!("`{word}`: {doc}")]);
+        hover.range = Some(start..end);
+        Some(hover)
     }
 }
 

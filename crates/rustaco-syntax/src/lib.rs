@@ -22,10 +22,12 @@ mod highlight;
 mod injection;
 #[cfg(feature = "engine")]
 mod language;
-#[cfg(feature = "engine")]
+#[cfg(all(feature = "engine", feature = "service"))]
 mod locals;
 #[cfg(feature = "highlighting")]
-pub mod mermaid;
+// Completion's word lists and node ids serve only `SyntaxService`.
+#[cfg_attr(not(feature = "service"), allow(dead_code))]
+mod mermaid;
 mod names;
 #[cfg(feature = "service")]
 mod service;

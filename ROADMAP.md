@@ -2,7 +2,7 @@
 
 This plan covers the work from the current v0 to a release whose feature set matches Monaco as a code editor, plus a native frontend and a diff editor. Priority goes to syntax highlighting and language support; that work starts right after the engineering base. Phases are ordered by dependency, and each ends with a check that is run before the next one starts. Sizes: S is up to a week of one person's work, M is two to four weeks, L is more than a month.
 
-Done: phases 0 to 11 (all 2026-11-21) and phase 13 (2026-11-22). Phase 12 done for 0.3.0 (2026-11-22). Postponed by the maintainer: the npm publish and the 1.0 freeze, both after the review.
+Done: phases 0 to 11 (all 2026-11-21) and phase 13 (2026-11-22). Phase 12 done (2026-11-23): the API was reviewed and frozen as 1.0.0 (`docs/api-review.md`, decisions at the end).
 
 Phase 12 so far:
 - Done: guides for embedding in a web page and in a native application and for adding a language (`docs/`); a performance report from the repository's benchmarks (`docs/performance.md`); an API review with what to settle before 1.0 (`docs/api-review.md`); provider text is never parsed as HTML (tested), pastes above `maxPasteLength` are refused.

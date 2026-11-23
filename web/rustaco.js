@@ -936,10 +936,7 @@ export class RustacoEditor {
   /** Calls `fn(scrollTop)` after a frame in which the vertical scroll position changed. */
   onDidScrollChange(fn) { return subscribe(this.scrollListeners ??= new Set(), fn); }
 
-  /**
-   * Calls `fn(length)` when a paste longer than `maxPasteLength` is refused. (The older
-   * `onPasteTooLarge` property still works.)
-   */
+  /** Calls `fn(length)` when a paste longer than `maxPasteLength` is refused. */
   onDidRefusePaste(fn) { return subscribe(this.refusedPasteListeners ??= new Set(), fn); }
 
   setScrollTop(top) {
@@ -1239,7 +1236,6 @@ export class RustacoEditor {
       const text = e.clipboardData.getData('text/plain');
       // A runaway clipboard (hundreds of megabytes) would freeze the page; it is refused.
       if (text.length > (this.options.maxPasteLength ?? MAX_PASTE_LENGTH)) {
-        this.onPasteTooLarge?.(text.length);
         for (const fn of this.refusedPasteListeners ?? []) fn(text.length);
         return;
       }

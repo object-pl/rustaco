@@ -107,12 +107,10 @@ impl LanguageService for Words {
         words(&cx.model.text())
             .into_iter()
             .filter(|(_, w)| w == "TODO")
-            .map(|(range, _)| Diagnostic {
-                range,
-                severity: Severity::Warning,
-                message: "unfinished".into(),
-                source: Some("words".into()),
-                code: None,
+            .map(|(range, _)| {
+                let mut d = Diagnostic::new(range, Severity::Warning, "unfinished");
+                d.source = Some("words".into());
+                d
             })
             .collect()
     }
@@ -122,43 +120,33 @@ impl LanguageService for Words {
         list.sort();
         list.dedup();
         list.into_iter()
-            .map(|w| CompletionItem {
-                insert_text: w.clone(),
-                label: w,
-                kind: Some(1),
-                detail: None,
-                documentation: None,
-                is_snippet: false,
-                range: None,
-                sort_text: None,
-                filter_text: None,
+            .map(|w| {
+                let mut item = CompletionItem::new(w);
+                item.kind = Some(1);
+                item
             })
             .collect()
     }
 
     fn hover(&mut self, cx: &Context, at: usize) -> Option<Hover> {
         let (range, w) = word_at(cx, at)?;
-        Some(Hover { contents: vec![format!("**{w}**")], range: Some(range) })
+        let mut hover = Hover::new(vec![format!("**{w}**")]);
+        hover.range = Some(range);
+        Some(hover)
     }
 
     fn definition(&mut self, cx: &Context, at: usize) -> Vec<Location> {
-        occurrences(cx, at)
-            .into_iter()
-            .take(1)
-            .map(|r| Location { uri: cx.uri.to_owned(), range: Some(r), lsp_range: Value::Null })
-            .collect()
+        occurrences(cx, at).into_iter().take(1).map(|r| Location::local(cx.uri, r)).collect()
     }
 
     fn references(&mut self, cx: &Context, at: usize) -> Vec<Location> {
-        occurrences(cx, at)
-            .into_iter()
-            .map(|r| Location { uri: cx.uri.to_owned(), range: Some(r), lsp_range: Value::Null })
-            .collect()
+        occurrences(cx, at).into_iter().map(|r| Location::local(cx.uri, r)).collect()
     }
 
     fn rename(&mut self, cx: &Context, at: usize, new_name: &str) -> Option<WorkspaceEdit> {
-        let local = occurrences(cx, at).into_iter().map(|range| TextEdit { range, text: new_name.into() }).collect();
-        Some(WorkspaceEdit { local, other: Vec::new() })
+        Some(WorkspaceEdit::local(
+            occurrences(cx, at).into_iter().map(|range| TextEdit::new(range, new_name)).collect(),
+        ))
     }
 
     fn semantic_tokens(&mut self, cx: &Context) -> Vec<SemanticToken> {
@@ -166,12 +154,10 @@ impl LanguageService for Words {
         let mut out = Vec::new();
         for pair in list.windows(2) {
             if pair[0].1 == "fn" {
-                out.push(SemanticToken { range: pair[0].0.clone(), token_type: "keyword".into(), modifiers: vec![] });
-                out.push(SemanticToken {
-                    range: pair[1].0.clone(),
-                    token_type: "function".into(),
-                    modifiers: vec!["declaration".into()],
-                });
+                out.push(SemanticToken::new(pair[0].0.clone(), "keyword"));
+                let mut name = SemanticToken::new(pair[1].0.clone(), "function");
+                name.modifiers = vec!["declaration".into()];
+                out.push(name);
             }
         }
         out
@@ -181,14 +167,7 @@ impl LanguageService for Words {
         let list = words(&cx.model.text());
         list.windows(2)
             .filter(|p| p[0].1 == "fn")
-            .map(|p| Symbol {
-                name: p[1].1.clone(),
-                kind: 12,
-                detail: None,
-                range: p[0].0.start..p[1].0.end,
-                selection_range: p[1].0.clone(),
-                children: Vec::new(),
-            })
+            .map(|p| Symbol::new(p[1].1.clone(), 12, p[0].0.start..p[1].0.end, p[1].0.clone()))
             .collect()
     }
 }

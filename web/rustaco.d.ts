@@ -1,8 +1,9 @@
 // Type definitions for the Rustaco editor's JavaScript API (rustaco.js).
 // Offsets are char positions (Unicode scalar values) from the start of the text.
-// Only what is declared here is the API. Other fields reachable at run time (an editor's
-// `core`, `features` and `suggest`, a model's `core` and `syntax`) are internal and change
-// without notice.
+// The API is what rustaco.d.ts, lsp.d.ts and diff.d.ts declare, nothing else. Exports and
+// fields reachable at run time but not declared here (`lspSession`, an editor's `core`,
+// `features` and `suggest`, a model's `core` and `syntax`) are internal and change without
+// notice, also between minor versions.
 
 /** A VS Code colour theme: the parsed JSON of a `*-color-theme.json` file. */
 export interface VsCodeTheme {
@@ -286,9 +287,6 @@ export class RustacoEditor {
   triggerSuggest(): Promise<void>;
   /** Symbols from a provider, else from the syntax tree. */
   getDocumentSymbols(): Promise<DocumentSymbol[]>;
-  /** Called with the length of a paste refused for exceeding `maxPasteLength`. */
-  /** @deprecated Use `onDidRefusePaste`. */
-  onPasteTooLarge?: (length: number) => void;
   /** Called with the length of a paste refused for exceeding `maxPasteLength`. */
   onDidRefusePaste(fn: (length: number) => void): Subscription;
   /** Called when go to definition lands in another model; the host opens it. */

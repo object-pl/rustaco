@@ -44,6 +44,7 @@ pub struct Context<'a> {
 
 /// A problem in a document.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Diagnostic {
     pub range: Range<usize>,
     pub severity: Severity,
@@ -51,6 +52,13 @@ pub struct Diagnostic {
     /// Who reports it (`"mermaid"`, `"rustc"`).
     pub source: Option<String>,
     pub code: Option<String>,
+}
+
+impl Diagnostic {
+    /// A diagnostic without source or code.
+    pub fn new(range: Range<usize>, severity: Severity, message: impl Into<String>) -> Self {
+        Self { range, severity, message: message.into(), source: None, code: None }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

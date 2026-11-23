@@ -14,7 +14,7 @@ fn big_text() -> String {
 }
 
 fn view() -> View {
-    View::new(Metrics { char_width: 8.0, line_height: 20.0 }, 1200.0, 900.0)
+    View::new(Metrics::new(8.0, 20.0), 1200.0, 900.0)
 }
 
 fn benches(c: &mut Criterion) {

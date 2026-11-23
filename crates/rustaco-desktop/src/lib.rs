@@ -58,7 +58,7 @@ impl DesktopEditor {
     /// pixel area.
     pub fn new(text: &str, language: &str, font: Font, width: f32, height: f32, scale: f32) -> Self {
         let doc = Document::new(text);
-        let metrics = Metrics { char_width: font.advance / scale, line_height: font.line_height / scale };
+        let metrics = Metrics::new(font.advance / scale, font.line_height / scale);
         let view = View::new(metrics, width, height);
         let platform = if cfg!(target_os = "macos") {
             Platform::Mac
@@ -114,8 +114,7 @@ impl DesktopEditor {
         if (scale - self.scale).abs() > f32::EPSILON {
             self.font = self.font.with_scale(scale / self.scale);
             self.scale = scale;
-            self.view.metrics =
-                Metrics { char_width: self.font.advance / scale, line_height: self.font.line_height / scale };
+            self.view.metrics = Metrics::new(self.font.advance / scale, self.font.line_height / scale);
         }
         self.view.resize(width, height);
         self.dirty = true;

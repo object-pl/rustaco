@@ -957,7 +957,7 @@ impl Editor {
         ctx.set_font(&font);
         let sample = "M".repeat(64);
         let char_width = (ctx.measure_text(&sample)?.width() / 64.0) as f32;
-        let metrics = Metrics { char_width, line_height: (font_size * 1.5).round() as f32 };
+        let metrics = Metrics::new(char_width, (font_size * 1.5).round() as f32);
         let id = EditorId(NEXT_EDITOR_ID.with(|n| n.replace(n.get() + 1)));
         let cursors = Cursors::new(id, &model.inner.borrow());
         Ok(Editor {
@@ -1059,7 +1059,7 @@ impl Editor {
         let rope = model.rope();
         let top_line = self.view.line_at_y(rope, self.view.scroll_top());
         let left_cells = self.view.scroll_left() / self.view.metrics.char_width;
-        self.view.metrics = Metrics { char_width, line_height: (font_size * 1.5).round() as f32 };
+        self.view.metrics = Metrics::new(char_width, (font_size * 1.5).round() as f32);
         self.font = font;
         self.view.sync(&model);
         let top = self.view.line_top(top_line);

@@ -39,6 +39,7 @@ pub use session::{Document, Session};
 
 /// A hover answer.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Hover {
     /// Markdown or plain text blocks.
     pub contents: Vec<String>,
@@ -46,6 +47,7 @@ pub struct Hover {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct CompletionItem {
     pub label: String,
     /// LSP's `CompletionItemKind` (1-based).
@@ -61,6 +63,7 @@ pub struct CompletionItem {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct SignatureHelp {
     /// (label, documentation, parameter labels)
     pub signatures: Vec<(String, Option<String>, Vec<String>)>,
@@ -71,6 +74,7 @@ pub struct SignatureHelp {
 /// A place in a document: the char range when it is the document asked about, the raw LSP
 /// range otherwise.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Location {
     pub uri: String,
     pub range: Option<Range<usize>>,
@@ -79,6 +83,7 @@ pub struct Location {
 
 /// An edit to the document asked about.
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct TextEdit {
     pub range: Range<usize>,
     pub text: String,
@@ -87,12 +92,14 @@ pub struct TextEdit {
 /// Edits across documents: those for the document asked about in char offsets, the rest as
 /// LSP sent them (`uri`, raw `TextEdit` values) for the host.
 #[derive(Clone, Debug, Default, PartialEq)]
+#[non_exhaustive]
 pub struct WorkspaceEdit {
     pub local: Vec<TextEdit>,
     pub other: Vec<(String, Vec<Value>)>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct CodeAction {
     pub title: String,
     pub edit: Option<WorkspaceEdit>,
@@ -101,6 +108,7 @@ pub struct CodeAction {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct Symbol {
     pub name: String,
     /// LSP's `SymbolKind` (1-based).
@@ -112,6 +120,7 @@ pub struct Symbol {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct SemanticToken {
     pub range: Range<usize>,
     /// The token type from the server's legend (`"function"`, `"parameter"`, ...).
@@ -120,16 +129,107 @@ pub struct SemanticToken {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct InlayHint {
     pub offset: usize,
     pub label: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct CodeLens {
     pub range: Range<usize>,
     pub title: Option<String>,
     pub command: Option<Value>,
+}
+
+// Constructors: the answer types are `#[non_exhaustive]` (LSP keeps adding fields), so code
+// outside this crate starts from one of these and sets the optional fields after.
+
+impl Hover {
+    pub fn new(contents: Vec<String>) -> Self {
+        Self { contents, range: None }
+    }
+}
+
+impl CompletionItem {
+    /// An item inserting its label, without kind, detail or documentation.
+    pub fn new(label: impl Into<String>) -> Self {
+        let label = label.into();
+        Self {
+            insert_text: label.clone(),
+            label,
+            kind: None,
+            detail: None,
+            documentation: None,
+            is_snippet: false,
+            range: None,
+            sort_text: None,
+            filter_text: None,
+        }
+    }
+}
+
+impl SignatureHelp {
+    /// The first signature and its first parameter active.
+    pub fn new(signatures: Vec<(String, Option<String>, Vec<String>)>) -> Self {
+        Self { signatures, active_signature: 0, active_parameter: 0 }
+    }
+}
+
+impl Location {
+    /// A range in the document asked about.
+    pub fn local(uri: impl Into<String>, range: Range<usize>) -> Self {
+        Self { uri: uri.into(), range: Some(range), lsp_range: Value::Null }
+    }
+
+    /// A place in another document, with LSP's own range.
+    pub fn remote(uri: impl Into<String>, lsp_range: Value) -> Self {
+        Self { uri: uri.into(), range: None, lsp_range }
+    }
+}
+
+impl TextEdit {
+    pub fn new(range: Range<usize>, text: impl Into<String>) -> Self {
+        Self { range, text: text.into() }
+    }
+}
+
+impl WorkspaceEdit {
+    /// Edits to the document asked about only.
+    pub fn local(edits: Vec<TextEdit>) -> Self {
+        Self { local: edits, other: Vec::new() }
+    }
+}
+
+impl CodeAction {
+    pub fn new(title: impl Into<String>) -> Self {
+        Self { title: title.into(), edit: None, command: None }
+    }
+}
+
+impl Symbol {
+    pub fn new(name: impl Into<String>, kind: u64, range: Range<usize>, selection_range: Range<usize>) -> Self {
+        Self { name: name.into(), kind, detail: None, range, selection_range, children: Vec::new() }
+    }
+}
+
+impl SemanticToken {
+    pub fn new(range: Range<usize>, token_type: impl Into<String>) -> Self {
+        Self { range, token_type: token_type.into(), modifiers: Vec::new() }
+    }
+}
+
+impl InlayHint {
+    pub fn new(offset: usize, label: impl Into<String>) -> Self {
+        Self { offset, label: label.into() }
+    }
+}
+
+impl CodeLens {
+    pub fn new(range: Range<usize>) -> Self {
+        Self { range, title: None, command: None }
+    }
 }
 
 /// An initialized connection to one language server: a [`Session`] over a blocking
