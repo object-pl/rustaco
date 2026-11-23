@@ -28,7 +28,7 @@ Nearly all of the browser keystroke cost with the worker is drawing the frame on
 
 | What | Gzipped |
 |---|---|
-| Editor module (`rustaco_web_bg.wasm`) | about 345 KB, of which about 55 KB is the LSP client (rustaco-lsp's `Session` and serde_json) |
+| Editor module (`rustaco_web_bg.wasm`) | about 368 KB, of which about 55 KB is the LSP client (rustaco-lsp's `Session` and serde_json) and about 16 KB the theme, markdown and diff view code moved from JS on 2026-11-23 |
 | JavaScript (`rustaco.js` and the modules it imports) | about 46 KB |
 | Language modules | 155 to 550 KB each (Rust 270 KB), loaded on first use; about 150 KB of each is the tree-sitter runtime and the highlighter, repeated per module |
 

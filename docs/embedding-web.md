@@ -96,4 +96,4 @@ Both sides stay editable and the diff recomputes 200 ms after an edit. `diff.cha
 
 ## Size and limits
 
-The editor module is about 350 KB gzipped; language modules are 235 to 630 KB each. Pastes longer than `maxPasteLength` (50,000,000 UTF-16 units by default) are refused and reported through `editor.onDidRefusePaste(fn)`.
+The editor module is about 370 KB gzipped; language modules are 235 to 630 KB each. Pastes longer than `maxPasteLength` (50,000,000 UTF-16 units by default) are refused and reported through `editor.onDidRefusePaste(fn)`.
