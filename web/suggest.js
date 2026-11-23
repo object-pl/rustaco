@@ -102,6 +102,7 @@ export class SuggestController {
     this.editor.core.setCompletionItems(
       items.map((i) => i.filterText ?? i.label).join('\0'),
       items.map((i) => i.sortText ?? i.label).join('\0'),
+      items.map((i) => i.label).join('\0'),
     );
   }
 
@@ -118,28 +119,16 @@ export class SuggestController {
   /** Filters by the text from the word start to the caret; closes when nothing is left. */
   refilter() {
     const e = this.editor;
-    const head = caret(e);
-    if (head < this.start) { this.close(); return; }
-    const prefix = this.choiceMode ? '' : e.getModel().getTextRange(this.start, head);
-    if ([...prefix].some((c) => !isWordChar(c))) { this.close(); return; }
-    // Rust filters and ranks; choices keep the snippet's order.
-    const ranked = e.core.rankCompletions(prefix, !!this.choiceMode, MAX_ROWS);
-    const total = ranked[0];
+    // Rust takes the typed prefix, filters, ranks and decides whether the list stays open.
+    const ranked = e.core.refilterCompletions(this.start, !!this.choiceMode, !!this.explicit, MAX_ROWS);
+    if (!ranked[0]) { this.close(); return; }
     const picks = [];
-    for (let i = 1; i < ranked.length; i += 2 + ranked[i + 1]) picks.push(i);
+    for (let i = 2; i < ranked.length; i += 2 + ranked[i + 1]) picks.push(i);
     const words = this.items ? null : e.core.completionTexts(Uint32Array.from(picks, (i) => ranked[i])).split('\0');
-    const scored = picks.map((i, k) => {
-      const item = this.items ? this.items[ranked[i]] : {
-        label: words[k], kind: CompletionItemKind.Text, insertText: words[k], range: this.wordRange,
-      };
-      const matches = (item.filterText ?? item.label) === item.label ? Array.from(ranked.subarray(i + 2, i + 2 + ranked[i + 1])) : [];
-      return { item, matches };
-    });
-    // An exact match of the only item is already typed: nothing to offer.
-    if (total === 0 || (!this.explicit && total === 1 && scored[0].item.label === prefix)) {
-      this.close();
-      return;
-    }
+    const scored = picks.map((i, k) => ({
+      item: this.items ? this.items[ranked[i]] : { label: words[k], kind: CompletionItemKind.Text, insertText: words[k], range: this.wordRange },
+      matches: new Set(ranked.subarray(i + 2, i + 2 + ranked[i + 1])),
+    }));
     this.filtered = scored;
     this.selected = 0;
     this.#render();
@@ -167,7 +156,7 @@ export class SuggestController {
       label.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis';
       const chars = [...item.label];
       chars.forEach((c, ci) => {
-        if (matches.includes(ci)) {
+        if (matches.has(ci)) {
           const b = document.createElement('b');
           b.textContent = c;
           b.style.color = match;
@@ -213,12 +202,9 @@ export class SuggestController {
     if (!entry) return;
     const item = entry.item;
     const e = this.editor;
-    const head = caret(e);
-    const range = item.range ?? { start: this.start, end: head };
-    const before = Math.max(0, head - range.start);
-    const after = Math.max(0, range.end - head);
+    const range = item.range ?? { start: this.start, end: caret(e) };
     this.close();
-    e.core.acceptCompletion(before, after, item.insertText ?? item.label, !!item.isSnippet);
+    e.core.acceptCompletionAt(range.start, range.end, item.insertText ?? item.label, !!item.isSnippet);
     e.afterEdit();
     item.command?.(e);
   }

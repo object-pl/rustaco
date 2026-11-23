@@ -10,6 +10,7 @@ mod change;
 mod commands;
 mod decorations;
 mod diff;
+pub mod diff_view;
 mod document;
 mod editor;
 mod fuzzy;

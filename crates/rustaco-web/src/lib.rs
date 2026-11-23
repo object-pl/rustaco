@@ -295,6 +295,91 @@ fn encode_diff(old: &Rope, new: &Rope, ignore_whitespace: bool, budget_ms: f64) 
     out
 }
 
+/// The changes of a flat diff from [`encode_diff`].
+fn decode_diff(flat: &[u32]) -> Vec<rustaco_core::LineChange> {
+    let n = |i: usize| flat.get(i).copied().unwrap_or(0) as usize;
+    let mut out = Vec::new();
+    let mut i = 2;
+    for _ in 0..n(1) {
+        let mut c = rustaco_core::LineChange {
+            old: n(i)..n(i + 1),
+            new: n(i + 2)..n(i + 3),
+            inner: Vec::new(),
+            moved: n(i + 4).checked_sub(1),
+        };
+        let count = n(i + 5);
+        i += 6;
+        for _ in 0..count {
+            c.inner.push(rustaco_core::CharChange { old: n(i)..n(i + 1), new: n(i + 2)..n(i + 3) });
+            i += 4;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Filler blocks for a side-by-side diff (see `rustaco_core::diff_view::fillers`), three
+/// numbers each: 1 for the modified pane or 0 for the original, the line the block follows
+/// (-1: before the first) and its height in lines.
+#[wasm_bindgen(js_name = diffFillers)]
+pub fn diff_fillers(flat: &[u32]) -> Vec<i32> {
+    rustaco_core::diff_view::fillers(&decode_diff(flat))
+        .into_iter()
+        .flat_map(|f| [i32::from(f.in_modified), f.after_line as i32, f.lines as i32])
+        .collect()
+}
+
+/// The first line of the next (or previous) change around `line` of the modified text, or
+/// -1 without changes.
+#[wasm_bindgen(js_name = diffNextChange)]
+pub fn diff_next_change(flat: &[u32], line: u32, forward: bool) -> i32 {
+    rustaco_core::diff_view::next_change(&decode_diff(flat), line as usize, forward).map_or(-1, |l| l as i32)
+}
+
+/// Unchanged stretches to fold on one side, as pairs of first and last line.
+#[wasm_bindgen(js_name = diffUnchangedRegions)]
+pub fn diff_unchanged_regions(flat: &[u32], in_modified: bool, line_count: u32, context: u32) -> Vec<u32> {
+    rustaco_core::diff_view::unchanged_regions(&decode_diff(flat), in_modified, line_count as usize, context as usize)
+        .into_iter()
+        .flat_map(|(a, b)| [a as u32, b as u32])
+        .collect()
+}
+
+#[wasm_bindgen]
+impl Model {
+    /// The ranges a diff view marks, this model being the original: triples of kind (0
+    /// removed line, 1 inserted line, 2 removed chars, 3 inserted chars), start and end. The
+    /// removed kinds are offsets into this model, the inserted ones into `modified`.
+    #[wasm_bindgen(js_name = diffMarks)]
+    pub fn diff_marks(&self, flat: &[u32], modified: &Model, inline: bool) -> Vec<u32> {
+        use rustaco_core::diff_view::{DiffMark, marks};
+        let (a, b) = (self.inner.borrow(), modified.inner.borrow());
+        marks(a.rope(), b.rope(), &decode_diff(flat), inline)
+            .into_iter()
+            .flat_map(|(kind, r)| {
+                let k = match kind {
+                    DiffMark::RemovedLine => 0,
+                    DiffMark::InsertedLine => 1,
+                    DiffMark::RemovedText => 2,
+                    DiffMark::InsertedText => 3,
+                };
+                [k, r.start as u32, r.end as u32]
+            })
+            .collect()
+    }
+
+    /// The edit to `modified` that reverts change `index`, this model being the original:
+    /// JSON `{ start, end, text }`, or `null` for a missing change.
+    #[wasm_bindgen(js_name = diffRevertEdit)]
+    pub fn diff_revert_edit(&self, flat: &[u32], index: u32, modified: &Model) -> String {
+        let changes = decode_diff(flat);
+        let Some(c) = changes.get(index as usize) else { return "null".into() };
+        let (a, b) = (self.inner.borrow(), modified.inner.borrow());
+        let (range, text) = rustaco_core::diff_view::revert_edit(a.rope(), b.rope(), c);
+        serde_json::json!({ "start": range.start, "end": range.end, "text": text }).to_string()
+    }
+}
+
 /// CSS colours of every style id under the current theme, for DOM that shows highlighted
 /// text (the deleted lines of an inline diff).
 #[wasm_bindgen(js_name = styleColors)]
@@ -826,6 +911,8 @@ pub struct Editor {
     zone_rects: Vec<(u32, Rect)>,
     /// The open completion list: the text each item is filtered by and its sort text.
     completion_items: (Vec<String>, Vec<String>),
+    /// The items' labels, when they differ from the filter texts.
+    completion_labels: Vec<String>,
     /// Commands the embedder added (`editor.addCommand`): keybindings resolving to them go
     /// to the JS side, like the frontend commands.
     host_commands: std::collections::HashSet<String>,
@@ -898,6 +985,7 @@ impl Editor {
             text_drag: None,
             zone_rects: Vec::new(),
             completion_items: (Vec::new(), Vec::new()),
+            completion_labels: Vec::new(),
             host_commands: std::collections::HashSet::new(),
             gl: None,
         })
@@ -1697,9 +1785,63 @@ impl Editor {
     /// Sets the items of the completion list, for [`Editor::rank_completions`]: per item the
     /// text it is filtered by (filter text or label) and its sort text, NUL-separated.
     #[wasm_bindgen(js_name = setCompletionItems)]
-    pub fn set_completion_items(&mut self, texts: &str, sort_texts: &str) {
+    pub fn set_completion_items(&mut self, texts: &str, sort_texts: &str, labels: &str) {
         let split = |s: &str| if s.is_empty() { Vec::new() } else { s.split('\0').map(str::to_owned).collect() };
         self.completion_items = (split(texts), split(sort_texts));
+        self.completion_labels = split(labels);
+    }
+
+    /// The completion list after a keystroke: the text from `start` (the word start) to the
+    /// caret filters and ranks the items. Answers `[0]` when the list should close (the caret
+    /// left the word, a non-word char was typed, nothing matches, or without `explicit` the
+    /// only match is already typed in full). Otherwise 1, the number of matches, then for at
+    /// most `limit` of them: item index, number of matched chars and their indices in the
+    /// label (none when the item filters by a text other than its label). With `keep_order`
+    /// (a snippet's choices) nothing is typed yet and the items keep their order.
+    #[wasm_bindgen(js_name = refilterCompletions)]
+    pub fn refilter_completions(&mut self, start: u32, keep_order: bool, explicit: bool, limit: u32) -> Vec<u32> {
+        let head = self.selections_primary().head;
+        let start = start as usize;
+        if head < start {
+            return vec![0];
+        }
+        let typed = if keep_order {
+            String::new()
+        } else {
+            let model = self.model.borrow();
+            let len = model.len_chars();
+            model.rope().slice(start.min(len)..head.min(len)).to_string()
+        };
+        if typed.chars().any(|c| !(c.is_alphanumeric() || c == '_')) {
+            return vec![0];
+        }
+        let (texts, sorts) = &self.completion_items;
+        let labels = if self.completion_labels.len() == texts.len() { &self.completion_labels } else { texts };
+        let sorts = if sorts.len() == texts.len() { sorts } else { texts };
+        let ranked = rustaco_core::rank_completions(&typed, texts, sorts, keep_order);
+        let only_typed = ranked.len() == 1 && labels[ranked[0].0] == typed;
+        if ranked.is_empty() || (!explicit && only_typed) {
+            return vec![0];
+        }
+        let mut out = vec![1, ranked.len() as u32];
+        for (i, m) in ranked.into_iter().take(limit as usize) {
+            out.push(i as u32);
+            if texts[i] == labels[i] {
+                out.push(m.matches.len() as u32);
+                out.extend(m.matches.iter().map(|&c| c as u32));
+            } else {
+                out.push(0);
+            }
+        }
+        out
+    }
+
+    /// [`Editor::accept_completion`] for an item that replaces `start..end`: the caret's
+    /// distance to both ends gives what to replace at every cursor.
+    #[wasm_bindgen(js_name = acceptCompletionAt)]
+    pub fn accept_completion_at(&mut self, start: u32, end: u32, text: &str, snippet: bool) {
+        let head = self.selections_primary().head as u32;
+        self.accept_completion(head.saturating_sub(start), end.saturating_sub(head), text, snippet);
     }
 
     /// Filters and ranks the completion items by what was typed, best first (in the given
@@ -1727,6 +1869,7 @@ impl Editor {
         let words = model.words_near(line as usize, radius as usize, max as usize, exclude);
         let n = words.len() as u32;
         self.completion_items = (words, Vec::new());
+        self.completion_labels = Vec::new();
         n
     }
 

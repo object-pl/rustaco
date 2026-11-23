@@ -4,7 +4,7 @@
 // the panes scroll together.
 
 import { RustacoEditor, createModel, defineDecorationType } from './rustaco.js';
-import { styleColors } from './pkg/rustaco_web.js';
+import { diffFillers, diffNextChange, diffUnchangedRegions, styleColors } from './pkg/rustaco_web.js';
 
 const RECOMPUTE_MS = 200;
 
@@ -62,6 +62,8 @@ export class RustacoDiffEditor {
     this.inline = inline;
     this.ignoreWhitespace = ignoreWhitespace;
     this.changes = [];
+    /** The diff as the editor module encodes it; the view model reads it in Rust. */
+    this.flat = new Uint32Array([1, 0]);
     this.zones = [];
     this.diffListeners = new Set();
     if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
@@ -125,6 +127,7 @@ export class RustacoDiffEditor {
     if (versions[0] !== a.core.version() || versions[1] !== b.core.version()) return this.changes;
     const { changes, complete } = decode(flat);
     this.changes = changes;
+    this.flat = flat ? Uint32Array.from(flat) : new Uint32Array([0, 0]);
     this.complete = complete;
     await this.#render();
     for (const fn of this.diffListeners) fn(changes);
@@ -133,19 +136,12 @@ export class RustacoDiffEditor {
 
   async #render() {
     const t = await diffTypes();
-    const lineRange = (model, lines) => ({
-      start: model.offsetAt({ line: lines.start, column: 0 }),
-      end: model.offsetAt({ line: Math.max(lines.start, lines.end - 1), column: 1 << 30 }),
-    });
+    const kinds = [t.removedLine, t.insertedLine, t.removedText, t.insertedText];
+    const marks = this.originalModel.core.diffMarks(this.flat, this.modifiedModel.core, this.inline);
     const removed = [];
     const inserted = [];
-    for (const c of this.changes) {
-      if (c.original.end > c.original.start) removed.push({ ...lineRange(this.originalModel, c.original), type: t.removedLine });
-      if (c.modified.end > c.modified.start) inserted.push({ ...lineRange(this.modifiedModel, c.modified), type: t.insertedLine });
-      for (const i of c.inner) {
-        if (i.original.end > i.original.start) removed.push({ ...i.original, type: t.removedText });
-        if (i.modified.end > i.modified.start) inserted.push({ ...i.modified, type: t.insertedText });
-      }
+    for (let i = 0; i + 2 < marks.length; i += 3) {
+      (marks[i] % 2 ? inserted : removed).push({ start: marks[i + 1], end: marks[i + 2], type: kinds[marks[i]] });
     }
     this.originalDecorations.set(this.inline ? [] : removed);
     this.modifiedDecorations.set(inserted);
@@ -162,13 +158,10 @@ export class RustacoDiffEditor {
       }
     } else {
       // Fillers: the shorter side of each change gets the missing height.
-      for (const c of this.changes) {
-        const diff = (c.original.end - c.original.start) - (c.modified.end - c.modified.start);
-        if (diff > 0) {
-          this.zones.push([this.modifiedEditor, this.modifiedEditor.addViewZone({ afterLine: c.modified.end - 1, height: diff * lh, domNode: filler() })]);
-        } else if (diff < 0) {
-          this.zones.push([this.originalEditor, this.originalEditor.addViewZone({ afterLine: c.original.end - 1, height: -diff * lh, domNode: filler() })]);
-        }
+      const fillers = diffFillers(this.flat);
+      for (let i = 0; i + 2 < fillers.length; i += 3) {
+        const editor = fillers[i] ? this.modifiedEditor : this.originalEditor;
+        this.zones.push([editor, editor.addViewZone({ afterLine: fillers[i + 1], height: fillers[i + 2] * lh, domNode: filler() })]);
       }
     }
     for (const e of this.editors) e.schedule();
@@ -220,9 +213,8 @@ export class RustacoDiffEditor {
     const e = this.modifiedEditor;
     const head = e.core.selections()[1];
     const line = this.modifiedModel.positionAt(head).line;
-    const starts = this.changes.map((c) => c.modified.start);
-    const target = forward ? starts.find((s) => s > line) ?? starts[0] : [...starts].reverse().find((s) => s < line) ?? starts[starts.length - 1];
-    if (target === undefined) return false;
+    const target = diffNextChange(this.flat, line, forward);
+    if (target < 0) return false;
     const offset = this.modifiedModel.offsetAt({ line: target, column: 0 });
     e.setSelections([{ anchor: offset, head: offset }]);
     e.focus();
@@ -231,42 +223,20 @@ export class RustacoDiffEditor {
 
   /** Puts the original text of change `index` back into the modified model. */
   revertChange(index) {
-    const c = this.changes[index];
-    if (!c) return;
-    const a = this.originalModel;
-    const b = this.modifiedModel;
-    const span = (model, lines) => ({ start: model.offsetAt({ line: lines.start, column: 0 }), end: lines.end >= model.getLineCount() ? model.getValue().length : model.offsetAt({ line: lines.end, column: 0 }) });
-    const from = span(a, c.original);
-    let text = a.getTextRange(from.start, from.end);
-    const to = span(b, c.modified);
-    // At the end of a file without a final newline the line breaks sit on the other side.
-    if (to.end === b.getValue().length && from.end !== a.getValue().length && text.endsWith('\n') && to.start === to.end && to.start > 0) {
-      text = `\n${text.slice(0, -1)}`;
-    }
-    this.modifiedEditor.features.applyEdits([{ range: to, text }]);
+    const edit = JSON.parse(this.originalModel.core.diffRevertEdit(this.flat, index, this.modifiedModel.core));
+    if (!edit) return;
+    this.modifiedEditor.features.applyEdits([{ range: { start: edit.start, end: edit.end }, text: edit.text }]);
   }
 
   /** Folds unchanged stretches longer than `2 * context` lines on both sides. */
   collapseUnchanged(context = 3) {
-    const regions = (side, model) => {
-      const out = [];
-      let at = 0;
-      for (const c of this.changes) {
-        if (c[side].start - at > 2 * context) out.push({ start: at + context - (at === 0 ? context : 0), end: c[side].start - context - 1 });
-        at = c[side].end;
-      }
-      const last = model.getLineCount() - 1;
-      if (last - at > 2 * context) out.push({ start: at + context, end: last });
-      return out.filter((r) => r.end > r.start);
-    };
-    const apply = (editor, side, model) => {
+    const apply = (editor, inModified, model) => {
       if (!editor) return;
-      const rs = regions(side, model);
-      editor.core.setFoldingRanges(Uint32Array.from(rs.flatMap((r) => [r.start, r.end])), false);
+      editor.core.setFoldingRanges(diffUnchangedRegions(this.flat, inModified, model.getLineCount(), context), false);
       editor.runCommand('editor.foldAll');
     };
-    apply(this.originalEditor, 'original', this.originalModel);
-    apply(this.modifiedEditor, 'modified', this.modifiedModel);
+    apply(this.originalEditor, false, this.originalModel);
+    apply(this.modifiedEditor, true, this.modifiedModel);
   }
 
   dispose() {
